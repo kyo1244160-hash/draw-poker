@@ -1,12 +1,12 @@
 self.__BUILD_MANIFEST = {
   "/": [
-    "static/chunks/d218777135891c0c.js"
+    "static/chunks/9e1f3ca324f517df.js"
   ],
   "/_error": [
     "static/chunks/97374023f20aaaa5.js"
   ],
   "/room/[roomId]": [
-    "static/chunks/cf4dca599a522716.js"
+    "static/chunks/884e332f3c4b7a8e.js"
   ],
   "__rewrites": {
     "afterFiles": [],
@@ -17,6 +17,7 @@ self.__BUILD_MANIFEST = {
     "/",
     "/_app",
     "/_error",
+    "/api/health",
     "/room/[roomId]"
   ]
 };self.__BUILD_MANIFEST_CB && self.__BUILD_MANIFEST_CB()

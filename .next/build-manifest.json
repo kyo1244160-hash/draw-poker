@@ -1,10 +1,10 @@
 {
   "pages": {
     "/": [
-      "static/chunks/8a2e83aeb94ee885.js",
+      "static/chunks/5842a95004e0c619.js",
       "static/chunks/5df4a7f99913139f.js",
       "static/chunks/b1f4838b416e6f71.js",
-      "static/chunks/turbopack-aa42fd1f4211953f.js"
+      "static/chunks/turbopack-c4e19a4062e243d0.js"
     ],
     "/_app": [
       "static/chunks/26502775900c3cf1.js",
@@ -20,18 +20,18 @@
       "static/chunks/turbopack-b89486e4ee9ae4bc.js"
     ],
     "/room/[roomId]": [
-      "static/chunks/258516217d0e3293.js",
+      "static/chunks/a635b45f2ef5d2f8.js",
       "static/chunks/55ca727ad1cf1e78.js",
       "static/chunks/5df4a7f99913139f.js",
       "static/chunks/b1f4838b416e6f71.js",
-      "static/chunks/turbopack-6f7eb84a68e5574f.js"
+      "static/chunks/turbopack-2d25f6543ecbaa87.js"
     ]
   },
   "devFiles": [],
   "polyfillFiles": [],
   "lowPriorityFiles": [
-    "static/SnOH8EA_SDBlPZ9e8p1uN/_ssgManifest.js",
-    "static/SnOH8EA_SDBlPZ9e8p1uN/_buildManifest.js"
+    "static/Je5NRwcBDGe2JFrJdDs19/_ssgManifest.js",
+    "static/Je5NRwcBDGe2JFrJdDs19/_buildManifest.js"
   ],
   "rootMainFiles": []
 }
