@@ -2,25 +2,26 @@
  * server/index.js — Poker Room Pastis メインサーバー
  *
  * Socket.IO イベント（クライアント → サーバー）:
- *   getRoomList   {}                          ロビー一覧を要求
- *   getRoomPlayers { roomId }                 部屋のプレイヤー一覧を要求
- *   createRoom    { label, mode, password }   ユーザーが部屋を作成
- *   joinRoom      { roomId, name, password }  部屋に参加（パスワードあり部屋は照合）
- *   leaveRoom     { roomId }                  ゲームから退室
- *   drawCards     { roomId, indices }         カードを交換
- *   betAction     { roomId, action }          ベットアクション
+ *   getRoomList      {}                         ロビー一覧を要求
+ *   getRoomPlayers   { roomId }                 部屋のプレイヤー一覧
+ *   createRoom       { label, mode, password }  部屋作成
+ *   joinRoom         { roomId, name, password } 入室（6人制限・パスワード）
+ *   leaveRoom        { roomId }                 退室
+ *   updateSelected   { roomId, indices }        ドロー中の選択インデックスを送信
+ *   drawCards        { roomId, indices }        カードを交換
+ *   betAction        { roomId, action }         ベットアクション
  *
  * Socket.IO イベント（サーバー → クライアント）:
- *   roomList      RoomInfo[]                  ロビー一覧
- *   lobbyUpdate   string[]                    部屋の参加者一覧
- *   roomCreated   { roomId }                  部屋作成成功
- *   joinError     { message }                 入室失敗（パスワード不一致など）
- *   gameState     { players, meta }           ゲーム状態（個別送信）
- *   gameStarted   {}                          ゲーム開始通知
- *   showdown      {}                          ショーダウン通知
- *   kicked        {}                          退室通知
- *   timerUpdate   { remaining, limit }        タイマー残り秒数
- *   error         { message }                 エラー
+ *   roomList         RoomInfo[]                 ロビー一覧
+ *   lobbyUpdate      string[]                   部屋の参加者一覧
+ *   roomCreated      { roomId }                 部屋作成成功
+ *   joinError        { message }                入室失敗
+ *   gameState        { players, meta }          ゲーム状態
+ *   gameStarted      {}                         ゲーム開始
+ *   showdown         {}                         ショーダウン
+ *   kicked           {}                         退室通知
+ *   timerUpdate      { remaining, limit }       タイマー残り秒数
+ *   error            { message }                エラー
  */
 
 const express    = require('express');
@@ -31,8 +32,8 @@ const { parse }  = require('url');
 const cfg        = require('./config');
 
 const {
-  getOrCreateRoom, createUserRoom, joinRoom: joinPokerRoom,
-  leaveRoom, startGame, drawCards, betAction,
+  getOrCreateRoom, joinRoom: joinPokerRoom,
+  leaveRoom, startGame, drawCards, betAction, updateSelectedIndices,
   buildGameState, removePlayer, canAutoStart, getAllRooms,
 } = require('./poker/gameManager');
 
@@ -42,69 +43,45 @@ const app    = next({ dev });
 const handle = app.getRequestHandler();
 
 // ==========================================================
-// ■ 固定ロビー部屋（サーバー起動時に生成）
+// ■ 固定ロビー部屋の初期化
 // ==========================================================
 
-/**
- * 固定部屋を初期化する。
- * 奇数番号 = 2-7, 偶数番号 = Badugi
- * MIX部屋を別途追加（BTNが一周するたびに 2-7 ↔ Badugi 切替）
- */
 function _initFixedRooms() {
   const fixed = [];
-
-  // 2-7 と Badugi の固定部屋
   for (let i = 1; i <= cfg.ROOM_COUNT; i++) {
     const mode   = i % 2 === 0 ? 'badugi' : '27';
     const label  = mode === 'badugi' ? `Badugi Room ${i}` : `2-7 Room ${i}`;
     const roomId = mode === 'badugi' ? `badugi-room-${i}` : `27-room-${i}`;
-    getOrCreateRoom(roomId, { label }); // gameManager に登録
+    getOrCreateRoom(roomId, { label });
     fixed.push({ id: roomId, label, mode, isFixed: true });
   }
-
-  // MIX 部屋（BTN一周ごとに 2-7 ↔ Badugi 切替）
+  // Mix部屋
   const mixId = 'mix-room-1';
-  getOrCreateRoom(mixId, { label: 'Mix Room 1 (2-7 ↔ Badugi)' });
+  getOrCreateRoom(mixId, { label: 'Mix Room 1 (2-7↔Badugi)' });
   fixed.push({ id: mixId, label: 'Mix Room 1', mode: 'mix', isFixed: true });
-
   return fixed;
 }
 
 const fixedRooms = _initFixedRooms();
 
-/**
- * ロビー一覧を生成する。
- * 固定部屋 + ユーザー作成部屋を合わせて返す。
- */
 function getLobbyList() {
   const list = [];
-
-  // 固定部屋
   for (const fr of fixedRooms) {
     const room = getOrCreateRoom(fr.id);
     list.push({
-      id:          fr.id,
-      label:       fr.label,
-      mode:        fr.mode,
-      count:       room.players.length + room.pendingPlayers.length,
-      hasPassword: false,
-      isUserRoom:  false,
+      id: fr.id, label: fr.label, mode: fr.mode,
+      count: room.players.length + room.pendingPlayers.length,
+      hasPassword: false, isUserRoom: false,
     });
   }
-
-  // ユーザー作成部屋（gameManager の rooms から抽出）
   for (const [, room] of getAllRooms()) {
     if (!room.isUserCreated) continue;
     list.push({
-      id:          room.id,
-      label:       room.label,
-      mode:        room.mode,
-      count:       room.players.length + room.pendingPlayers.length,
-      hasPassword: !!room.password,
-      isUserRoom:  true,
+      id: room.id, label: room.label, mode: room.mode,
+      count: room.players.length + room.pendingPlayers.length,
+      hasPassword: !!room.password, isUserRoom: true,
     });
   }
-
   return list;
 }
 
@@ -114,10 +91,7 @@ function getLobbyList() {
 app.prepare().then(() => {
   const expressApp = express();
   const server     = http.createServer(expressApp);
-  const io         = new Server(server, {
-    path:  '/socket.io',
-    cors: { origin: '*' },
-  });
+  const io         = new Server(server, { path: '/socket.io', cors: { origin: '*' } });
 
   // タイマーブロードキャスト（1秒ごと）
   setInterval(() => {
@@ -128,45 +102,30 @@ app.prepare().then(() => {
     }
   }, 1000);
 
-  // ===== Socket.IO 接続処理 =====
   io.on('connection', (socket) => {
     console.log(`[connect] ${socket.id}`);
     socket.emit('roomList', getLobbyList());
-
-    // この接続で入室した部屋情報（退室・切断時の削除用）
     let currentRoom = { name: '', roomId: '' };
 
-    // ----- ロビー一覧を要求 -----
-    socket.on('getRoomList', () => {
-      socket.emit('roomList', getLobbyList());
-    });
+    socket.on('getRoomList',    () => socket.emit('roomList', getLobbyList()));
 
-    // ----- 部屋内プレイヤー一覧を要求 -----
     socket.on('getRoomPlayers', (roomId) => {
-      const room = getOrCreateRoom(roomId);
+      const room  = getOrCreateRoom(roomId);
       const names = [
-        ...room.players.map((p) => p.name),
-        ...room.pendingPlayers.map((p) => `${p.name} (次ゲームから参加)`),
+        ...room.players.map((p) => p.sittingOut ? `${p.name} (待機中)` : p.name),
+        ...room.pendingPlayers.map((p) => `${p.name} (次ゲームから)`),
       ];
       socket.emit('lobbyUpdate', names);
     });
 
-    // ----- ユーザーが部屋を作成 -----
+    // ----- 部屋作成 -----
     socket.on('createRoom', ({ label, mode, password }) => {
       if (!label || !mode) { socket.emit('error', { message: '部屋名とゲームタイプを入力してください' }); return; }
-      const validModes = ['27', 'badugi', 'mix'];
-      if (!validModes.includes(mode)) { socket.emit('error', { message: '無効なゲームタイプです' }); return; }
-
-      // ユニークなルームIDを生成（タイムスタンプ使用）
+      if (!['27','badugi','mix'].includes(mode)) { socket.emit('error', { message: '無効なゲームタイプです' }); return; }
       const roomId = `${mode}-user-${Date.now()}`;
       const room   = getOrCreateRoom(roomId, {
-        label:         label.slice(0, 30), // 30文字制限
-        password:      password || null,
-        isUserCreated: true,
+        label: label.slice(0, 30), password: password || null, isUserCreated: true,
       });
-      console.log(`[createRoom] "${label}" mode:${mode} id:${roomId}`);
-
-      // 全クライアントにロビーを更新
       io.emit('roomList', getLobbyList());
       socket.emit('roomCreated', { roomId, label: room.label });
     });
@@ -174,7 +133,6 @@ app.prepare().then(() => {
     // ----- 入室 -----
     socket.on('joinRoom', ({ roomId, name, password }) => {
       if (!roomId || !name) return;
-
       const room = getOrCreateRoom(roomId);
 
       // パスワードチェック
@@ -183,8 +141,16 @@ app.prepare().then(() => {
         return;
       }
 
-      // ゲーム進行中かつ pending でもない新規プレイヤー → 参加待ち通知
       const result = joinPokerRoom(roomId, socket.id, name);
+
+      // 6人制限
+      if (result === 'full') {
+        socket.emit('joinError', {
+          message: `この部屋は満員です（最大${room.maxPlayers ?? 6}人）。他の部屋をお試しください。`,
+        });
+        return;
+      }
+
       socket.join(roomId);
       currentRoom = { name, roomId };
       console.log(`[join] "${name}" → ${roomId} (${result})`);
@@ -193,18 +159,25 @@ app.prepare().then(() => {
       _broadcastLobbyUpdate(io, roomId);
       _broadcast(io, roomId);
 
-      // 自動ゲーム開始: waiting かつ 2人以上
+      // 自動スタート（waiting + 2人以上）
       const activeCount = room.players.filter((p) => !p.sittingOut).length;
       if (room.phase === 'waiting' && activeCount >= 2) {
         _tryAutoStart(io, roomId);
       }
     });
 
-    // ----- 退室ボタン -----
+    // ----- 退室 -----
     socket.on('leaveRoom', ({ roomId }) => {
-      _handleLeave(io, socket, roomId, currentRoom.name);
+      _handleLeave(io, socket, roomId);
       currentRoom = { name: '', roomId: '' };
-      socket.emit('kicked'); // クライアントをロビーに戻す
+      socket.emit('kicked');
+    });
+
+    // ----- ドロー中の選択インデックス更新 -----
+    // クライアントがカードを選択するたびに送信 → タイムアウト時に自動交換で使用
+    socket.on('updateSelected', ({ roomId, indices }) => {
+      if (!roomId || !Array.isArray(indices)) return;
+      updateSelectedIndices(roomId, socket.id, indices);
     });
 
     // ----- カードを交換 -----
@@ -212,12 +185,8 @@ app.prepare().then(() => {
       if (!roomId || !Array.isArray(indices)) return;
       const room = drawCards(roomId, socket.id, indices);
       if (!room) { socket.emit('error', { message: 'ドローできません（あなたのターンではありません）' }); return; }
-      console.log(`[draw] ${socket.id} ${indices.length}枚 → ${room.phase}`);
       _broadcast(io, roomId);
-      if (room.phase === 'showdown') {
-        io.to(roomId).emit('showdown');
-        _scheduleAutoStart(io, roomId);
-      }
+      if (room.phase === 'showdown') { io.to(roomId).emit('showdown'); _scheduleAutoStart(io, roomId); }
     });
 
     // ----- ベットアクション -----
@@ -225,20 +194,14 @@ app.prepare().then(() => {
       if (!roomId || !action) return;
       const room = betAction(roomId, socket.id, action);
       if (!room) { socket.emit('error', { message: 'そのアクションはできません' }); return; }
-      console.log(`[bet] ${socket.id} ${action} → ${room.phase}`);
       _broadcast(io, roomId);
-      if (room.phase === 'showdown') {
-        io.to(roomId).emit('showdown');
-        _scheduleAutoStart(io, roomId);
-      }
+      if (room.phase === 'showdown') { io.to(roomId).emit('showdown'); _scheduleAutoStart(io, roomId); }
     });
 
     // ----- 切断 -----
     socket.on('disconnect', () => {
       console.log(`[disconnect] ${socket.id}`);
-      if (currentRoom.roomId) {
-        _handleLeave(io, socket, currentRoom.roomId, currentRoom.name);
-      }
+      if (currentRoom.roomId) _handleLeave(io, socket, currentRoom.roomId);
     });
   });
 
@@ -252,38 +215,42 @@ app.prepare().then(() => {
 });
 
 // ==========================================================
-// ■ ヘルパー関数
+// ■ ヘルパー
 // ==========================================================
 
-/** 退室処理（leaveRoom イベント & disconnect 共通）*/
-function _handleLeave(io, socket, roomId, name) {
+function _handleLeave(io, socket, roomId) {
   leaveRoom(socket.id);
   socket.leave(roomId);
   io.emit('roomList', getLobbyList());
   _broadcastLobbyUpdate(io, roomId);
   _broadcast(io, roomId);
-
-  // ゲームが showdown になっていたら自動スタートを試みる
   const room = getOrCreateRoom(roomId);
   if (room.phase === 'showdown') _scheduleAutoStart(io, roomId);
 }
 
-/** タイムアウト時の自動アクションハンドラを生成 */
+/**
+ * タイムアウト時の自動アクションハンドラ
+ * ドロー: _selectedIndices に保存済みの選択カードを交換
+ * ベット: フォールド
+ */
 function _makeTimeoutHandler(io, roomId) {
   return (rid, phase, playerId) => {
     console.log(`[timeout] ${playerId} in ${rid} at ${phase}`);
-    if (phase.startsWith('draw')) drawCards(rid, playerId, []);
-    else if (phase.startsWith('bet')) betAction(rid, playerId, cfg.BET_TIMEOUT_ACTION);
+    if (phase.startsWith('draw')) {
+      // タイムアウト時は選択中のカードを使って自動交換
+      const room    = getOrCreateRoom(rid);
+      const indices = room._selectedIndices[playerId] ?? [];
+      drawCards(rid, playerId, indices);
+    } else if (phase.startsWith('bet')) {
+      // ベットタイムアウト → フォールド
+      betAction(rid, playerId, 'fold');
+    }
     _broadcast(io, rid);
     const room = getOrCreateRoom(rid);
-    if (room.phase === 'showdown') {
-      io.to(rid).emit('showdown');
-      _scheduleAutoStart(io, rid);
-    }
+    if (room.phase === 'showdown') { io.to(rid).emit('showdown'); _scheduleAutoStart(io, rid); }
   };
 }
 
-/** 即時自動開始を試みる */
 function _tryAutoStart(io, roomId) {
   const onTimeout = _makeTimeoutHandler(io, roomId);
   const room = startGame(roomId, onTimeout);
@@ -294,19 +261,11 @@ function _tryAutoStart(io, roomId) {
   }
 }
 
-/**
- * ショーダウン後に少し待ってから自動スタート
- * （プレイヤーが結果を確認する時間を確保するため 3 秒待つ）
- */
+/** ショーダウン後3秒待ってから次ゲームを自動スタート */
 function _scheduleAutoStart(io, roomId) {
-  setTimeout(() => {
-    if (canAutoStart(roomId)) {
-      _tryAutoStart(io, roomId);
-    }
-  }, 3000);
+  setTimeout(() => { if (canAutoStart(roomId)) _tryAutoStart(io, roomId); }, 3000);
 }
 
-/** ロビー部屋のプレイヤー一覧をブロードキャスト */
 function _broadcastLobbyUpdate(io, roomId) {
   const room  = getOrCreateRoom(roomId);
   const names = [
@@ -316,7 +275,6 @@ function _broadcastLobbyUpdate(io, roomId) {
   io.to(roomId).emit('lobbyUpdate', names);
 }
 
-/** 各プレイヤーに個別のゲーム状態を送信 */
 function _broadcast(io, roomId) {
   const room = getOrCreateRoom(roomId);
   for (const player of [...room.players, ...room.pendingPlayers]) {
