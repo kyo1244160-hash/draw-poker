@@ -1,109 +1,150 @@
 /**
  * gameManager.js — ゲーム状態管理
  *
- * 2種類のゲームを管理します:
- *   - 2-7 Triple Draw: 5枚 × 3回ドロー、ローボール
- *   - Badugi:          4枚 × 3回ドロー、ローボール（スート全異なりが強い）
+ * 対応ゲーム:
+ *   '27'     — 2-7 Triple Draw（5枚 × 3回ドロー）
+ *   'badugi' — Badugi（4枚 × 3回ドロー）
+ *   'mix'    — BTNが1周するごとに 2-7 ↔ Badugi を交互切替
  *
- * 共通ゲームフロー:
- *   waiting → draw1 → bet1 → draw2 → bet2 → draw3 → bet3 → showdown
+ * ゲームフロー（プリドローベット追加）:
+ *   waiting → bet0 → draw1 → bet1 → draw2 → bet2 → draw3 → bet3 → showdown
  *
- * ベット: フィックスドリミット / SB+BB 制
- * チップ: 毎ゲーム 100BB にリセット
- * タイマー: config.js の DRAW_TIME_LIMIT / BET_TIME_LIMIT で制御
+ * ベット:
+ *   - フィックスドリミット / SB+BB制
+ *   - bet0/bet1/bet2: SMALL_BET（1BB）
+ *   - bet3: BIG_BET（2BB）
+ *   - 5bet-cap（ベット1回 + レイズ4回まで）
+ *
+ * 参加制限: 最大6人
  */
 
-const { createShuffledDeck }          = require('./deck');
+const { createShuffledDeck }                             = require('./deck');
 const { evaluate27Hand, evaluateBadugiHand, findWinner } = require('./handEvaluator');
-const cfg                              = require('../config');
+const cfg                                                = require('../config');
 
-// ===== 定数（config.js から計算）=====
-const BB           = cfg.BB_VALUE;                         // 1BB のチップ値
-const STARTING_CHIPS = cfg.STARTING_BB * BB;               // 開始チップ（100BB）
-const SMALL_BLIND  = Math.round(cfg.SMALL_BLIND_BB  * BB); // SB
-const BIG_BLIND    = Math.round(cfg.BIG_BLIND_BB    * BB); // BB
-const SMALL_BET    = Math.round(cfg.SMALL_BET_BB    * BB); // bet1/bet2
-const BIG_BET      = Math.round(cfg.BIG_BET_BB      * BB); // bet3
-const MAX_RAISES   = cfg.MAX_RAISES;
+// ===== 定数 =====
+const BB             = cfg.BB_VALUE;
+const STARTING_CHIPS = cfg.STARTING_BB * BB;
+const SMALL_BLIND    = Math.round(cfg.SMALL_BLIND_BB * BB);
+const BIG_BLIND      = Math.round(cfg.BIG_BLIND_BB  * BB);
+const SMALL_BET      = Math.round(cfg.SMALL_BET_BB  * BB);
+const BIG_BET        = Math.round(cfg.BIG_BET_BB    * BB);
+const MAX_RAISES     = 4;   // 5bet-cap = ベット1回 + レイズ4回
+const MAX_PLAYERS    = 6;   // 最大参加人数
 
-/** ゲームフェーズの順序 */
-const PHASES = ['waiting','draw1','bet1','draw2','bet2','draw3','bet3','showdown'];
+/**
+ * ゲームフェーズの順序
+ * bet0 = プリドロー（カード配布直後）のベットラウンド
+ */
+const PHASES = ['waiting','bet0','draw1','bet1','draw2','bet2','draw3','bet3','showdown'];
 
-/** 部屋番号 → ゲームモード ('27' or 'badugi') */
+/** roomId からベースゲームモードを返す */
 function getRoomMode(roomId) {
-  // 末尾の数字を抽出。奇数=2-7、偶数=Badugi
-  const match = roomId.match(/(\d+)$/);
-  if (!match) return '27';
-  return parseInt(match[1], 10) % 2 === 0 ? 'badugi' : '27';
+  if (roomId.includes('badugi')) return 'badugi';
+  if (roomId.includes('mix'))    return 'mix';
+  return '27';
 }
 
-/** 1ゲームで配るカード枚数（2-7: 5枚、Badugi: 4枚）*/
+/** 手札枚数（モードごと）*/
 function handSize(mode) {
   return mode === 'badugi' ? 4 : 5;
 }
 
-/** 役名を返す（モードに応じて）*/
+/** 役判定（モードごと）*/
 function evaluateHand(hand, mode) {
-  if (mode === 'badugi') return evaluateBadugiHand(hand);
-  return evaluate27Hand(hand);
+  return mode === 'badugi' ? evaluateBadugiHand(hand) : evaluate27Hand(hand);
+}
+
+/** mix モードで現在のゲームモードを返す（handCountとプレイヤー数で切替）*/
+function getMixCurrentMode(room) {
+  const cycle = Math.floor(room.handCount / Math.max(1, room.players.length)) % 2;
+  return cycle === 0 ? '27' : 'badugi';
 }
 
 // ===== ルームストレージ =====
-/** roomId → Room オブジェクトのマップ */
 const rooms = new Map();
 
 /**
- * ルームを取得する。存在しない場合は新規作成する。
- * @param {string} roomId
- * @returns {Room}
+ * ルームを取得（なければ新規作成）
  */
-function getOrCreateRoom(roomId) {
+function getOrCreateRoom(roomId, opts = {}) {
   if (!rooms.has(roomId)) {
+    const baseMode = getRoomMode(roomId);
     rooms.set(roomId, {
-      id:           roomId,
-      mode:         getRoomMode(roomId), // '27' または 'badugi'
-      players:      [],  // ServerPlayer[]
-      deck:         [],
-      phase:        'waiting',
-      pot:          0,
-      dealerIndex:  -1,  // BTN（ディーラー）のインデックス
-      actionIndex:  -1,  // 現在アクション中プレイヤーのインデックス
-      currentBet:   0,   // このベットラウンドの最高ベット額
-      raiseCount:   0,   // このベットラウンドのレイズ回数
-      betSize:      SMALL_BET,
-      _potAwarded:  false, // ポット付与済みフラグ
-      _timer:       null,  // タイムアウトタイマーの参照
-      _timerStart:  null,  // タイマー開始時刻（ms）
-      _timerLimit:  0,     // 現在のタイムリミット（秒）
+      id:            roomId,
+      label:         opts.label          ?? roomId,
+      mode:          baseMode,
+      currentMode:   baseMode === 'mix' ? '27' : baseMode,
+      password:      opts.password       ?? null,
+      isUserCreated: opts.isUserCreated  ?? false,
+      players:       [],
+      pendingPlayers:[],
+      deck:          [],
+      phase:         'waiting',
+      pot:           0,
+      dealerIndex:   -1,
+      actionIndex:   -1,
+      currentBet:    0,
+      raiseCount:    0,
+      betSize:       SMALL_BET,
+      handCount:     0,
+      _potAwarded:   false,
+      _timer:        null,
+      _timerStart:   null,
+      _timerLimit:   0,
+      _onTimeout:    null,
     });
   }
   return rooms.get(roomId);
 }
 
 /**
- * プレイヤーをルームに追加する。
- * 同名プレイヤーが既存の場合は socket.id を更新（再接続対応）。
- * @returns {boolean} 新規追加なら true
+ * プレイヤーをルームに参加させる。
+ * - 最大6人制限
+ * - ゲーム進行中は pendingPlayers に追加
+ * - SBとBTNの間への着席は1ハンド待機
+ *
+ * @returns {'active'|'pending'|'reconnected'|'full'} 参加結果
  */
 function joinRoom(roomId, socketId, name) {
   const room = getOrCreateRoom(roomId);
+
+  // 再接続チェック
   const existing = room.players.find((p) => p.name === name);
-  if (existing) {
-    existing.id = socketId;
-    return false; // 再接続
+  if (existing) { existing.id = socketId; return 'reconnected'; }
+  const existingPending = room.pendingPlayers.find((p) => p.name === name);
+  if (existingPending) { existingPending.id = socketId; return 'pending'; }
+
+  // 合計人数チェック（active + pending）
+  if (room.players.length + room.pendingPlayers.length >= MAX_PLAYERS) {
+    return 'full';
   }
-  room.players.push({
-    id:             socketId,
-    name,
-    chips:          STARTING_CHIPS, // 100BB でスタート
-    hand:           [],
-    bet:            0,
-    folded:         false,
-    acted:          false,
-    drewThisRound:  false,
-    drawCount:      null, // このドローで交換した枚数（他プレイヤーに通知）
-  });
-  return true; // 新規追加
+
+  const newPlayer = {
+    id: socketId, name,
+    chips: STARTING_CHIPS,
+    hand: [], bet: 0, folded: false,
+    acted: false, drewThisRound: false, drawCount: null,
+    sittingOut: false,
+  };
+
+  // ゲーム進行中は pending へ
+  const inProgress = PHASES.indexOf(room.phase) > 0 && room.phase !== 'showdown';
+  if (inProgress) {
+    room.pendingPlayers.push(newPlayer);
+    return 'pending';
+  }
+
+  room.players.push(newPlayer);
+
+  // showdown フェーズでの着席位置チェック
+  if (room.phase === 'showdown' && room.dealerIndex >= 0 && room.players.length > 2) {
+    const myIdx = room.players.length - 1;
+    const sbIdx = _nextActiveFromSafe(room, room.dealerIndex);
+    if (myIdx <= sbIdx) newPlayer.sittingOut = true;
+  }
+
+  return 'active';
 }
 
 // ==========================================================
@@ -112,298 +153,259 @@ function joinRoom(roomId, socketId, name) {
 
 /**
  * ゲームを開始する。
- * - チップを 100BB にリセット
- * - デッキをシャッフルして各プレイヤーに配布
- * - SB/BB をポスト
- * - draw1 フェーズへ移行
- *
- * @param {string}   roomId
- * @param {Function} onTimeout - タイムアウト時に呼ばれるコールバック (roomId, phase, playerId) => void
- * @returns {Room|null}
+ * pending → active へ昇格、sittingOut クリア、チップリセット、
+ * ディーラーボタン前進、カード配布、ブラインドポスト、bet0 フェーズへ。
  */
 function startGame(roomId, onTimeout) {
   const room = rooms.get(roomId);
-  if (!room || room.players.length < 2) return null;
+  if (!room) return null;
 
-  // --- チップを毎ゲーム 100BB にリセット ---
-  for (const p of room.players) {
-    p.chips = STARTING_CHIPS;
+  // pending → active
+  for (const p of room.pendingPlayers) room.players.push(p);
+  room.pendingPlayers = [];
+
+  // sittingOut クリア
+  for (const p of room.players) p.sittingOut = false;
+
+  const activePlayers = room.players.filter((p) => !p.sittingOut);
+  if (activePlayers.length < 2) return null;
+
+  // mix モード切替
+  if (room.mode === 'mix') room.currentMode = getMixCurrentMode(room);
+  else room.currentMode = room.mode;
+
+  // リセット
+  room.deck        = createShuffledDeck();
+  room.pot         = 0;
+  room._potAwarded = false;
+  room._onTimeout  = onTimeout;
+  room.handCount  += 1;
+
+  // ディーラーボタンを進める（安全版）
+  if (room.dealerIndex < 0) {
+    room.dealerIndex = 0;
+  } else {
+    let next  = (room.dealerIndex + 1) % room.players.length;
+    let tries = 0;
+    while (room.players[next]?.sittingOut && tries < room.players.length) {
+      next = (next + 1) % room.players.length;
+      tries++;
+    }
+    room.dealerIndex = next;
   }
 
-  // --- デッキ・ポット初期化 ---
-  room.deck         = createShuffledDeck();
-  room.pot          = 0;
-  room._potAwarded  = false;
-  room._onTimeout   = onTimeout; // タイムアウトコールバックを保存
-
-  // --- ディーラーボタンを時計回りに1つ進める ---
-  room.dealerIndex = (room.dealerIndex + 1) % room.players.length;
-
-  // --- 全プレイヤーのゲーム状態をリセットして手札を配る ---
-  const size = handSize(room.mode);
+  // 手札配布・プレイヤーリセット
+  const size = handSize(room.currentMode);
   for (const p of room.players) {
-    p.hand          = room.deck.splice(0, size); // 2-7: 5枚, Badugi: 4枚
+    p.chips         = STARTING_CHIPS;
+    p.hand          = p.sittingOut ? [] : room.deck.splice(0, size);
     p.bet           = 0;
-    p.folded        = false;
-    p.acted         = false;
+    p.folded        = !!p.sittingOut;
+    p.acted         = !!p.sittingOut;
     p.drewThisRound = false;
     p.drawCount     = null;
   }
 
-  // --- SB / BB をポスト（強制ベット）---
-  const sbIndex = (room.dealerIndex + 1) % room.players.length;
-  const bbIndex = (room.dealerIndex + 2) % room.players.length;
+  // SB / BB ポスト
+  const sbIndex = _nextActiveFromSafe(room, room.dealerIndex);
+  const bbIndex = _nextActiveFromSafe(room, sbIndex);
   _postBlind(room, sbIndex, SMALL_BLIND);
   _postBlind(room, bbIndex, BIG_BLIND);
 
-  // --- draw1 フェーズへ移行（SBから行動）---
-  room.phase        = 'draw1';
-  room.currentBet   = 0;
-  room.raiseCount   = 0;
-  room.actionIndex  = sbIndex;
-  _resetDrawRound(room);
-
-  // --- タイマーをセット ---
+  // ===== bet0（プリドロー）フェーズへ =====
+  // UTG（BBの左）から行動開始
+  const utgIndex = _nextActiveFromSafe(room, bbIndex);
+  room.phase       = 'bet0';
+  room.currentBet  = BIG_BLIND;   // BBが既にポストしているので最低コール額はBB
+  room.raiseCount  = 0;
+  room.betSize     = SMALL_BET;
+  // BBはまだ acted = false（オプション権のため）
+  room.players[bbIndex].acted = false;
+  room.actionIndex = utgIndex;
   _startTimer(room);
 
   return room;
 }
 
-/** ブラインドをポストする（チップを強制徴収）*/
 function _postBlind(room, idx, amount) {
   const p      = room.players[idx];
+  if (!p) return;
   const actual = Math.min(amount, p.chips);
   p.chips     -= actual;
   p.bet       += actual;
   room.pot    += actual;
 }
 
-/** ドローラウンドの「済み」フラグをリセット */
-function _resetDrawRound(room) {
-  for (const p of room.players) p.drewThisRound = false;
+/**
+ * 指定インデックスの次のアクティブ（未フォールド・非待機）プレイヤーを返す。
+ * 安全版: players 配列が空でも crashed しない。
+ */
+function _nextActiveFromSafe(room, fromIndex) {
+  const len = room.players.length;
+  if (len === 0) return 0;
+  // fromIndex を 0〜len-1 に正規化
+  const start = ((fromIndex % len) + len) % len;
+  let next    = (start + 1) % len;
+  let tries   = 0;
+  while (tries < len) {
+    const p = room.players[next];
+    if (p && !p.folded && !p.sittingOut) return next;
+    next = (next + 1) % len;
+    tries++;
+  }
+  return next; // 全員フォールドの場合でも返す
 }
 
-/** ベットラウンドの状態をリセット */
+function _resetDrawRound(room) {
+  for (const p of room.players) if (!p.sittingOut) p.drewThisRound = false;
+}
+
 function _resetBetRound(room, betSize) {
   room.currentBet = 0;
   room.raiseCount = 0;
   room.betSize    = betSize;
-  for (const p of room.players) { p.bet = 0; p.acted = false; }
-}
-
-// ==========================================================
-// ■ タイマー管理
-// ==========================================================
-
-/**
- * 現在のフェーズに応じたタイマーをセット
- * 制限時間が 0 の場合はタイマーなし
- */
-function _startTimer(room) {
-  _clearTimer(room); // 既存タイマーをクリア
-
-  const limitSec = room.phase.startsWith('draw')
-    ? cfg.DRAW_TIME_LIMIT
-    : cfg.BET_TIME_LIMIT;
-
-  if (limitSec <= 0 || !room._onTimeout) return; // タイマーなし設定
-
-  room._timerStart = Date.now();
-  room._timerLimit = limitSec;
-  room._timer      = setTimeout(() => {
-    // タイムアウト → 自動アクションを実行
-    const currentPlayer = room.players[room.actionIndex];
-    if (!currentPlayer) return;
-    if (room._onTimeout) {
-      room._onTimeout(room.id, room.phase, currentPlayer.id);
-    }
-  }, limitSec * 1000);
-}
-
-/** タイマーをクリア */
-function _clearTimer(room) {
-  if (room._timer) {
-    clearTimeout(room._timer);
-    room._timer      = null;
-    room._timerStart = null;
-    room._timerLimit = 0;
+  for (const p of room.players) {
+    if (!p.sittingOut && !p.folded) { p.bet = 0; p.acted = false; }
   }
 }
 
-/** タイマーの残り秒数を返す */
+// ==========================================================
+// ■ タイマー
+// ==========================================================
+
+function _startTimer(room) {
+  _clearTimer(room);
+  const limitSec = room.phase.startsWith('draw') ? cfg.DRAW_TIME_LIMIT : cfg.BET_TIME_LIMIT;
+  if (limitSec <= 0 || !room._onTimeout) return;
+  room._timerStart = Date.now();
+  room._timerLimit = limitSec;
+  room._timer = setTimeout(() => {
+    const cur = room.players[room.actionIndex];
+    if (cur && room._onTimeout) room._onTimeout(room.id, room.phase, cur.id);
+  }, limitSec * 1000);
+}
+
+function _clearTimer(room) {
+  if (room._timer) { clearTimeout(room._timer); room._timer = null; }
+  room._timerStart = null;
+  room._timerLimit = 0;
+}
+
 function getTimerRemaining(room) {
   if (!room._timerStart || !room._timerLimit) return null;
-  const elapsed = (Date.now() - room._timerStart) / 1000;
-  return Math.max(0, room._timerLimit - elapsed);
+  return Math.max(0, room._timerLimit - (Date.now() - room._timerStart) / 1000);
 }
 
 // ==========================================================
-// ■ ドロー処理
+// ■ ドロー
 // ==========================================================
 
-/**
- * カードを交換（ドロー）する。
- * 必ず自分のターンでのみ呼べる。
- * 0 枚指定 = スタンドパット（交換なし）。
- *
- * @param {string}   roomId
- * @param {string}   socketId
- * @param {number[]} indices - 交換するカードの手札インデックス（0始まり）
- * @returns {Room|null}
- */
 function drawCards(roomId, socketId, indices) {
   const room = rooms.get(roomId);
   if (!room || !room.phase.startsWith('draw')) return null;
-
-  // 自分のターンでなければ拒否
   const myIndex = room.players.findIndex((p) => p.id === socketId);
   if (myIndex !== room.actionIndex) return null;
-
   const player = room.players[myIndex];
-  if (player.drewThisRound || player.folded) return null;
+  if (!player || player.drewThisRound || player.folded) return null;
 
-  // 有効なインデックスのみ（重複除去・範囲チェック）
-  const maxCards = handSize(room.mode); // 2-7: 5, Badugi: 4
-  const validIndices = [...new Set(indices)]
-    .filter((i) => Number.isInteger(i) && i >= 0 && i < maxCards);
-
-  // 指定インデックスのカードを新しいカードに交換
+  const maxCards     = handSize(room.currentMode);
+  const validIndices = [...new Set(indices)].filter((i) => Number.isInteger(i) && i >= 0 && i < maxCards);
   for (const i of validIndices) {
     const newCard = room.deck.shift();
     if (newCard) player.hand[i] = newCard;
   }
   player.drewThisRound = true;
-  player.drawCount     = validIndices.length; // 交換枚数（他プレイヤーに通知）
+  player.drawCount     = validIndices.length;
 
-  _clearTimer(room); // タイマーをクリア
-  _advanceDrawAction(room); // 次のプレイヤーへ
+  _clearTimer(room);
+  _advanceDrawAction(room);
   return room;
 }
 
-/**
- * ドロー行動を次のプレイヤーに進める。
- * 全員完了したら次のフェーズへ移行。
- */
 function _advanceDrawAction(room) {
-  const active = room.players.filter((p) => !p.folded);
-
-  // 全員ドロー完了 → 次フェーズへ
-  if (active.every((p) => p.drewThisRound)) {
-    _nextPhase(room);
-    return;
-  }
-
-  // 次のまだドローしていないアクティブプレイヤーを探す
+  const active = room.players.filter((p) => !p.folded && !p.sittingOut);
+  if (active.every((p) => p.drewThisRound)) { _nextPhase(room); return; }
   let next = (room.actionIndex + 1) % room.players.length;
-  while (room.players[next].folded || room.players[next].drewThisRound) {
+  let tries = 0;
+  while (tries < room.players.length) {
+    const p = room.players[next];
+    if (p && !p.folded && !p.sittingOut && !p.drewThisRound) break;
     next = (next + 1) % room.players.length;
+    tries++;
   }
   room.actionIndex = next;
-  _startTimer(room); // タイマーをリセット
+  _startTimer(room);
 }
 
 // ==========================================================
-// ■ ベット処理
+// ■ ベット（5bet-cap）
 // ==========================================================
 
-/**
- * ベットアクションを処理する。
- * action: 'fold' | 'check' | 'call' | 'bet' | 'raise'
- *
- * @returns {Room|null}
- */
 function betAction(roomId, socketId, action) {
   const room = rooms.get(roomId);
   if (!room || !room.phase.startsWith('bet')) return null;
-
-  // 自分のターンでなければ拒否
   const myIndex = room.players.findIndex((p) => p.id === socketId);
   if (myIndex !== room.actionIndex) return null;
-
   const player = room.players[myIndex];
-  if (player.folded) return null;
+  if (!player || player.folded) return null;
 
-  const toCall = room.currentBet - player.bet; // コールに必要な額
+  const toCall = room.currentBet - player.bet;
 
   if (action === 'fold') {
-    // フォールド: 手を降りる
-    player.folded = true;
-    player.acted  = true;
+    player.folded = true; player.acted = true;
 
   } else if (action === 'check') {
-    // チェック: ベット額が揃っている場合のみ可能
-    if (toCall > 0) return null; // チェック不可
+    if (toCall > 0) return null;
     player.acted = true;
 
   } else if (action === 'call') {
-    // コール: 現在の最高ベット額に合わせる
     const actual = Math.min(toCall, player.chips);
-    player.chips -= actual;
-    player.bet   += actual;
-    room.pot     += actual;
-    player.acted  = true;
+    player.chips -= actual; player.bet += actual; room.pot += actual;
+    player.acted = true;
 
   } else if (action === 'bet' || action === 'raise') {
-    // ベット/レイズ: betSize 分だけ上乗せ
+    // 5bet-cap: raiseCount >= MAX_RAISES(4) ならコールに強制
     if (room.raiseCount >= MAX_RAISES && action === 'raise') {
-      // レイズ上限に達した場合はコールに変換
       const actual = Math.min(toCall, player.chips);
-      player.chips -= actual;
-      player.bet   += actual;
-      room.pot     += actual;
-      player.acted  = true;
+      player.chips -= actual; player.bet += actual; room.pot += actual;
+      player.acted = true;
     } else {
-      const betTotal  = room.currentBet + room.betSize; // 新しい最高ベット額
-      const needed    = betTotal - player.bet;
-      const actual    = Math.min(needed, player.chips);
-      player.chips   -= actual;
-      player.bet     += actual;
-      room.pot       += actual;
+      const betTotal = room.currentBet + room.betSize;
+      const needed   = betTotal - player.bet;
+      const actual   = Math.min(needed, player.chips);
+      player.chips -= actual; player.bet += actual; room.pot += actual;
       room.currentBet = player.bet;
-      room.raiseCount += 1;
-      player.acted    = true;
-      // レイズ後は他のアクティブプレイヤーの acted をリセット（再アクションが必要）
+      room.raiseCount++;
+      player.acted = true;
+      // 他のアクティブプレイヤーの acted をリセット
       for (let i = 0; i < room.players.length; i++) {
-        if (i !== myIndex && !room.players[i].folded) {
+        if (i !== myIndex && !room.players[i].folded && !room.players[i].sittingOut) {
           room.players[i].acted = false;
         }
       }
     }
-  } else {
-    return null; // 不正なアクション
-  }
+  } else { return null; }
 
   _clearTimer(room);
   _advanceBetAction(room);
   return room;
 }
 
-/**
- * ベット行動を次のプレイヤーに進める。
- * 全員アクション完了かつベット額が揃ったら次フェーズへ。
- */
 function _advanceBetAction(room) {
-  const active = room.players.filter((p) => !p.folded);
+  const active = room.players.filter((p) => !p.folded && !p.sittingOut);
+  if (active.length <= 1) { _clearTimer(room); room.phase = 'showdown'; return; }
 
-  // アクティブが1人だけ → その人の勝ち
-  if (active.length <= 1) {
-    _clearTimer(room);
-    room.phase = 'showdown';
-    return;
-  }
+  const allActed  = active.every((p) => p.acted);
+  const betsEqual = active.every((p) => p.bet === active[0].bet);
+  if (allActed && betsEqual) { _nextPhase(room); return; }
 
-  // 全員 acted かつ ベット額が揃った → 次フェーズへ
-  const allActed   = active.every((p) => p.acted);
-  const betsEqual  = active.every((p) => p.bet === active[0].bet);
-  if (allActed && betsEqual) {
-    _nextPhase(room);
-    return;
-  }
-
-  // 次のアクションが必要なプレイヤーを探す
-  let next = (room.actionIndex + 1) % room.players.length;
-  while (room.players[next].folded || room.players[next].acted) {
+  let next  = (room.actionIndex + 1) % room.players.length;
+  let tries = 0;
+  while (tries < room.players.length) {
+    const p = room.players[next];
+    if (p && !p.folded && !p.sittingOut && !p.acted) break;
     next = (next + 1) % room.players.length;
+    tries++;
   }
   room.actionIndex = next;
   _startTimer(room);
@@ -413,164 +415,160 @@ function _advanceBetAction(room) {
 // ■ フェーズ遷移
 // ==========================================================
 
-/** 現在のフェーズから次のフェーズへ進む */
 function _nextPhase(room) {
   const idx  = PHASES.indexOf(room.phase);
   const next = PHASES[idx + 1] ?? 'showdown';
   room.phase = next;
 
   if (next.startsWith('draw')) {
-    // ドローフェーズへ: SBから行動
     _resetDrawRound(room);
-    const sbIndex    = (room.dealerIndex + 1) % room.players.length;
-    room.actionIndex = _nextActive(room, sbIndex - 1);
+    room.actionIndex = _nextActiveFromSafe(room, room.dealerIndex);
     _startTimer(room);
-
   } else if (next.startsWith('bet')) {
-    // ベットフェーズへ: bet3 のみ bigBet を使用
-    const betSize    = (next === 'bet3') ? BIG_BET : SMALL_BET;
-    _resetBetRound(room, betSize);
-    const sbIndex    = (room.dealerIndex + 1) % room.players.length;
-    room.actionIndex = _nextActive(room, sbIndex - 1);
+    _resetBetRound(room, next === 'bet3' ? BIG_BET : SMALL_BET);
+    room.actionIndex = _nextActiveFromSafe(room, room.dealerIndex);
     _startTimer(room);
-
   } else if (next === 'showdown') {
-    // ショーダウン: タイマー不要
     _clearTimer(room);
   }
 }
 
-/** 次のアクティブ（フォールドしていない）プレイヤーのインデックスを返す */
-function _nextActive(room, fromIndex) {
-  let next = (fromIndex + 1) % room.players.length;
-  while (room.players[next].folded) {
-    next = (next + 1) % room.players.length;
-  }
-  return next;
-}
-
 // ==========================================================
-// ■ ゲーム状態をクライアント向けにビルド
+// ■ ゲーム状態ビルド
 // ==========================================================
 
-/**
- * 各プレイヤーに送るゲーム状態を生成する。
- * - 自分の手札と役は常に公開
- * - 他プレイヤーの手札はショーダウン前は '??' で隠す
- * - ショーダウン時のみ勝者に pot を付与（1回だけ）
- *
- * @param {Room}   room
- * @param {string} requesterId - 受信者の socketId
- * @returns {Array} プレイヤー配列 + メタオブジェクト
- */
 function buildGameState(room, requesterId) {
-  const isShowdown   = room.phase === 'showdown';
-  const activePlayers = room.players.filter((p) => !p.folded);
-  const winnerId     = isShowdown
-    ? findWinner(activePlayers, room.mode)
-    : null;
+  const isShowdown    = room.phase === 'showdown';
+  const activePlayers = room.players.filter((p) => !p.folded && !p.sittingOut);
+  const winnerId      = isShowdown ? findWinner(activePlayers, room.currentMode) : null;
 
-  // ショーダウン時にポットを勝者に付与（1回だけ実行）
   if (isShowdown && winnerId && !room._potAwarded) {
     const winner = room.players.find((p) => p.id === winnerId);
     if (winner) winner.chips += room.pot;
     room._potAwarded = true;
   }
 
-  const currentPlayer = room.players[room.actionIndex];
-  const isDrawPhase   = room.phase.startsWith('draw');
-  const isBetPhase    = room.phase.startsWith('bet');
-  const timerRemaining = getTimerRemaining(room); // 残り秒数（null = タイマーなし）
+  const currentPlayer  = room.actionIndex >= 0 ? room.players[room.actionIndex] : null;
+  const isDrawPhase    = room.phase.startsWith('draw');
+  const isBetPhase     = room.phase.startsWith('bet');
+  const timerRemaining = getTimerRemaining(room);
+
+  // SB/BBインデックスを安全に計算
+  const sbIdx = room.dealerIndex >= 0 ? _nextActiveFromSafe(room, room.dealerIndex)     : -1;
+  const bbIdx = sbIdx >= 0             ? _nextActiveFromSafe(room, sbIdx)               : -1;
 
   const playerStates = room.players.map((p) => {
-    const isSelf   = (p.id === requesterId);
+    const isSelf   = p.id === requesterId;
     const reveal   = isShowdown || isSelf;
-    const isMyTurn = !isShowdown && currentPlayer && (p.id === currentPlayer.id);
+    const isMyTurn = !isShowdown && currentPlayer != null && p.id === currentPlayer.id;
     const toCall   = isBetPhase ? Math.max(0, room.currentBet - p.bet) : 0;
+    const myIdx    = room.players.indexOf(p);
 
     return {
-      id:             p.id,
-      name:           p.name,
-      chips:          p.chips,
-      bet:            p.bet,
-      folded:         p.folded,
-      // 手札: 自分 or ショーダウン時のみ公開、それ以外は '??' で隠す
-      hand:           reveal ? p.hand : p.hand.map(() => '??'),
-      isSelf,
-      isMyTurn,
-      drewThisRound:  p.drewThisRound,
-      drawCount:      p.drawCount,   // 他プレイヤーに見せる交換枚数
-      result:         (reveal && p.hand.length > 0 && !p.folded)
-                        ? evaluateHand(p.hand, room.mode)
-                        : undefined,
-      isWinner:       isShowdown && p.id === winnerId,
-      // ポジションバッジ
-      isDealer: room.players.indexOf(p) === room.dealerIndex,
-      isSB:     room.players.indexOf(p) === (room.dealerIndex + 1) % room.players.length,
-      isBB:     room.players.indexOf(p) === (room.dealerIndex + 2) % room.players.length,
-      // 自分だけに送るベット情報
+      id:            p.id,
+      name:          p.name,
+      chips:         p.chips,
+      bet:           p.bet,
+      folded:        p.folded,
+      sittingOut:    p.sittingOut,
+      hand:          reveal ? p.hand : p.hand.map(() => '??'),
+      isSelf, isMyTurn,
+      drewThisRound: p.drewThisRound,
+      drawCount:     p.drawCount,
+      result:        reveal && p.hand.length > 0 && !p.folded
+                       ? evaluateHand(p.hand, room.currentMode) : undefined,
+      isWinner:      isShowdown && p.id === winnerId,
+      isDealer:      myIdx === room.dealerIndex,
+      isSB:          myIdx === sbIdx && sbIdx >= 0,
+      isBB:          myIdx === bbIdx && bbIdx >= 0,
       ...(isSelf ? {
         toCall,
         canCheck: isBetPhase && toCall === 0,
         canRaise: isBetPhase && room.raiseCount < MAX_RAISES,
         betSize:  room.betSize,
       } : {}),
-      // タイマー情報（自分のターンの場合のみ）
       ...(isMyTurn ? { timerRemaining } : {}),
     };
   });
 
-  // メタ情報（フェーズ・ポット・ベット額など）
   const meta = {
-    _meta:        true,
-    phase:        room.phase,
-    mode:         room.mode,        // '27' or 'badugi'
-    pot:          room.pot,
-    currentBet:   room.currentBet,
-    betSize:      room.betSize,
-    raiseCount:   room.raiseCount,
-    dealerIndex:  room.dealerIndex,
-    timerRemaining,                 // 全員に残り時間を送信
-    timerLimit:   room._timerLimit, // 制限時間の総秒数
+    _meta:          true,
+    phase:          room.phase,
+    mode:           room.mode,
+    currentMode:    room.currentMode,
+    pot:            room.pot,
+    currentBet:     room.currentBet,
+    betSize:        room.betSize,
+    raiseCount:     room.raiseCount,
+    maxRaises:      MAX_RAISES,
+    dealerIndex:    room.dealerIndex,
+    handCount:      room.handCount,
+    timerRemaining, timerLimit: room._timerLimit,
+    pendingPlayers: room.pendingPlayers.map((p) => p.name),
+    playerCount:    room.players.length,
+    maxPlayers:     MAX_PLAYERS,
   };
 
   return [...playerStates, meta];
 }
 
 // ==========================================================
-// ■ プレイヤー削除
+// ■ 退室 / 削除
 // ==========================================================
 
-/**
- * 切断したプレイヤーを全ルームから削除する。
- * ルームが空になった場合はルーム自体を削除する。
- * @returns {string|null} 削除が行われたルームID
- */
-function removePlayer(socketId) {
+function leaveRoom(socketId) {
   for (const [roomId, room] of rooms.entries()) {
-    const before = room.players.length;
-    room.players = room.players.filter((p) => p.id !== socketId);
-    if (room.players.length < before) {
+    const idx = room.players.findIndex((p) => p.id === socketId);
+    if (idx !== -1) {
+      const player     = room.players[idx];
+      const inProgress = PHASES.indexOf(room.phase) > 0 && room.phase !== 'showdown';
+
+      if (inProgress) {
+        player.folded = true;
+        player.acted  = true;
+        if (room.actionIndex === idx) {
+          _clearTimer(room);
+          if (room.phase.startsWith('draw'))     _advanceDrawAction(room);
+          else if (room.phase.startsWith('bet')) _advanceBetAction(room);
+        }
+        // アクションインデックスを補正（削除後にずれないよう）
+        if (room.actionIndex > idx) room.actionIndex--;
+      }
+
+      room.players.splice(idx, 1);
+      room.pendingPlayers = room.pendingPlayers.filter((p) => p.id !== socketId);
+
       if (room.players.length === 0) {
         _clearTimer(room);
-        rooms.delete(roomId);
+        if (room.isUserCreated) rooms.delete(roomId);
       }
+      return roomId;
+    }
+
+    const pidx = room.pendingPlayers.findIndex((p) => p.id === socketId);
+    if (pidx !== -1) {
+      room.pendingPlayers.splice(pidx, 1);
       return roomId;
     }
   }
   return null;
 }
 
-// ===== エクスポート =====
+function removePlayer(socketId) { return leaveRoom(socketId); }
+
+function canAutoStart(roomId) {
+  const room = rooms.get(roomId);
+  if (!room || room.phase !== 'showdown') return false;
+  const active = room.players.filter((p) => !p.sittingOut).length + room.pendingPlayers.length;
+  return active >= 2;
+}
+
+function getAllRooms() { return rooms; }
+
 module.exports = {
-  getOrCreateRoom,
-  joinRoom,
-  startGame,
-  drawCards,
-  betAction,
-  buildGameState,
-  removePlayer,
+  getOrCreateRoom, joinRoom, leaveRoom,
+  startGame, drawCards, betAction,
+  buildGameState, removePlayer, canAutoStart, getAllRooms,
   getRoomMode,
-  // 定数（外部参照用）
-  STARTING_CHIPS, SMALL_BLIND, BIG_BLIND, SMALL_BET, BIG_BET,
+  STARTING_CHIPS, SMALL_BLIND, BIG_BLIND, SMALL_BET, BIG_BET, MAX_PLAYERS,
 };

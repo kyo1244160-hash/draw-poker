@@ -1,25 +1,27 @@
 # render.yaml — Render.com デプロイ設定
 #
-# Render.com の "Web Service" として設定します。
-# デプロイ手順:
-#   1. GitHub にプッシュ
+# 設定方法:
+#   1. GitHubにこのリポジトリをプッシュ
 #   2. Render.com で "New Web Service" を作成
-#   3. リポジトリを選択
-#   4. このファイルが自動的に読み込まれます
+#   3. リポジトリを選択してこのファイルが自動認識される
 #
-# または手動設定:
-#   Build Command: npm install && npm run build
-#   Start Command: cross-env NODE_ENV=production node server/index.js
+# 手動設定の場合:
+#   Root Directory: (空白 = リポジトリルート)
+#   Build Command:  npm install && npm run build
+#   Start Command:  node server/index.js
+#   Environment:    NODE_ENV=production
 
 services:
   - type: web
     name: poker-room-pastis
     env: node
+    rootDir: .
     buildCommand: npm install && npm run build
-    startCommand: cross-env NODE_ENV=production node server/index.js
+    startCommand: node server/index.js
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
         value: 10000
     healthCheckPath: /api/health
+    autoDeploy: true

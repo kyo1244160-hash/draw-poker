@@ -1,199 +1,129 @@
 /**
- * Card.tsx — カード描画コンポーネント（画像ファイル不要）
+ * Card.tsx — カード描画コンポーネント（4色デッキ対応）
  *
- * マーク1つ + 数字1つのシンプルなデザイン。
- * HTML/CSS のみで描画するため /public/cards/ は不要です。
+ * 4色デッキ:
+ *   ♠ スペード  → 黒（濃紺）
+ *   ♥ ハート   → 赤
+ *   ♦ ダイヤ   → 青
+ *   ♣ クラブ   → 緑
  *
- * 対応フォーマット:
- *   - 通常カード: "AS" (Aスペード), "TC" (10クラブ), "2H" (2ハート) など
- *   - 裏面: "??"
+ * 表示:
+ *   左上: ランク文字（数字1つ）
+ *   中央: スートマーク（大）
+ *   裏面: 青グラデーション + ダイヤ柄
  *
  * サイズプリセット:
- *   sm  44×64px  (他プレイヤー用)
- *   md  58×84px  (中間)
- *   lg  72×104px (自プレイヤー用)
+ *   sm  38×56px  他プレイヤー用
+ *   md  52×76px  中間
+ *   lg  66×96px  自分用（大）
  */
 
 import React from 'react';
 
-// ===== 定数 =====
-
-/** スートのシンボル */
+// ===== 4色デッキのスートシンボルと色 =====
 const SUIT_SYMBOL: Record<string, string> = {
   S: '♠', H: '♥', D: '♦', C: '♣',
 };
 
-/** スートの色（赤 / 黒） */
+/** 4色デッキ: ♠黒 ♥赤 ♦青 ♣緑 */
 const SUIT_COLOR: Record<string, string> = {
   S: '#1a1a2e', // 黒（濃紺）
   H: '#cc1111', // 赤
-  D: '#cc1111', // 赤
-  C: '#1a1a2e', // 黒（濃紺）
+  D: '#1155cc', // 青
+  C: '#228833', // 緑
 };
 
-/** 表示用ランク文字（T → 10 に変換） */
+/** 表示用ランク文字 */
 const RANK_LABEL: Record<string, string> = {
   T: '10', J: 'J', Q: 'Q', K: 'K', A: 'A',
 };
 
 /** サイズプリセット */
 const SIZE_PRESET = {
-  sm: { w: 44,  h: 64,  fontSize: 15, suitSize: 13 },
-  md: { w: 58,  h: 84,  fontSize: 19, suitSize: 17 },
-  lg: { w: 72,  h: 104, fontSize: 23, suitSize: 20 },
+  sm: { w: 38, h: 56, fontSize: 13, suitSize: 11 },
+  md: { w: 52, h: 76, fontSize: 17, suitSize: 15 },
+  lg: { w: 66, h: 96, fontSize: 21, suitSize: 19 },
 } as const;
-
-// ===== カードコード解析 =====
-
-/**
- * カードコードをランクとスートに分解する
- * @example parseCard("AS") → { rank: "A", suit: "S" }
- * @example parseCard("10C") → { rank: "T", suit: "C" }  ※ T 表記を使うこと
- */
-function parseCard(code: string): { rank: string; suit: string } | null {
-  if (!code || code === '??' || code.length < 2) return null;
-  const rank = code.slice(0, -1); // 最後の文字以外がランク
-  const suit = code.slice(-1);    // 最後の文字がスート
-  if (!SUIT_SYMBOL[suit]) return null;
-  return { rank, suit };
-}
-
-// ===== コンポーネント =====
 
 type CardSize = 'sm' | 'md' | 'lg';
 
 interface CardProps {
-  /** カードコード ("AS", "TC", "??", など) */
-  code: string;
-  /** サイズプリセット */
-  size?: CardSize;
-  /** 選択状態（捨てるカードとして選択中） */
+  code:      string;
+  size?:     CardSize;
   selected?: boolean;
-  /** クリック可能かどうか */
-  clickable?: boolean;
-  /** フォールド中（半透明表示） */
-  folded?: boolean;
-  /** クリックハンドラ */
-  onClick?: () => void;
+  clickable?:boolean;
+  folded?:   boolean;
+  onClick?:  () => void;
 }
 
-/**
- * ポーカーカードを HTML/CSS で描画するコンポーネント。
- *
- * 表面: 左上に「ランク + スート」、中央に大きなスートマーク
- * 裏面: 青いグラデーション + ダイヤ柄
- */
-const Card: React.FC<CardProps> = ({
-  code,
-  size    = 'md',
-  selected  = false,
-  clickable = false,
-  folded    = false,
-  onClick,
-}) => {
-  const dim     = SIZE_PRESET[size];
-  const parsed  = parseCard(code);
-  const isBack  = !parsed; // 裏面（"??" など）
+function parseCard(code: string): { rank: string; suit: string } | null {
+  if (!code || code === '??' || code.length < 2) return null;
+  const rank = code.slice(0, -1);
+  const suit = code.slice(-1);
+  if (!SUIT_SYMBOL[suit]) return null;
+  return { rank, suit };
+}
 
-  const color   = parsed ? SUIT_COLOR[parsed.suit]  : '#fff';
-  const symbol  = parsed ? SUIT_SYMBOL[parsed.suit] : '';
-  const rankStr = parsed ? (RANK_LABEL[parsed.rank] ?? parsed.rank) : '';
+const Card: React.FC<CardProps> = ({
+  code, size = 'md', selected = false, clickable = false, folded = false, onClick,
+}) => {
+  const dim    = SIZE_PRESET[size];
+  const parsed = parseCard(code);
+  const isBack = !parsed;
+  const color  = parsed ? SUIT_COLOR[parsed.suit]  : '#fff';
+  const symbol = parsed ? SUIT_SYMBOL[parsed.suit] : '';
+  const rank   = parsed ? (RANK_LABEL[parsed.rank] ?? parsed.rank) : '';
 
   return (
     <div
       onClick={clickable ? onClick : undefined}
       style={{
-        /* ===== ボックスサイズ ===== */
         position:   'relative',
         width:      dim.w,
         height:     dim.h,
         flexShrink: 0,
-
-        /* ===== カード外観 ===== */
-        borderRadius: 6,
+        borderRadius: 5,
         background: isBack
-          // 裏面: 青いグラデーション
           ? 'linear-gradient(135deg, #1a4a8a 0%, #0d2d5c 50%, #1a4a8a 100%)'
-          // 表面: クリーム白
           : '#fffdf6',
         border: selected
           ? '2.5px solid #e84040'
           : '1.5px solid rgba(0,0,0,0.22)',
         boxShadow: selected
-          ? '0 0 14px rgba(232,64,64,0.65), 0 3px 10px rgba(0,0,0,0.5)'
-          : '0 3px 10px rgba(0,0,0,0.45)',
-
-        /* ===== 状態に応じた演出 ===== */
-        cursor:    clickable ? 'pointer' : 'default',
-        opacity:   folded ? 0.35 : 1,
-        // 選択中は上に浮き上がる
-        transform: selected ? 'translateY(-14px)' : 'none',
+          ? '0 0 14px rgba(232,64,64,0.65), 0 3px 8px rgba(0,0,0,0.5)'
+          : '0 2px 8px rgba(0,0,0,0.45)',
+        cursor:     clickable ? 'pointer' : 'default',
+        opacity:    folded ? 0.35 : 1,
+        transform:  selected ? 'translateY(-14px)' : 'none',
         transition: 'transform 0.15s, box-shadow 0.15s, border-color 0.1s',
-
-        /* ===== レイアウト ===== */
-        display:        'flex',
-        flexDirection:  'column',
-        justifyContent: 'space-between',
-        padding:        '4px 5px',
-        userSelect:     'none',
+        userSelect: 'none',
       }}
     >
       {isBack ? (
-        // ===== 裏面デザイン =====
+        /* 裏面 */
         <div style={{
-          position:   'absolute',
-          inset:      4,
-          borderRadius: 4,
-          border:     '1.5px solid rgba(255,255,255,0.25)',
-          display:    'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
+          position: 'absolute', inset: 4, borderRadius: 3,
+          border: '1.5px solid rgba(255,255,255,0.25)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}>
-          {/* 裏面の薄いダイヤマーク */}
-          <span style={{
-            fontSize:  dim.fontSize * 1.4,
-            color:     'rgba(255,255,255,0.3)',
-            lineHeight: 1,
-          }}>♦</span>
+          <span style={{ fontSize: dim.fontSize * 1.3, color: 'rgba(255,255,255,0.3)', lineHeight: 1 }}>♦</span>
         </div>
       ) : (
-        // ===== 表面デザイン（左上にランク、中央に大きなスート）=====
+        /* 表面: 左上にランク、中央に大きなスート */
         <>
-          {/* ---- 左上: ランク ---- */}
-          <div style={{
-            position:  'absolute',
-            top:       4,
-            left:      6,
-            lineHeight: 1,
-            zIndex:    1,
-          }}>
+          {/* 左上: ランク */}
+          <div style={{ position: 'absolute', top: 3, left: 5, lineHeight: 1 }}>
             <span style={{
-              fontSize:   dim.fontSize,
-              fontWeight: '900',
-              color,
-              fontFamily: 'Georgia, "Times New Roman", serif',
-              lineHeight: 1,
-            }}>
-              {rankStr}
-            </span>
+              fontSize: dim.fontSize, fontWeight: '900', color,
+              fontFamily: 'Georgia, "Times New Roman", serif', lineHeight: 1,
+            }}>{rank}</span>
           </div>
-
-          {/* ---- 中央: スートマーク（大・鮮明）---- */}
+          {/* 中央: スートマーク（大・鮮明） */}
           <div style={{
-            position:       'absolute',
-            inset:          0,
-            display:        'flex',
-            alignItems:     'center',
-            justifyContent: 'center',
+            position: 'absolute', inset: 0,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
-            <span style={{
-              fontSize:   dim.suitSize * 2.4,
-              color,
-              lineHeight: 1,
-              userSelect: 'none',
-            }}>
-              {symbol}
-            </span>
+            <span style={{ fontSize: dim.suitSize * 2.5, color, lineHeight: 1 }}>{symbol}</span>
           </div>
         </>
       )}
