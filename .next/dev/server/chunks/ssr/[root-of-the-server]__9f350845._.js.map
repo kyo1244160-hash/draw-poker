@@ -1,0 +1,6 @@
+{
+  "version": 3,
+  "sources": [],
+  "sections": [
+    {"offset": {"line": 40, "column": 0}, "map": {"version":3,"sources":["file:///C:/Users/fujit/OneDrive/%E3%83%87%E3%82%B9%E3%82%AF%E3%83%88%E3%83%83%E3%83%97/python/draw/pages/_document.tsx"],"sourcesContent":["import { Html, Head, Main, NextScript } from 'next/document';\r\n\r\n// Next.js のカスタムドキュメントで Google Fonts を読み込む\r\nexport default function Document() {\r\n  return (\r\n    <Html>\r\n      <Head>\r\n        {/* Google Fonts からピクセル風フォントを読み込み */}\r\n        <link\r\n          href=\"https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap\"\r\n          rel=\"stylesheet\"\r\n        />\r\n      </Head>\r\n      <body>\r\n        <Main />\r\n        <NextScript />\r\n      </body>\r\n    </Html>\r\n  );\r\n}\r\n"],"names":[],"mappings":";;;;;AAAA;;;AAGe,SAAS;IACtB,qBACE,qKAAC,iIAAI;;0BACH,qKAAC,iIAAI;0BAEH,cAAA,qKAAC;oBACC,MAAK;oBACL,KAAI;;;;;;;;;;;0BAGR,qKAAC;;kCACC,qKAAC,iIAAI;;;;;kCACL,qKAAC,uIAAU;;;;;;;;;;;;;;;;;AAInB"}}]
+}

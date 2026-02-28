@@ -1,0 +1,10 @@
+{
+  "[project]/components/Room.tsx [client] (ecmascript, next/dynamic entry)": {
+    "id": "[project]/components/Room.tsx [client] (ecmascript, next/dynamic entry)",
+    "files": [
+      "static/chunks/node_modules_ac0b851d._.js",
+      "static/chunks/components_Room_tsx_fe20a4ae._.js",
+      "static/chunks/components_Room_tsx_f0aa21de._.js"
+    ]
+  }
+}

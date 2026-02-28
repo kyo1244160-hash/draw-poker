@@ -1,0 +1,43 @@
+/* ===== グローバルスタイル ===== */
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Crimson+Text:ital,wght@0,400;0,600;1,400&display=swap');
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --felt:        #0a3320;
+  --felt-mid:    #0d4228;
+  --felt-light:  #165c38;
+  --gold:        #c9a84c;
+  --gold-bright: #f0d060;
+  --gold-dim:    #7a6030;
+  --cream:       #f5ead8;
+  --cream-dim:   #c8b898;
+  --red:         #8b1a1a;
+  --red-bright:  #cc2222;
+  --chip-blue:   #2244aa;
+  --chip-orange: #b85a10;
+  --shadow:      0 4px 24px rgba(0,0,0,0.7);
+  --inset:       inset 0 1px 0 rgba(255,255,255,0.06);
+  --font-title:  'Cinzel', serif;
+  --font-body:   'Crimson Text', serif;
+}
+
+html, body { background: var(--felt); color: var(--cream); font-family: var(--font-body); font-size: 16px; min-height: 100vh; }
+
+button { font-family: var(--font-title); letter-spacing: 0.04em; }
+button:hover { filter: brightness(1.15); }
+button:active { transform: scale(0.97); }
+button:disabled { opacity: 0.45; cursor: default; filter: none; }
+
+/* フェルトテクスチャ風ノイズ */
+body::before {
+  content: '';
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+  opacity: 0.6;
+}
+
+/* スクロールバー */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--felt); }
+::-webkit-scrollbar-thumb { background: var(--gold-dim); border-radius: 3px; }

@@ -1,0 +1,37 @@
+{
+  "pages": {
+    "/": [
+      "static/chunks/8a2e83aeb94ee885.js",
+      "static/chunks/5df4a7f99913139f.js",
+      "static/chunks/b1f4838b416e6f71.js",
+      "static/chunks/turbopack-aa42fd1f4211953f.js"
+    ],
+    "/_app": [
+      "static/chunks/26502775900c3cf1.js",
+      "static/chunks/5df4a7f99913139f.js",
+      "static/chunks/b1f4838b416e6f71.js",
+      "static/chunks/fe1cd1106af3bf8b.css",
+      "static/chunks/turbopack-b8739f06e8981af5.js"
+    ],
+    "/_error": [
+      "static/chunks/408524fc4c9a84b0.js",
+      "static/chunks/5df4a7f99913139f.js",
+      "static/chunks/b1f4838b416e6f71.js",
+      "static/chunks/turbopack-b89486e4ee9ae4bc.js"
+    ],
+    "/room/[roomId]": [
+      "static/chunks/258516217d0e3293.js",
+      "static/chunks/55ca727ad1cf1e78.js",
+      "static/chunks/5df4a7f99913139f.js",
+      "static/chunks/b1f4838b416e6f71.js",
+      "static/chunks/turbopack-6f7eb84a68e5574f.js"
+    ]
+  },
+  "devFiles": [],
+  "polyfillFiles": [],
+  "lowPriorityFiles": [
+    "static/SnOH8EA_SDBlPZ9e8p1uN/_ssgManifest.js",
+    "static/SnOH8EA_SDBlPZ9e8p1uN/_buildManifest.js"
+  ],
+  "rootMainFiles": []
+}

@@ -1,0 +1,6 @@
+{
+  "version": 3,
+  "sources": [],
+  "sections": [
+    {"offset": {"line": 16, "column": 0}, "map": {"version":3,"sources":["file:///C:/Users/fujit/OneDrive/%E3%83%87%E3%82%B9%E3%82%AF%E3%83%88%E3%83%83%E3%83%97/python/draw/pages/index.tsx"],"sourcesContent":["import dynamic from 'next/dynamic';\r\n\r\n// SSRを無効化してRoomコンポーネントを読み込む\r\nconst Room = dynamic(() => import('../components/Room'), { ssr: false });\r\n\r\nexport default function Home() {\r\n  return <Room />;\r\n}\r\n"],"names":[],"mappings":";;;;;AAAA;;;;AAEA,4BAA4B;AAC5B,MAAM,OAAO,IAAA,mIAAO,EAAC;;;;;;IAAsC,KAAK;;AAEjD,SAAS;IACtB,qBAAO,qKAAC;;;;;AACV"}}]
+}
