@@ -342,150 +342,244 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
   );
 
   // ==========================================================
-  // ■ スマホ縦表示（portrait）
+  // ■ スマホ共通: 楕円テーブル（縦/横自動対応）
   // ==========================================================
-  if (layout === 'portrait') {
-    const others = players.filter((p)=>!p.isSelf);
-    const selfPlayer = players.find((p)=>p.isSelf);
+  if (layout === 'portrait' || layout === 'landscape') {
+    const isPortrait = layout === 'portrait';
+    const others     = players.filter((p) => !p.isSelf);
 
-    return (
-      <div style={{display:'flex',flexDirection:'column',height:'100dvh',overflow:'hidden',background:'var(--felt)',color:'var(--cream)',fontFamily:'var(--font-body)'}}>
-        <NavBar compact />
-        <PendingBar />
-        <PotBar compact />
+    const vw = typeof window !== 'undefined' ? window.innerWidth  : 390;
+    const vh = typeof window !== 'undefined' ? window.innerHeight : 844;
+    const NAV_H  = 38;
+    const POT_H  = meta.phase !== 'waiting' ? 32 : 0;
+    const RULE_H = 16;
+    const ACT_W  = 112;
+    const ACT_H  = 108;
 
-        {/* フェーズ表示 */}
-        {meta.phase!=='waiting' && (
-          <div style={{textAlign:'center',padding:'2px 0',background:'rgba(0,0,0,0.15)',flexShrink:0}}>
-            <CenterInfo />
+    let TW: number, TH: number;
+    if (isPortrait) {
+      TW = vw - 8;
+      TH = vh - NAV_H - POT_H - RULE_H - ACT_H - 8;
+    } else {
+      TH = vh - NAV_H - 4;
+      TW = vw - ACT_W - 6;
+    }
+    TW = Math.max(TW, 200); TH = Math.max(TH, 140);
+
+    const RX = TW * 0.35; const RY = TH * 0.36;
+    const CX = TW / 2;    const CY = TH / 2;
+
+    const BOX_W      = Math.max(70, Math.floor(Math.min(TW, TH) * 0.30));
+    const SELF_BOX_H = Math.floor(TH * (isPortrait ? 0.38 : 0.42));
+    const OTH_BOX_H  = Math.floor(TH * (isPortrait ? 0.28 : 0.34));
+
+    const SELF_CARD: 'sm'|'md' = BOX_W >= 95 ? 'md' : 'sm';
+    const OTH_CARD:  'sm'|'md' = 'sm';
+
+    // portrait: 上部扇状、landscape: 左右対称
+    const SLOTS = isPortrait
+      ? [-90, -145, -35, 145, 35]
+      : [-90,  -30,  30, 150, 210];
+
+    const getPosMobile = (p: Player) => {
+      let ang: number;
+      if (p.isSelf) { ang = 90; }
+      else {
+        const idx = others.findIndex((o) => o.id === p.id);
+        ang = SLOTS[idx] ?? (-90 + 72 * (idx + 1));
+      }
+      const rad = (ang * Math.PI) / 180;
+      const bh  = p.isSelf ? SELF_BOX_H : OTH_BOX_H;
+      return {
+        left: CX + RX * Math.cos(rad) - BOX_W / 2,
+        top:  CY + RY * Math.sin(rad) - bh / 2,
+      };
+    };
+
+    const fs = { name: Math.max(9, Math.floor(BOX_W * 0.12)), chip: Math.max(9, Math.floor(BOX_W * 0.115)) };
+
+    const renderMobilePlayer = (p: Player) => {
+      const {left, top} = getPosMobile(p);
+      const active = p.isMyTurn && !p.folded && !p.sittingOut;
+      const dc = isDrawPhase ? (p.drewThisRound ? p.drawCount : null) : (lastDrawCount[p.id] ?? null);
+      return (
+        <div key={p.id} style={{
+          position:'absolute', left, top, width: BOX_W,
+          textAlign:'center', padding:'3px 2px', borderRadius:7,
+          border: active ? '1.5px solid var(--gold)' : p.isWinner ? '1.5px solid var(--gold-bright)' : '1px solid rgba(201,168,76,0.2)',
+          boxShadow: active ? '0 0 10px rgba(201,168,76,0.5)' : p.isWinner ? '0 0 14px rgba(240,208,96,0.55)' : 'none',
+          background: p.isSelf ? 'rgba(10,50,30,0.85)' : active ? 'rgba(201,168,76,0.07)' : 'rgba(0,0,0,0.4)',
+          opacity: (p.folded && !p.sittingOut) ? 0.4 : p.sittingOut ? 0.5 : 1,
+          zIndex: p.isSelf ? 3 : 2, transition:'all 0.2s',
+        }}>
+          <div style={{display:'flex',gap:2,justifyContent:'center',marginBottom:1,flexWrap:'wrap' as const}}>
+            {p.isDealer   && <Badge bg="#c9a84c" color="#1a1200" label="BTN"/>}
+            {p.isSB       && <Badge bg="#2244aa" color="#fff"    label="SB"/>}
+            {p.isBB       && <Badge bg="#b85a10" color="#fff"    label="BB"/>}
+            {p.folded && !p.sittingOut && <Badge bg="#444" color="#aaa" label="FOLD"/>}
+            {p.sittingOut && <Badge bg="#555" color="#bbb" label="WAIT"/>}
+            {p.isWinner   && <Badge bg="#f0d060" color="#1a1200" label="WIN"/>}
           </div>
-        )}
-
-        {/* 相手プレイヤー（横スクロール） */}
-        <div style={{display:'flex',gap:6,overflowX:'auto' as const,padding:'4px 8px',flexShrink:0,minHeight:110}}>
-          {others.map((p) => <OtherPlayerCard key={p.id} p={p} compact />)}
-          {others.length===0 && <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',color:'var(--cream-dim)',fontSize:12,fontStyle:'italic'}}>他のプレイヤーを待っています...</div>}
-        </div>
-
-        <div style={{height:1,background:'rgba(201,168,76,0.2)',flexShrink:0}} />
-
-        {/* 自分の手札エリア + ボタン（横並び）*/}
-        <div style={{flex:1,display:'flex',overflow:'hidden',minHeight:0}}>
-          {/* 手札エリア */}
-          <div style={{flex:1,display:'flex',flexDirection:'column',justifyContent:'center',padding:'6px 8px',overflow:'hidden'}}>
-            {selfPlayer && (
-              <>
-                {/* 名前・チップ */}
-                <div style={{display:'flex',alignItems:'center',gap:5,flexWrap:'wrap' as const,marginBottom:4}}>
-                  {selfPlayer.isDealer && <Badge bg="#c9a84c" color="#1a1200" label="BTN"/>}
-                  {selfPlayer.isSB     && <Badge bg="#2244aa" color="#fff"    label="SB"/>}
-                  {selfPlayer.isBB     && <Badge bg="#b85a10" color="#fff"    label="BB"/>}
-                  {selfPlayer.isWinner && <Badge bg="#f0d060" color="#1a1200" label="👑WIN"/>}
-                  <span style={{fontFamily:'var(--font-title)',fontSize:13,color:'var(--gold-bright)'}}>{selfPlayer.name}<span style={{opacity:0.6}}> (YOU)</span></span>
-                  <span style={{fontFamily:'var(--font-body)',fontSize:13,color:'#88dd88'}}>💵{selfPlayer.chips}{selfPlayer.bet>0?<span style={{color:'var(--gold)'}}> B{selfPlayer.bet}</span>:''}</span>
-                </div>
-                {/* タイマー */}
-                {selfPlayer.isMyTurn && meta.timerLimit>0 && timerSec!==null && (
-                  <div style={{marginBottom:4}}><TimerBar remaining={timerSec} limit={meta.timerLimit}/></div>
+          <div style={{fontFamily:'var(--font-title)',fontSize:fs.name,color:p.isSelf?'var(--gold-bright)':'var(--cream)',
+            whiteSpace:'nowrap' as const,overflow:'hidden',textOverflow:'ellipsis',letterSpacing:'0.02em',maxWidth:BOX_W-6}}>
+            {p.isSelf ? `${p.name}(YOU)` : p.name}
+          </div>
+          <div style={{fontFamily:'var(--font-body)',fontSize:fs.chip,color:'#88dd88',lineHeight:1.2}}>
+            💵{p.chips}{p.bet>0&&<span style={{color:'var(--gold)'}}> B{p.bet}</span>}
+          </div>
+          {p.isMyTurn && meta.timerLimit>0 && timerSec!==null && (
+            <div style={{margin:'1px 0'}}><TimerBar remaining={timerSec} limit={meta.timerLimit}/></div>
+          )}
+          <div style={{display:'flex',gap:isPortrait?2:2,justifyContent:'center',flexWrap:'nowrap' as const,margin:'2px 0'}}>
+            {p.hand.map((code, j) => (
+              <div key={j} style={{display:'flex',flexDirection:'column' as const,alignItems:'center'}}>
+                <Card code={code} size={p.isSelf ? SELF_CARD : OTH_CARD}
+                  selected={p.isSelf && selected.includes(j)}
+                  clickable={p.isSelf && isDrawPhase && isMyTurn && !myDrew}
+                  folded={p.folded}
+                  onClick={() => handleCardClick(j)} />
+                {p.isSelf && selected.includes(j) && (
+                  <span style={{fontSize:7,color:'#e84040',fontFamily:'var(--font-title)',marginTop:1}}>捨</span>
                 )}
-                {/* 手札（横並び） */}
-                <div style={{display:'flex',gap:5,justifyContent:'flex-start',flexWrap:'nowrap' as const}}>
-                  {selfPlayer.hand.map((code,j) => (
-                    <div key={j} style={{display:'flex',flexDirection:'column' as const,alignItems:'center'}}>
-                      <Card code={code} size="md"
-                        selected={selected.includes(j)}
-                        clickable={isDrawPhase&&isMyTurn&&!myDrew}
-                        folded={selfPlayer.folded}
-                        onClick={()=>handleCardClick(j)} />
-                      {selected.includes(j) && <span style={{fontSize:8,color:'#e84040',fontFamily:'var(--font-title)',marginTop:1}}>捨てる</span>}
-                    </div>
-                  ))}
+              </div>
+            ))}
+          </div>
+          {!p.isSelf && (isDrawPhase||isBetPhase) && dc!==null && (
+            <div style={{fontSize:8,color:'#88bbff',fontStyle:'italic'}}>{dc===0?'✋ pat':`🔄 ${dc}`}</div>
+          )}
+          {p.result && (
+            <div style={{fontSize:Math.max(8,fs.name-1),color:p.isWinner?'var(--gold-bright)':'var(--cream-dim)',
+              fontFamily:'var(--font-title)',fontWeight:p.isWinner?'700':'400',lineHeight:1.1}}>
+              {p.result}
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    // ===== 縦表示レイアウト =====
+    if (isPortrait) {
+      return (
+        <div style={{display:'flex',flexDirection:'column',height:'100dvh',overflow:'hidden',
+          background:'var(--felt)',color:'var(--cream)',fontFamily:'var(--font-body)'}}>
+          <NavBar compact />
+          <PotBar compact />
+          {/* テーブル（楕円 + プレイヤー）*/}
+          <div style={{position:'relative',width:TW,height:TH,margin:'0 auto',flexShrink:0}}>
+            {/* 楕円フェルト */}
+            <div style={{position:'absolute',top:'50%',left:'50%',transform:'translate(-50%,-50%)',
+              width:'72%',height:'72%',borderRadius:'50%',
+              background:'radial-gradient(ellipse at 40% 40%,#1a6b42,#0a3320)',
+              border:'5px solid var(--gold-dim)',boxShadow:'0 0 20px rgba(0,0,0,0.8),inset 0 0 20px rgba(0,0,0,0.4)',
+              zIndex:0}} />
+            {/* テーブル中央テキスト */}
+            {meta.phase!=='waiting' && (
+              <div style={{position:'absolute',left:'50%',top:'50%',transform:'translate(-50%,-50%)',
+                textAlign:'center',zIndex:1,pointerEvents:'none'}}>
+                <div style={{fontFamily:'var(--font-title)',fontSize:9,color:modeColor,letterSpacing:'0.1em',opacity:0.8}}>
+                  {MODE_LABEL[effectiveMode]}
                 </div>
-                {/* 役 */}
-                {selfPlayer.result && (
-                  <div style={{fontSize:12,color:selfPlayer.isWinner?'var(--gold-bright)':'var(--cream-dim)',fontFamily:'var(--font-title)',marginTop:4}}>
-                    {selfPlayer.result}
+                <div style={{fontFamily:'var(--font-title)',fontSize:13,letterSpacing:'0.15em',lineHeight:1.1,
+                  color:isBetPhase?'var(--gold-bright)':isDrawPhase?'#88ddff':'var(--cream-dim)',
+                  textShadow:'0 0 8px rgba(0,0,0,0.9)'}}>
+                  {PHASE_LABEL[meta.phase]}
+                </div>
+                {isBetPhase && <div style={{fontSize:8,color:'rgba(255,255,255,0.45)',fontFamily:'var(--font-body)'}}>Bet {raiseDisplay}</div>}
+                {isDrawPhase && (
+                  <div style={{display:'flex',gap:4,justifyContent:'center',marginTop:2}}>
+                    {[1,2,3].map((n)=>(
+                      <span key={n} style={{width:7,height:7,borderRadius:'50%',display:'inline-block',
+                        background:n<=drawRound?'var(--gold-bright)':'rgba(255,255,255,0.2)',
+                        boxShadow:n===drawRound?'0 0 4px var(--gold)':'none'}}/>
+                    ))}
                   </div>
                 )}
-              </>
+              </div>
             )}
+            {/* 全プレイヤー */}
+            {players.map((p) => renderMobilePlayer(p))}
           </div>
-
-          {/* アクションボタン（右側縦積み）*/}
-          <div style={{width:110,flexShrink:0,background:'rgba(0,0,0,0.3)',borderLeft:'1px solid rgba(201,168,76,0.15)',padding:'8px 6px',display:'flex',flexDirection:'column',justifyContent:'center',gap:7,overflow:'hidden'}}>
-            <ActionButtons compact />
+          {/* アクションパネル（下部）+ ルール */}
+          <div style={{flex:1,display:'flex',overflow:'hidden',minHeight:0}}>
+            <div style={{flex:1,display:'flex',flexDirection:'column',justifyContent:'center',
+              padding:'4px 8px',overflow:'hidden',minWidth:0}}>
+              {meta.pendingPlayers.length>0 && (
+                <div style={{fontSize:9,color:'var(--gold-dim)',fontStyle:'italic',marginBottom:2}}>
+                  ⏳ {meta.pendingPlayers.join(', ')}
+                </div>
+              )}
+              <div style={{fontSize:9,color:'var(--gold-dim)',fontFamily:'var(--font-body)'}}>
+                {effectiveMode==='badugi'?'★ Badugi: 全スート異なる低い4枚が最強':'★ 2-7: 低い手が強い。A最高位'}
+              </div>
+            </div>
+            {/* アクションボタン右カラム */}
+            <div style={{width:ACT_W+2,flexShrink:0,background:'rgba(0,0,0,0.3)',
+              borderLeft:'1px solid rgba(201,168,76,0.15)',padding:'6px 5px',
+              display:'flex',flexDirection:'column',justifyContent:'center',gap:6,overflow:'hidden'}}>
+              <ActionButtons compact />
+            </div>
           </div>
         </div>
+      );
+    }
 
-        {/* ルール */}
-        <div style={{fontSize:9,color:'var(--gold-dim)',textAlign:'center',padding:'2px 8px',flexShrink:0}}>
-          {effectiveMode==='badugi'?'★ Badugi: 全スート異なる低い4枚が最強':'★ 2-7: 低い手が強い。A最高位。'}
-        </div>
-      </div>
-    );
-  }
-
-  // ==========================================================
-  // ■ スマホ横表示（landscape）
-  // ==========================================================
-  if (layout === 'landscape') {
-    const others = players.filter((p)=>!p.isSelf);
-    const selfPlayer = players.find((p)=>p.isSelf);
-
+    // ===== 横表示レイアウト =====
     return (
-      <div style={{display:'flex',flexDirection:'column',height:'100dvh',overflow:'hidden',background:'var(--felt)',color:'var(--cream)',fontFamily:'var(--font-body)'}}>
+      <div style={{display:'flex',flexDirection:'column',height:'100dvh',overflow:'hidden',
+        background:'var(--felt)',color:'var(--cream)',fontFamily:'var(--font-body)'}}>
         <NavBar compact />
-
         <div style={{flex:1,display:'flex',overflow:'hidden',minHeight:0}}>
-          {/* 左: 相手プレイヤー縦スクロール */}
-          <div style={{width:110,flexShrink:0,overflowY:'auto' as const,padding:'4px 6px',borderRight:'1px solid rgba(201,168,76,0.15)',display:'flex',flexDirection:'column',gap:5}}>
-            <PotBar compact />
-            {others.map((p) => <OtherPlayerCard key={p.id} p={p} compact />)}
-          </div>
-
-          {/* 中央: 自分の手札 + フェーズ情報 */}
-          <div style={{flex:1,display:'flex',flexDirection:'column',justifyContent:'center',alignItems:'center',padding:'4px 8px',overflow:'hidden'}}>
-            <CenterInfo />
-            {meta.pendingPlayers.length>0 && (
-              <div style={{fontSize:9,color:'var(--gold-dim)',fontStyle:'italic',marginTop:2}}>
-                ⏳ {meta.pendingPlayers.join(', ')}
+          {/* テーブル */}
+          <div style={{position:'relative',width:TW,height:TH,flexShrink:0}}>
+            {/* 楕円フェルト */}
+            <div style={{position:'absolute',top:'50%',left:'50%',transform:'translate(-50%,-50%)',
+              width:'74%',height:'70%',borderRadius:'50%',
+              background:'radial-gradient(ellipse at 40% 40%,#1a6b42,#0a3320)',
+              border:'5px solid var(--gold-dim)',boxShadow:'0 0 20px rgba(0,0,0,0.8),inset 0 0 20px rgba(0,0,0,0.4)',
+              zIndex:0}} />
+            {/* テーブル中央テキスト */}
+            {meta.phase!=='waiting' && (
+              <div style={{position:'absolute',left:'50%',top:'50%',transform:'translate(-50%,-50%)',
+                textAlign:'center',zIndex:1,pointerEvents:'none'}}>
+                <div style={{fontFamily:'var(--font-title)',fontSize:8,color:modeColor,letterSpacing:'0.1em',opacity:0.8}}>
+                  {MODE_LABEL[effectiveMode]}
+                </div>
+                <div style={{fontFamily:'var(--font-title)',fontSize:12,letterSpacing:'0.15em',lineHeight:1.1,
+                  color:isBetPhase?'var(--gold-bright)':isDrawPhase?'#88ddff':'var(--cream-dim)',
+                  textShadow:'0 0 8px rgba(0,0,0,0.9)'}}>
+                  {PHASE_LABEL[meta.phase]}
+                </div>
+                {isBetPhase && <div style={{fontSize:8,color:'rgba(255,255,255,0.45)',fontFamily:'var(--font-body)'}}>Bet {raiseDisplay}</div>}
               </div>
             )}
-            {selfPlayer && (
-              <div style={{marginTop:8,textAlign:'center'}}>
-                <div style={{display:'flex',alignItems:'center',gap:4,justifyContent:'center',flexWrap:'wrap' as const,marginBottom:5}}>
-                  {selfPlayer.isDealer && <Badge bg="#c9a84c" color="#1a1200" label="BTN"/>}
-                  {selfPlayer.isSB     && <Badge bg="#2244aa" color="#fff"    label="SB"/>}
-                  {selfPlayer.isBB     && <Badge bg="#b85a10" color="#fff"    label="BB"/>}
-                  {selfPlayer.isWinner && <Badge bg="#f0d060" color="#1a1200" label="👑WIN"/>}
-                  <span style={{fontFamily:'var(--font-title)',fontSize:12,color:'var(--gold-bright)'}}>{selfPlayer.name} (YOU)</span>
-                  <span style={{fontFamily:'var(--font-body)',fontSize:12,color:'#88dd88'}}>💵{selfPlayer.chips}{selfPlayer.bet>0?` B${selfPlayer.bet}`:''}</span>
-                </div>
-                {selfPlayer.isMyTurn && meta.timerLimit>0 && timerSec!==null && (
-                  <div style={{marginBottom:4,width:'100%'}}><TimerBar remaining={timerSec} limit={meta.timerLimit}/></div>
-                )}
-                <div style={{display:'flex',gap:5,justifyContent:'center'}}>
-                  {selfPlayer.hand.map((code,j) => (
-                    <div key={j} style={{display:'flex',flexDirection:'column' as const,alignItems:'center'}}>
-                      <Card code={code} size="md"
-                        selected={selected.includes(j)}
-                        clickable={isDrawPhase&&isMyTurn&&!myDrew}
-                        folded={selfPlayer.folded}
-                        onClick={()=>handleCardClick(j)} />
-                      {selected.includes(j) && <span style={{fontSize:7,color:'#e84040',fontFamily:'var(--font-title)',marginTop:1}}>捨</span>}
-                    </div>
-                  ))}
-                </div>
-                {selfPlayer.result && (
-                  <div style={{fontSize:11,color:selfPlayer.isWinner?'var(--gold-bright)':'var(--cream-dim)',fontFamily:'var(--font-title)',marginTop:3}}>{selfPlayer.result}</div>
-                )}
+            {/* ポット（テーブル上部）*/}
+            {meta.phase!=='waiting' && (
+              <div style={{position:'absolute',top:4,left:'50%',transform:'translateX(-50%)',
+                display:'flex',gap:6,zIndex:4,pointerEvents:'none'}}>
+                <span style={{...potChipSt,fontSize:11}}>🏦<b style={{color:'var(--gold-bright)'}}>{meta.pot}</b></span>
+                {isBetPhase && meta.currentBet>0 && <span style={{...potChipSt,fontSize:11}}>BET<b>{meta.currentBet}</b></span>}
               </div>
             )}
+            {/* 全プレイヤー */}
+            {players.map((p) => renderMobilePlayer(p))}
           </div>
-
-          {/* 右: アクションボタン縦積み */}
-          <div style={{width:120,flexShrink:0,background:'rgba(0,0,0,0.3)',borderLeft:'1px solid rgba(201,168,76,0.15)',padding:'8px 6px',display:'flex',flexDirection:'column',justifyContent:'center',gap:7,overflow:'hidden'}}>
-            <ActionButtons compact />
+          {/* アクションカラム */}
+          <div style={{width:ACT_W,flexShrink:0,background:'rgba(0,0,0,0.3)',
+            borderLeft:'1px solid rgba(201,168,76,0.15)',
+            display:'flex',flexDirection:'column',justifyContent:'space-between',overflow:'hidden',padding:'6px 5px'}}>
+            <div>
+              {meta.pendingPlayers.length>0 && (
+                <div style={{fontSize:8,color:'var(--gold-dim)',fontStyle:'italic',marginBottom:4}}>
+                  ⏳ {meta.pendingPlayers.join(', ')}
+                </div>
+              )}
+            </div>
+            <div style={{display:'flex',flexDirection:'column',gap:6,flex:1,justifyContent:'center'}}>
+              <ActionButtons compact />
+            </div>
+            <div style={{fontSize:8,color:'var(--gold-dim)',fontFamily:'var(--font-body)',textAlign:'center'}}>
+              {effectiveMode==='badugi'?'★ Badugi':'★ 2-7 Low'}
+            </div>
           </div>
         </div>
       </div>

@@ -99,15 +99,11 @@ export default function Room() {
       {/* ===== ヘッダー ===== */}
       <header style={S.hero}>
         <div style={S.logoWrap}>
-          <svg width="60" height="60" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <circle cx="32" cy="32" r="30" stroke="#c9a84c" strokeWidth="2" fill="#0a3320"/>
-            <circle cx="32" cy="32" r="24" stroke="#c9a84c" strokeWidth="1" strokeDasharray="3 3" fill="none"/>
-            <text x="13" y="28" fontSize="14" fill="#f0d060" fontFamily="serif" textAnchor="middle">♠</text>
-            <text x="51" y="28" fontSize="14" fill="#cc3333" fontFamily="serif" textAnchor="middle">♥</text>
-            <text x="13" y="48" fontSize="14" fill="#f0d060" fontFamily="serif" textAnchor="middle">♣</text>
-            <text x="51" y="48" fontSize="14" fill="#cc3333" fontFamily="serif" textAnchor="middle">♦</text>
-            <text x="32" y="40" fontSize="20" fontWeight="bold" fill="#c9a84c" fontFamily="serif" textAnchor="middle">P</text>
-          </svg>
+          <img
+            src="/icons/icon-192.png"
+            alt="Poker Room Pastis"
+            style={{ width: 100, height: 100, borderRadius: '50%', boxShadow: '0 0 24px rgba(201,168,76,0.5)' }}
+          />
         </div>
         <div style={S.heroDivider} />
         <h1 style={S.heroTitle}>Poker Room Pastis</h1>
@@ -267,7 +263,7 @@ const S: Record<string, React.CSSProperties> = {
   heroDivider:     { height: 1, background: 'linear-gradient(90deg, transparent, var(--gold), transparent)', margin: '10px auto', width: 400 },
   heroTitle:       { fontFamily: 'var(--font-title)', fontSize: 'clamp(26px, 4vw, 50px)', color: 'var(--gold-bright)', letterSpacing: '0.1em', textShadow: '0 0 28px rgba(201,168,76,0.35), 2px 2px 0 rgba(0,0,0,0.8)', margin: '6px 0' },
   layout:          { display: 'flex', gap: 24, width: '100%', maxWidth: 1100, alignItems: 'flex-start', flexWrap: 'wrap' as const },
-  panel:           { flex: 1, minWidth: 320, background: 'linear-gradient(160deg, rgba(22,92,56,0.6), rgba(10,51,32,0.8))', border: '1px solid var(--gold-dim)', borderRadius: 12, padding: '24px 28px', boxShadow: 'var(--shadow), var(--inset)' },
+  panel:           { flex: 1, minWidth: 320, background: 'linear-gradient(160deg, rgba(22,92,56,0.6), rgba(10,51,32,0.8))', border: '1px solid var(--gold-dim)', borderRadius: 12, padding: '24px 28px', boxShadow: 'var(--shadow), var(--inset)', overflowY: 'auto' as const, maxHeight: '75vh' },
   panelHeader:     { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
   panelTitle:      { fontFamily: 'var(--font-title)', fontSize: 13, letterSpacing: '0.4em', color: 'var(--gold)', textAlign: 'center', display: 'flex', alignItems: 'center', gap: 10, margin: 0 },
   titleLine:       { flex: 1, height: 1, background: 'linear-gradient(90deg, transparent, var(--gold-dim))' },
@@ -288,10 +284,10 @@ const S: Record<string, React.CSSProperties> = {
   userRoomBadge:   { fontSize: 9, fontFamily: 'var(--font-title)', padding: '2px 5px', borderRadius: 3, background: 'rgba(255,255,255,0.1)', color: 'var(--cream-dim)', border: '1px solid rgba(255,255,255,0.15)' },
   roomLabel:       { fontFamily: 'var(--font-title)', fontSize: 14, letterSpacing: '0.06em', color: 'var(--cream)' },
   roomCount:       { fontFamily: 'var(--font-body)', fontSize: 17, color: 'var(--cream-dim)', flexShrink: 0 },
-  ruleBox:         { background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(201,168,76,0.15)', borderRadius: 8, padding: '12px 16px', marginBottom: 14 },
+  ruleBox:         { background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(201,168,76,0.15)', borderRadius: 8, padding: '8px 14px', marginBottom: 10 },
   ruleTitle:       { fontFamily: 'var(--font-title)', fontSize: 11, color: 'var(--gold)', letterSpacing: '0.08em', marginBottom: 5 },
   ruleText:        { fontFamily: 'var(--font-body)', fontSize: 15, color: 'var(--cream-dim)', lineHeight: 1.5, marginBottom: 2 },
-  playerList:      { marginBottom: 18, minHeight: 60 },
+  playerList:      { marginBottom: 10, minHeight: 40 },
   listLabel:       { fontFamily: 'var(--font-title)', fontSize: 11, letterSpacing: '0.3em', color: 'var(--gold-dim)', marginBottom: 8 },
   playerRow:       { display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', borderBottom: '1px solid rgba(201,168,76,0.1)' },
   playerDot:       { color: 'var(--gold)', fontSize: 14 },
