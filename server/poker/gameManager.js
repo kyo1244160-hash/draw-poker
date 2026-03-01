@@ -566,6 +566,15 @@ function leaveRoom(socketId) {
 
       if (room.players.length === 0) {
         _clearTimer(room);
+        // 全員退出 → フェーズをリセットして次の入室に備える
+        room.phase       = 'waiting';
+        room.pot         = 0;
+        room.dealerIndex = -1;
+        room.actionIndex = -1;
+        room.deck        = [];
+        room.discardPile = [];
+        room._potAwarded = false;
+        room._selectedIndices = {};
         if (room.isUserCreated) rooms.delete(roomId);
       }
       return roomId;

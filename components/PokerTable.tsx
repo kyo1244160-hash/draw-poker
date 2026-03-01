@@ -60,6 +60,8 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
   const [myDrew,        setMyDrew]        = useState(false);
   const [timerSec,      setTimerSec]      = useState<number | null>(null);
   const [lastDrawCount, setLastDrawCount] = useState<Record<string,number|null>>({});
+  // ショーダウン後のカウントダウン（3→2→1）
+  const [countdown, setCountdown] = useState<number|null>(null);
 
   // デバイス判定（SSR安全）
   const [layout, setLayout] = useState<'pc'|'portrait'|'landscape'>('pc');
@@ -90,7 +92,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
         return next;
       });
     };
-    const onGameStarted = () => { setSelected([]); setMyDrew(false); setLastDrawCount({}); };
+    const onGameStarted = () => { setSelected([]); setMyDrew(false); setLastDrawCount({}); setCountdown(null); };
     const onTimerUpdate = ({ remaining }: { remaining:number }) => setTimerSec(remaining);
     const onKicked      = () => router.push('/');
 
@@ -98,7 +100,16 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
     socket.on('gameState',   onGameState);
     socket.on('gameStarted', onGameStarted);
     socket.on('timerUpdate', onTimerUpdate);
-    socket.on('showdown',    () => {});
+    socket.on('showdown', () => {
+      // 3秒カウントダウン表示
+      setCountdown(3);
+      const tick = setInterval(() => {
+        setCountdown((prev) => {
+          if (prev === null || prev <= 1) { clearInterval(tick); return null; }
+          return prev - 1;
+        });
+      }, 1000);
+    });
     socket.on('kicked',      onKicked);
 
     if (socket.connected) socket.emit('joinRoom', { roomId, name });
@@ -223,7 +234,17 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
 
     if (meta.phase === 'showdown') return (
       <div style={actionColStyle}>
-        <div style={actionInfoStyle(compact)}>次のゲームを準備中... (3秒)</div>
+        <div style={actionInfoStyle(compact)}>
+          次のゲームを準備中...
+          {countdown !== null && (
+            <span style={{display:'block', fontFamily:'var(--font-title)',
+              fontSize: compact ? 22 : 32, color:'var(--gold-bright)',
+              textAlign:'center', lineHeight:1, marginTop:4,
+              textShadow:'0 0 12px rgba(201,168,76,0.7)'}}>
+              {countdown}
+            </span>
+          )}
+        </div>
       </div>
     );
 
@@ -350,28 +371,31 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
 
     const vw = typeof window !== 'undefined' ? window.innerWidth  : 390;
     const vh = typeof window !== 'undefined' ? window.innerHeight : 844;
-    const NAV_H  = 38;
+    const NAV_H  = 42;   // compact NavBar 実測高さ: padding 6px×2 + img 24px + border 1px
     const POT_H  = meta.phase !== 'waiting' ? 32 : 0;
     const RULE_H = 16;
-    const ACT_W  = 112;
-    const ACT_H  = 108;
+    const ACT_W  = 116;  // アクションカラム幅
+    const ACT_H  = 112;  // アクションパネル高さ（縦表示）
 
     let TW: number, TH: number;
     if (isPortrait) {
       TW = vw - 8;
-      TH = vh - NAV_H - POT_H - RULE_H - ACT_H - 8;
+      TH = vh - NAV_H - POT_H - RULE_H - ACT_H - 10;
     } else {
+      // 横表示: ナビバー高さを引いた全高さ、幅はアクションカラム分引く
       TH = vh - NAV_H - 4;
-      TW = vw - ACT_W - 6;
+      TW = vw - ACT_W - 4;
     }
     TW = Math.max(TW, 200); TH = Math.max(TH, 140);
 
-    const RX = TW * 0.35; const RY = TH * 0.36;
+    // 楕円半径（横表示では横に広く、縦に狭く）
+    const RX = isPortrait ? TW * 0.34 : TW * 0.40;
+    const RY = isPortrait ? TH * 0.35 : TH * 0.34;
     const CX = TW / 2;    const CY = TH / 2;
 
     const BOX_W      = Math.max(70, Math.floor(Math.min(TW, TH) * 0.30));
-    const SELF_BOX_H = Math.floor(TH * (isPortrait ? 0.38 : 0.42));
-    const OTH_BOX_H  = Math.floor(TH * (isPortrait ? 0.28 : 0.34));
+    const SELF_BOX_H = isPortrait ? Math.floor(TH * 0.38) : Math.floor(TH * 0.44);
+    const OTH_BOX_H  = isPortrait ? Math.floor(TH * 0.28) : Math.floor(TH * 0.36);
 
     const SELF_CARD: 'sm'|'md' = BOX_W >= 95 ? 'md' : 'sm';
     const OTH_CARD:  'sm'|'md' = 'sm';
@@ -529,8 +553,10 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
         background:'var(--felt)',color:'var(--cream)',fontFamily:'var(--font-body)'}}>
         <NavBar compact />
         <div style={{flex:1,display:'flex',overflow:'hidden',minHeight:0}}>
-          {/* テーブル */}
-          <div style={{position:'relative',width:TW,height:TH,flexShrink:0}}>
+          {/* テーブル: flex で残り幅を全て使う */}
+          <div style={{position:'relative',flex:1,minWidth:0,overflow:'hidden'}}>
+            {/* 内側コンテナ（TW×TH の絶対サイズ）*/}
+            <div style={{position:'absolute',top:0,left:0,width:TW,height:TH}}>
             {/* 楕円フェルト */}
             <div style={{position:'absolute',top:'50%',left:'50%',transform:'translate(-50%,-50%)',
               width:'74%',height:'70%',borderRadius:'50%',
@@ -562,9 +588,10 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
             )}
             {/* 全プレイヤー */}
             {players.map((p) => renderMobilePlayer(p))}
+            </div>{/* 内側コンテナ終了 */}
           </div>
           {/* アクションカラム */}
-          <div style={{width:ACT_W,flexShrink:0,background:'rgba(0,0,0,0.3)',
+          <div style={{width:ACT_W+4,flexShrink:0,background:'rgba(0,0,0,0.3)',
             borderLeft:'1px solid rgba(201,168,76,0.15)',
             display:'flex',flexDirection:'column',justifyContent:'space-between',overflow:'hidden',padding:'6px 5px'}}>
             <div>
