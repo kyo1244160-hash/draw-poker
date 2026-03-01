@@ -22,7 +22,7 @@
  * 参加制限: 最大6人
  */
 
-const { createShuffledDeck }                             = require('./deck');
+const { createShuffledDeck, shuffleDeck }                             = require('./deck');
 const { evaluate27Hand, evaluateBadugiHand, findWinner } = require('./handEvaluator');
 const cfg                                                = require('../config');
 
@@ -91,6 +91,7 @@ function getOrCreateRoom(roomId, opts = {}) {
       raiseCount:     0,
       betSize:        SMALL_BET,
       handCount:      0,
+      discardPile:   [],  // 捨て札（デッキ切れ時にリシャッフル）
       _potAwarded:    false,
       _timer:         null,
       _timerStart:    null,
@@ -170,6 +171,7 @@ function startGame(roomId, onTimeout) {
 
   // リセット
   room.deck             = createShuffledDeck();
+  room.discardPile      = [];  // 捨て札をリセット
   room.pot              = 0;
   room._potAwarded      = false;
   room._onTimeout       = onTimeout;
@@ -306,8 +308,10 @@ function drawCards(roomId, socketId, indices) {
 
   const maxCards     = handSize(room.currentMode);
   const validIndices = [...new Set(indices)].filter((i) => Number.isInteger(i) && i >= 0 && i < maxCards);
+  // 交換するカードを先に捨て札へ
+  _discardCards(room, validIndices.map((i) => player.hand[i]));
   for (const i of validIndices) {
-    const newCard = room.deck.shift();
+    const newCard = _drawFromDeck(room);
     if (newCard) player.hand[i] = newCard;
   }
   player.drewThisRound = true;
@@ -318,6 +322,36 @@ function drawCards(roomId, socketId, indices) {
   _clearTimer(room);
   _advanceDrawAction(room);
   return room;
+}
+
+
+/**
+ * デッキからカードを1枚引く。
+ * デッキが切れた場合は捨て札（discardPile）をシャッフルして再利用する。
+ * 捨て札もない場合は null を返す。
+ */
+function _drawFromDeck(room) {
+  if (room.deck.length === 0) {
+    if (!room.discardPile || room.discardPile.length === 0) {
+      console.warn('[deck] デッキも捨て札も空です');
+      return null;
+    }
+    // 捨て札をシャッフルして新しいデッキとして使用
+    room.deck = shuffleDeck([...room.discardPile]);
+    room.discardPile = [];
+    console.log(`[deck] 捨て札 ${room.deck.length}枚をリシャッフルしました`);
+  }
+  return room.deck.shift() ?? null;
+}
+
+/**
+ * 交換前のカードを捨て札に追加する。
+ */
+function _discardCards(room, cards) {
+  if (!room.discardPile) room.discardPile = [];
+  for (const c of cards) {
+    if (c && c !== '??') room.discardPile.push(c);
+  }
 }
 
 function _advanceDrawAction(room) {

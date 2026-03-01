@@ -1,20 +1,15 @@
-/* globals.css — Poker Room Pastis グローバルスタイル */
-
-/* Google Fonts は _document.tsx の <link> で読み込み */
+/* globals.css — Poker Room Pastis */
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
   --felt:        #0a3320;
-  --felt-mid:    #0d4228;
-  --felt-light:  #165c38;
   --gold:        #c9a84c;
   --gold-bright: #f0d060;
   --gold-dim:    #7a6030;
   --cream:       #f5ead8;
   --cream-dim:   #c8b898;
   --red:         #8b1a1a;
-  --red-bright:  #cc2222;
   --chip-blue:   #2244aa;
   --chip-orange: #b85a10;
   --shadow:      0 4px 24px rgba(0,0,0,0.7);
@@ -23,27 +18,35 @@
   --font-body:   'Crimson Text', Georgia, serif;
 }
 
-html, body {
+html { height: 100%; }
+body {
   background: var(--felt);
   color: var(--cream);
   font-family: var(--font-body);
   font-size: 16px;
-  min-height: 100vh;
-  /* スマホでのピンチズーム防止 */
+  min-height: 100%;
+  /* PWA: iOS でのスクロールバウンス防止 */
+  overscroll-behavior: none;
   -webkit-text-size-adjust: 100%;
 }
 
-/* スマホのタップハイライトを抑制 */
-button, a { -webkit-tap-highlight-color: transparent; }
-button { font-family: var(--font-title); letter-spacing: 0.04em; }
+/* PWA スタンドアロン時のステータスバー余白 */
+@supports (padding-top: env(safe-area-inset-top)) {
+  body {
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+button { font-family: var(--font-title); letter-spacing: 0.04em; -webkit-tap-highlight-color: transparent; }
 button:hover { filter: brightness(1.12); }
 button:active { transform: scale(0.97); }
 button:disabled { opacity: 0.45; cursor: default; filter: none; }
+img { -webkit-user-drag: none; user-select: none; }
 
-/* スクロールバー */
-::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: var(--felt); }
-::-webkit-scrollbar-thumb { background: var(--gold-dim); border-radius: 3px; }
+::-webkit-scrollbar-thumb { background: var(--gold-dim); border-radius: 2px; }
 
 /* フェルトテクスチャ */
 body::before {
@@ -51,15 +54,4 @@ body::before {
   position: fixed; inset: 0; z-index: 0; pointer-events: none;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
   opacity: 0.5;
-}
-
-/* レスポンシブ: スマホ */
-@media (max-width: 767px) {
-  html, body { font-size: 14px; }
-
-  /* ナビバー・アクションパネルは幅100% */
-  nav { padding: 8px 10px !important; }
-
-  /* カードのホバーエフェクトはタッチでは不要 */
-  img { -webkit-user-drag: none; user-select: none; }
 }
