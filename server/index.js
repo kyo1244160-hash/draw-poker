@@ -31,10 +31,12 @@ const { Server } = require('socket.io');
 const { parse }  = require('url');
 const cfg        = require('./config');
 
+const { checkText } = require('./profanityFilter');
 const {
   getOrCreateRoom, joinRoom: joinPokerRoom,
   leaveRoom, startGame, drawCards, betAction, updateSelectedIndices,
   buildGameState, removePlayer, canAutoStart, getAllRooms,
+  incrementTimeout, resetTimeout,
 } = require('./poker/gameManager');
 
 // ===== Next.js =====
@@ -120,14 +122,7 @@ app.prepare().then(() => {
 
     // ----- 部屋作成 -----
     socket.on('createRoom', ({ label, mode, password }) => {
-      if (!label || !mode) { socket.emit('error', { message: '部屋名とゲームタイプを入力してください' }); return; }
-      if (!['27','badugi','mix'].includes(mode)) { socket.emit('error', { message: '無効なゲームタイプです' }); return; }
-      const roomId = `${mode}-user-${Date.now()}`;
-      const room   = getOrCreateRoom(roomId, {
-        label: label.slice(0, 30), password: password || null, isUserCreated: true,
-      });
-      io.emit('roomList', getLobbyList());
-      socket.emit('roomCreated', { roomId, label: room.label });
+      return;
     });
 
     // ----- 入室 -----
@@ -138,6 +133,13 @@ app.prepare().then(() => {
       // パスワードチェック
       if (room.password && room.password !== password) {
         socket.emit('joinError', { message: 'パスワードが違います' });
+        return;
+      }
+
+      // プレイヤー名の公序良俗チェック
+      const nameCheck = checkText(name);
+      if (!nameCheck.ok) {
+        socket.emit('joinError', { message: `名前エラー: ${nameCheck.reason}` });
         return;
       }
 
@@ -185,6 +187,7 @@ app.prepare().then(() => {
       if (!roomId || !Array.isArray(indices)) return;
       const room = drawCards(roomId, socket.id, indices);
       if (!room) { socket.emit('error', { message: 'ドローできません（あなたのターンではありません）' }); return; }
+      resetTimeout(roomId, socket.id);  // アクション成功 → タイムアウトカウントリセット
       _broadcast(io, roomId);
       if (room.phase === 'showdown') { io.to(roomId).emit('showdown'); _scheduleAutoStart(io, roomId); }
     });
@@ -194,6 +197,7 @@ app.prepare().then(() => {
       if (!roomId || !action) return;
       const room = betAction(roomId, socket.id, action);
       if (!room) { socket.emit('error', { message: 'そのアクションはできません' }); return; }
+      resetTimeout(roomId, socket.id);  // アクション成功 → タイムアウトカウントリセット
       _broadcast(io, roomId);
       if (room.phase === 'showdown') { io.to(roomId).emit('showdown'); _scheduleAutoStart(io, roomId); }
     });
@@ -236,15 +240,30 @@ function _handleLeave(io, socket, roomId) {
 function _makeTimeoutHandler(io, roomId) {
   return (rid, phase, playerId) => {
     console.log(`[timeout] ${playerId} in ${rid} at ${phase}`);
+
     if (phase.startsWith('draw')) {
-      // タイムアウト時は選択中のカードを使って自動交換
       const room    = getOrCreateRoom(rid);
       const indices = room._selectedIndices[playerId] ?? [];
       drawCards(rid, playerId, indices);
     } else if (phase.startsWith('bet')) {
-      // ベットタイムアウト → フォールド
       betAction(rid, playerId, 'fold');
     }
+
+    // 連続タイムアウトカウント → 3回で退室
+    const shouldKick = incrementTimeout(rid, playerId);
+    if (shouldKick) {
+      console.log(`[kick-timeout] ${playerId} in ${rid} (3 consecutive timeouts)`);
+      leaveRoom(playerId);
+      // 対象ソケットに kicked を通知
+      const targetSocket = io.sockets.sockets.get(playerId);
+      if (targetSocket) {
+        targetSocket.emit('kicked', { reason: '連続タイムアウトにより退室されました' });
+        targetSocket.leave(rid);
+      }
+      io.emit('roomList', getLobbyList());
+      _broadcastLobbyUpdate(io, rid);
+    }
+
     _broadcast(io, rid);
     const room = getOrCreateRoom(rid);
     if (room.phase === 'showdown') { io.to(rid).emit('showdown'); _scheduleAutoStart(io, rid); }

@@ -115,7 +115,9 @@ export default function Room() {
         <section style={S.panel}>
           <div style={S.panelHeader}>
             <h2 style={S.panelTitle}><span style={S.titleLine}/>ROOMS<span style={S.titleLine}/></h2>
-
+            <button onClick={() => setShowCreate((v) => !v)} style={S.createToggleBtn}>
+              {showCreate ? '✕ キャンセル' : '＋ 部屋を作る'}
+            </button>
           </div>
 
           {/* 部屋作成フォーム */}

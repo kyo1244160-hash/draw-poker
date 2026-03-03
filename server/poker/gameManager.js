@@ -86,6 +86,10 @@ function getOrCreateRoom(roomId, opts = {}) {
       phase:          'waiting',
       pot:            0,
       dealerIndex:    -1,
+      // ゲーム開始時に固定するポジション情報（フォールドしても変わらない）
+      fixedDealerIdx: -1,
+      fixedSbIdx:     -1,
+      fixedBbIdx:     -1,
       actionIndex:    -1,
       currentBet:     0,
       raiseCount:     0,
@@ -129,6 +133,7 @@ function joinRoom(roomId, socketId, name) {
     hand: [], bet: 0, folded: false,
     acted: false, drewThisRound: false, drawCount: null,
     sittingOut: false,
+    timeoutCount: 0,   // 連続タイムアウト回数（3回で退室）
   };
 
   const inProgress = PHASES.indexOf(room.phase) > 0 && room.phase !== 'showdown';
@@ -208,14 +213,33 @@ function startGame(roomId, onTimeout) {
   _postBlind(room, sbIndex, SMALL_BLIND);
   _postBlind(room, bbIndex, BIG_BLIND);
 
-  // bet0（プリドロー）フェーズへ: UTG（BBの左）から
+  // ゲーム中に変わらない固定ポジションを記録
+  room.fixedDealerIdx = room.dealerIndex;
+  room.fixedSbIdx     = sbIndex;
+  room.fixedBbIdx     = bbIndex;
+
+  // bet0（プリドロー）フェーズへ
+  // アクション順: UTG (BB の左隣) から開始し、最後に BB が option を持つ
   const utgIndex = _nextActiveFromSafe(room, bbIndex);
   room.phase      = 'bet0';
-  room.currentBet = BIG_BLIND;
+  room.currentBet = BIG_BLIND;  // BB が既にポスト済み
   room.raiseCount = 0;
   room.betSize    = SMALL_BET;
-  // BBはオプション権あり（acted = false のまま）
-  room.players[bbIndex].acted = false;
+
+  // 全員の acted を正しく初期化
+  for (const p of room.players) {
+    if (p.sittingOut || p.folded) {
+      p.acted = true;   // 待機中・フォールドはスキップ
+    } else if (room.players.indexOf(p) === bbIndex) {
+      // BB: ポスト済みだが option 権のため acted = false
+      p.acted = false;
+    } else if (room.players.indexOf(p) === sbIndex) {
+      // SB: ポスト済みだが不足しているので acted = false
+      p.acted = false;
+    } else {
+      p.acted = false;  // その他も未アクション
+    }
+  }
   room.actionIndex = utgIndex;
   _startTimer(room);
 
@@ -483,8 +507,10 @@ function buildGameState(room, requesterId) {
   const isBetPhase     = room.phase.startsWith('bet');
   const timerRemaining = getTimerRemaining(room);
 
-  const sbIdx = room.dealerIndex >= 0 ? _nextActiveFromSafe(room, room.dealerIndex)      : -1;
-  const bbIdx = sbIdx >= 0             ? _nextActiveFromSafe(room, sbIdx)                : -1;
+  // 固定ポジション（ゲーム開始時に記録、フォールドしても変わらない）
+  const sbIdx = room.fixedSbIdx     >= 0 ? room.fixedSbIdx     : -1;
+  const bbIdx = room.fixedBbIdx     >= 0 ? room.fixedBbIdx     : -1;
+  const dealerIdx = room.fixedDealerIdx >= 0 ? room.fixedDealerIdx : room.dealerIndex;
 
   const playerStates = room.players.map((p) => {
     const isSelf   = p.id === requesterId;
@@ -502,7 +528,7 @@ function buildGameState(room, requesterId) {
       result: reveal && p.hand.length > 0 && !p.folded
                 ? evaluateHand(p.hand, room.currentMode) : undefined,
       isWinner:  isShowdown && p.id === winnerId,
-      isDealer:  myIdx === room.dealerIndex,
+      isDealer:  myIdx === dealerIdx,
       isSB:      myIdx === sbIdx && sbIdx >= 0,
       isBB:      myIdx === bbIdx && bbIdx >= 0,
       ...(isSelf ? {
@@ -528,7 +554,7 @@ function buildGameState(room, requesterId) {
     // クライアントでは (raiseCount + 1) / (MAX_RAISES + 1) = "1/5" 形式で表示
     raiseCount:     room.raiseCount,
     maxRaises:      MAX_RAISES,
-    dealerIndex:    room.dealerIndex,
+    dealerIndex:    dealerIdx,   // 固定値（フォールドで変わらない）
     handCount:      room.handCount,
     timerRemaining, timerLimit: room._timerLimit,
     pendingPlayers: room.pendingPlayers.map((p) => p.name),
@@ -567,13 +593,16 @@ function leaveRoom(socketId) {
       if (room.players.length === 0) {
         _clearTimer(room);
         // 全員退出 → フェーズをリセットして次の入室に備える
-        room.phase       = 'waiting';
-        room.pot         = 0;
-        room.dealerIndex = -1;
-        room.actionIndex = -1;
-        room.deck        = [];
-        room.discardPile = [];
-        room._potAwarded = false;
+        room.phase          = 'waiting';
+        room.pot            = 0;
+        room.dealerIndex    = -1;
+        room.actionIndex    = -1;
+        room.fixedDealerIdx = -1;
+        room.fixedSbIdx     = -1;
+        room.fixedBbIdx     = -1;
+        room.deck           = [];
+        room.discardPile    = [];
+        room._potAwarded    = false;
         room._selectedIndices = {};
         if (room.isUserCreated) rooms.delete(roomId);
       }
@@ -599,10 +628,32 @@ function canAutoStart(roomId) {
 
 function getAllRooms() { return rooms; }
 
+/**
+ * タイムアウト発生時にカウンターを増加し、3回で退室フラグを返す
+ * @returns {boolean} true なら退室させる
+ */
+function incrementTimeout(roomId, socketId) {
+  const room = rooms.get(roomId);
+  if (!room) return false;
+  const player = room.players.find((p) => p.id === socketId);
+  if (!player) return false;
+  player.timeoutCount = (player.timeoutCount || 0) + 1;
+  return player.timeoutCount >= 3;
+}
+
+/** アクション成功時にカウンターをリセット */
+function resetTimeout(roomId, socketId) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  const player = room.players.find((p) => p.id === socketId);
+  if (player) player.timeoutCount = 0;
+}
+
 module.exports = {
   getOrCreateRoom, joinRoom, leaveRoom,
   startGame, drawCards, betAction, updateSelectedIndices,
   buildGameState, removePlayer, canAutoStart, getAllRooms,
+  incrementTimeout, resetTimeout,
   getRoomMode,
   STARTING_CHIPS, SMALL_BLIND, BIG_BLIND, SMALL_BET, BIG_BET, MAX_PLAYERS,
 };
