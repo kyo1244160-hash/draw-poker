@@ -39,6 +39,8 @@ const {
   incrementTimeout, resetTimeout,
 } = require('./poker/gameManager');
 
+const { registerZoomHandlers, getAllPools, getWaitingCount, getTotalCount } = require('./zoom/zoomManager');
+
 // ===== Next.js =====
 const dev    = process.env.NODE_ENV !== 'production';
 const app    = next({ dev });
@@ -50,17 +52,35 @@ const handle = app.getRequestHandler();
 
 function _initFixedRooms() {
   const fixed = [];
-  for (let i = 1; i <= cfg.ROOM_COUNT; i++) {
-    const mode   = i % 2 === 0 ? 'badugi' : '27';
-    const label  = mode === 'badugi' ? `Badugi Room ${i}` : `2-7 Room ${i}`;
-    const roomId = mode === 'badugi' ? `badugi-room-${i}` : `27-room-${i}`;
-    getOrCreateRoom(roomId, { label });
-    fixed.push({ id: roomId, label, mode, isFixed: true });
+
+  // 通常部屋: 各モード×3
+  const normalDefs = [
+    { id: '27-room-1',     label: '2-7 Room 1',    mode: '27'     },
+    { id: 'badugi-room-1', label: 'Badugi Room 1', mode: 'badugi' },
+    { id: 'mix-room-1',    label: 'Mix Room 1',    mode: 'mix'    },
+    { id: '27-room-2',     label: '2-7 Room 2',    mode: '27'     },
+    { id: 'badugi-room-2', label: 'Badugi Room 2', mode: 'badugi' },
+    { id: 'mix-room-2',    label: 'Mix Room 2',    mode: 'mix'    },
+    { id: '27-room-3',     label: '2-7 Room 3',    mode: '27'     },
+    { id: 'badugi-room-3', label: 'Badugi Room 3', mode: 'badugi' },
+    { id: 'mix-room-3',    label: 'Mix Room 3',    mode: 'mix'    },
+  ];
+  for (const r of normalDefs) {
+    getOrCreateRoom(r.id, { label: r.label });
+    fixed.push({ id: r.id, label: r.label, mode: r.mode, isFixed: true, isZoom: false });
   }
-  // Mix部屋
-  const mixId = 'mix-room-1';
-  getOrCreateRoom(mixId, { label: 'Mix Room 1 (2-7↔Badugi)' });
-  fixed.push({ id: mixId, label: 'Mix Room 1', mode: 'mix', isFixed: true });
+
+  // FastFold（Zoom）部屋: 各モード1つ（一番下）
+  const zoomDefs = [
+    { id: 'zoom-27',     label: '2-7 Room (FastFold)',    mode: '27'     },
+    { id: 'zoom-badugi', label: 'Badugi Room (FastFold)', mode: 'badugi' },
+    { id: 'zoom-mix',    label: 'Mix Room (FastFold)',    mode: 'mix'    },
+  ];
+  for (const z of zoomDefs) {
+    getOrCreateRoom(z.id, { label: z.label });
+    fixed.push({ id: z.id, label: z.label, mode: z.mode, isFixed: true, isZoom: true });
+  }
+
   return fixed;
 }
 
@@ -72,8 +92,10 @@ function getLobbyList() {
     const room = getOrCreateRoom(fr.id);
     list.push({
       id: fr.id, label: fr.label, mode: fr.mode,
-      count: room.players.length + room.pendingPlayers.length,
-      hasPassword: false, isUserRoom: false,
+      count: fr.isZoom
+        ? getTotalCount(fr.id)
+        : room.players.length + room.pendingPlayers.length,
+      hasPassword: false, isUserRoom: false, isZoom: fr.isZoom ?? false,
     });
   }
   for (const [, room] of getAllRooms()) {
@@ -121,9 +143,8 @@ app.prepare().then(() => {
     });
 
     // ----- 部屋作成 -----
-    socket.on('createRoom', ({ label, mode, password }) => {
-      return;
-    });
+    // createRoom は現在無効化中
+    // socket.on('createRoom', ...)
 
     // ----- 入室 -----
     socket.on('joinRoom', ({ roomId, name, password }) => {
@@ -203,8 +224,24 @@ app.prepare().then(() => {
     });
 
     // ----- 切断 -----
+    // ----- 退室予約 -----
+    socket.on('reserveLeave', ({ roomId, type }) => {
+      if (!roomId || !['afterHand', 'nextBB', 'cancel'].includes(type)) return;
+      if (type === 'cancel') {
+        leaveReservations.delete(socket.id);
+      } else {
+        leaveReservations.set(socket.id, type);
+      }
+      // 予約状態をそのプレイヤーに返す
+      socket.emit('leaveReservation', { type: type === 'cancel' ? null : type });
+    });
+
+    // ----- Zoom（FastFold）ハンドラ -----
+    registerZoomHandlers(io, socket);
+
     socket.on('disconnect', () => {
       console.log(`[disconnect] ${socket.id}`);
+      leaveReservations.delete(socket.id);
       if (currentRoom.roomId) _handleLeave(io, socket, currentRoom.roomId);
     });
   });
@@ -270,6 +307,80 @@ function _makeTimeoutHandler(io, roomId) {
   };
 }
 
+// ==========================================================
+// ■ 退室予約管理
+// ==========================================================
+// socketId → 'afterHand' | 'nextBB'
+const leaveReservations = new Map();
+
+function _doReservedLeave(io, socketId, roomId) {
+  leaveReservations.delete(socketId);
+  leaveRoom(socketId);
+  const sock = io.sockets.sockets.get(socketId);
+  if (sock) {
+    sock.leave(roomId);
+    sock.emit('kicked', { reason: 'reserved' });
+  }
+  io.emit('roomList', getLobbyList());
+  _broadcastLobbyUpdate(io, roomId);
+  _broadcast(io, roomId);
+}
+
+function _processLeaveReservations(io, roomId) {
+  const room = getOrCreateRoom(roomId);
+  if (!room) return;
+
+  // 次ゲームのBBになるプレイヤーのsocketId
+  // _processLeaveReservations は startGame() の前に呼ばれるため
+  // 「現在のfixedBbIdx」の次の位置が次のBBになる（通常: BBの左隣がDealer翌ハンドのSB、さらにその左がBB）
+  // 簡易計算: 現dealerIdxから順に次のBBを特定
+  const players = room.players;
+  let nextBbSocketId = null;
+  if (players.length >= 2 && room.dealerIndex >= 0) {
+    // 次のハンドのdealer = 現dealerの左隣の非sittingOut
+    let nextDealer = (room.dealerIndex + 1) % players.length;
+    for (let t = 0; t < players.length; t++) {
+      if (!players[nextDealer]?.sittingOut) break;
+      nextDealer = (nextDealer + 1) % players.length;
+    }
+    if (players.length === 2) {
+      // ヘッズアップ: nextDealer = SB、相手がBB
+      const nextBbIdx = (nextDealer + 1) % players.length;
+      nextBbSocketId = players[nextBbIdx]?.id;
+    } else {
+      // 通常: nextDealer→SB→BB
+      let sb = (nextDealer + 1) % players.length;
+      for (let t = 0; t < players.length; t++) {
+        if (!players[sb]?.sittingOut) break;
+        sb = (sb + 1) % players.length;
+      }
+      let bb = (sb + 1) % players.length;
+      for (let t = 0; t < players.length; t++) {
+        if (!players[bb]?.sittingOut) break;
+        bb = (bb + 1) % players.length;
+      }
+      nextBbSocketId = players[bb]?.id;
+    }
+  }
+
+  for (const player of [...players]) {
+    const reservation = leaveReservations.get(player.id);
+    if (!reservation) continue;
+
+    if (reservation === 'afterHand') {
+      _doReservedLeave(io, player.id, roomId);
+    } else if (reservation === 'nextBB' && player.id === nextBbSocketId) {
+      _doReservedLeave(io, player.id, roomId);
+    }
+  }
+}
+
+function _hasAnyReservation(roomId) {
+  const room = getOrCreateRoom(roomId);
+  if (!room) return false;
+  return room.players.some((p) => leaveReservations.has(p.id));
+}
+
 function _tryAutoStart(io, roomId) {
   const onTimeout = _makeTimeoutHandler(io, roomId);
   const room = startGame(roomId, onTimeout);
@@ -280,9 +391,18 @@ function _tryAutoStart(io, roomId) {
   }
 }
 
-/** ショーダウン後3秒待ってから次ゲームを自動スタート */
+/** ショーダウン後の自動スタート。FastFoldテーブルは即スタート、通常部屋は3秒待つ */
 function _scheduleAutoStart(io, roomId) {
-  setTimeout(() => { if (canAutoStart(roomId)) _tryAutoStart(io, roomId); }, 3000);
+  const room = getOrCreateRoom(roomId);
+  // 退室予約者は即退室
+  _processLeaveReservations(io, roomId);
+  if (room?.isZoomTable) {
+    // FastFoldテーブルは即スタート
+    if (canAutoStart(roomId)) _tryAutoStart(io, roomId);
+  } else {
+    // 通常部屋は3秒待つ
+    setTimeout(() => { if (canAutoStart(roomId)) _tryAutoStart(io, roomId); }, 3000);
+  }
 }
 
 function _broadcastLobbyUpdate(io, roomId) {

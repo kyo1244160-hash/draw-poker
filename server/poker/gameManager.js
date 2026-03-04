@@ -80,6 +80,7 @@ function getOrCreateRoom(roomId, opts = {}) {
       currentMode:    baseMode === 'mix' ? '27' : baseMode,
       password:       opts.password       ?? null,
       isUserCreated:  opts.isUserCreated  ?? false,
+      isZoomTable:    opts.isZoomTable    ?? false,
       players:        [],
       pendingPlayers: [],
       deck:           [],
@@ -473,6 +474,17 @@ function _advanceBetAction(room) {
     next = (next + 1) % room.players.length;
   }
   room.actionIndex = next;
+
+  // ターンが回ってきたプレイヤーが fastFoldPending なら即フォールドして次へ
+  const nextPlayer = room.players[room.actionIndex];
+  if (nextPlayer?.fastFoldPending && !nextPlayer.folded) {
+    nextPlayer.fastFoldPending = false;
+    nextPlayer.folded = true;
+    nextPlayer.acted  = true;
+    _advanceBetAction(room);
+    return;
+  }
+
   _startTimer(room);
 }
 
@@ -642,6 +654,43 @@ function leaveRoom(socketId) {
 
 function removePlayer(socketId) { return leaveRoom(socketId); }
 
+// ==========================================================
+// ■ FastFold（ターン外でも即フォールド）
+// ==========================================================
+
+/**
+ * FastFold: ターン中・外を問わず即座にフォールドしてルームから削除する。
+ * - 自分のターン中なら betAction('fold') と同等の処理をしてから退室
+ * - ターン外なら folded フラグを立てた上で退室（手番を次に進める）
+ * @returns {string|null} roomId or null
+ */
+function fastFoldPlayer(socketId) {
+  for (const [roomId, room] of rooms.entries()) {
+    const idx = room.players.findIndex((p) => p.id === socketId);
+    if (idx === -1) continue;
+    const player = room.players[idx];
+
+    const inBetPhase = room.phase.startsWith('bet');
+    if (!inBetPhase) return null;
+    if (player.folded) return null;
+
+    // 自分のターン中なら即フォールド
+    if (room.actionIndex === idx) {
+      player.folded = true;
+      player.acted  = true;
+      _clearTimer(room);
+      _advanceBetAction(room);
+      return roomId;
+    }
+
+    // ターン外なら「ターンが来たら自動フォールド」フラグだけ立てる
+    // 他プレイヤーには通常のプレイヤーとして見える
+    player.fastFoldPending = true;
+    return roomId;
+  }
+  return null;
+}
+
 function canAutoStart(roomId) {
   const room = rooms.get(roomId);
   if (!room) return false;
@@ -673,7 +722,7 @@ function resetTimeout(roomId, socketId) {
 }
 
 module.exports = {
-  getOrCreateRoom, joinRoom, leaveRoom,
+  getOrCreateRoom, joinRoom, leaveRoom, fastFoldPlayer,
   startGame, drawCards, betAction, updateSelectedIndices,
   buildGameState, removePlayer, canAutoStart, getAllRooms,
   incrementTimeout, resetTimeout,

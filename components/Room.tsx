@@ -20,6 +20,7 @@ interface RoomInfo {
   count:       number;
   hasPassword: boolean;
   isUserRoom:  boolean;
+  isZoom:      boolean;
 }
 
 export default function Room() {
@@ -73,8 +74,15 @@ export default function Room() {
     if (!selected)     { setError('部屋を選択してください'); return; }
     const room = rooms.find((r) => r.id === selected);
     if (room?.hasPassword && !password.trim()) { setError('パスワードを入力してください'); return; }
-    socket.emit('joinRoom', { roomId: selected, name: name.trim(), password: password.trim() || undefined });
-    router.push(`/room/${encodeURIComponent(selected)}?name=${encodeURIComponent(name.trim())}`);
+
+    if (room?.isZoom) {
+      // FastFold（Zoom）: joinRoom は送らず /zoom/[poolId] へ遷移
+      // プールへの参加は ZoomTable 側で z:join として送信する
+      router.push(`/zoom/${encodeURIComponent(selected)}?name=${encodeURIComponent(name.trim())}`);
+    } else {
+      socket.emit('joinRoom', { roomId: selected, name: name.trim(), password: password.trim() || undefined });
+      router.push(`/room/${encodeURIComponent(selected)}?name=${encodeURIComponent(name.trim())}`);
+    }
   };
 
   const handleCreate = () => {
@@ -121,37 +129,6 @@ export default function Room() {
             <h2 style={S.panelTitle}><span style={S.titleLine}/>ROOMS<span style={S.titleLine}/></h2>
           </div>
 
-          {/* 部屋作成フォーム */}
-          {showCreate && (
-            <div style={S.createForm}>
-              <p style={S.createTitle}>新しい部屋を作成</p>
-              <input
-                type="text" maxLength={30} placeholder="部屋名（例: My Room）"
-                value={newLabel} onChange={(e) => setNewLabel(e.target.value)}
-                style={S.createInput}
-              />
-              <div style={S.modeSelect}>
-                {(['27','badugi','mix'] as const).map((m) => (
-                  <button key={m} onClick={() => setNewMode(m)} style={{
-                    ...S.modeBtn,
-                    background: newMode === m ? modeBg(m) : 'rgba(0,0,0,0.2)',
-                    color:      newMode === m ? modeColor(m) : 'var(--cream-dim)',
-                    border:     `1px solid ${newMode === m ? modeBorder(m) : 'rgba(255,255,255,0.1)'}`,
-                  }}>
-                    {modeLabel(m)}
-                  </button>
-                ))}
-              </div>
-              <input
-                type="password" maxLength={20} placeholder="パスワード（任意）"
-                value={newPassword} onChange={(e) => setNewPassword(e.target.value)}
-                style={S.createInput}
-              />
-              {createError && <p style={S.errorMsg}>{createError}</p>}
-              <button onClick={handleCreate} style={S.joinBtn}>作成する</button>
-            </div>
-          )}
-
           {/* 凡例 */}
           <div style={S.legend}>
             {[['27','2-7'],['badugi','Badugi'],['mix','Mix']].map(([m,l]) => (
@@ -159,6 +136,9 @@ export default function Room() {
                 <span style={{ ...S.legendDot, background: modeColor(m) }} />{l}
               </span>
             ))}
+            <span style={S.legendItem}>
+              <span style={{ ...S.legendDot, background: '#88ee66' }} />⚡ FastFold
+            </span>
           </div>
 
           {/* 部屋リスト */}
@@ -176,6 +156,7 @@ export default function Room() {
                     </span>
                     {r.hasPassword && <span style={S.lockIcon}>🔒</span>}
                     {r.isUserRoom  && <span style={S.userRoomBadge}>カスタム</span>}
+                    {r.isZoom      && <span style={S.zoomBadge}>⚡ FastFold</span>}
                   </div>
                   <div style={S.roomLabel}>{r.label}</div>
                 </div>
@@ -211,6 +192,7 @@ export default function Room() {
               {/* ゲーム説明 */}
               <div style={S.ruleBox}>
                 <p style={S.ruleTitle}>{modeLabel(selectedRoom.mode)}</p>
+                {selectedRoom.isZoom && <p style={{ ...S.ruleText, color: '#aadd88' }}>⚡ FastFold: フォールドした瞬間に次のテーブルへ移動。6人集まり次第すぐにゲーム開始。</p>}
                 {selectedRoom.mode === 'badugi' && <p style={S.ruleText}>4枚の手札 × 3回ドロー。スートが全て異なる低い手が最強。</p>}
                 {selectedRoom.mode === '27'     && <p style={S.ruleText}>5枚の手札 × 3回ドロー。低い手が強い。フラッシュ・ストレートは弱い。</p>}
                 {selectedRoom.mode === 'mix'    && <p style={S.ruleText}>BTNが1周するごとに 2-7 と Badugi を交互に切替。</p>}
@@ -335,6 +317,7 @@ const S: Record<string, React.CSSProperties> = {
   modeBadge:       { display: 'inline-block', fontSize: 10, fontFamily: 'var(--font-title)', padding: '2px 6px', borderRadius: 3, letterSpacing: '0.04em' },
   lockIcon:        { fontSize: 12 },
   userRoomBadge:   { fontSize: 9, fontFamily: 'var(--font-title)', padding: '2px 5px', borderRadius: 3, background: 'rgba(255,255,255,0.1)', color: 'var(--cream-dim)', border: '1px solid rgba(255,255,255,0.15)' },
+  zoomBadge:       { fontSize: 9, fontFamily: 'var(--font-title)', padding: '2px 6px', borderRadius: 3, background: 'rgba(100,220,80,0.18)', color: '#88ee66', border: '1px solid rgba(100,220,80,0.4)', letterSpacing: '0.04em' },
   roomLabel:       { fontFamily: 'var(--font-title)', fontSize: 14, letterSpacing: '0.06em', color: 'var(--cream)' },
   roomCount:       { fontFamily: 'var(--font-body)', fontSize: 17, color: 'var(--cream-dim)', flexShrink: 0 },
   ruleBox:         { background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(201,168,76,0.15)', borderRadius: 8, padding: '8px 14px', marginBottom: 10 },

@@ -35,7 +35,7 @@ interface Meta {
   pendingPlayers: string[]; playerCount: number; maxPlayers: number;
 }
 
-interface Props { roomId: string; name: string; mode: '27' | 'badugi' | 'mix'; }
+interface Props { roomId: string; name: string; mode: '27' | 'badugi' | 'mix'; onFastFold?: () => void; }
 
 // ===== 定数 =====
 const PHASE_LABEL: Record<string,string> = {
@@ -46,7 +46,7 @@ const PHASE_LABEL: Record<string,string> = {
 const MODE_LABEL: Record<string,string> = { '27':'2-7 Triple Draw', badugi:'Badugi', mix:'Mix' };
 
 // ===== メインコンポーネント =====
-const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
+const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
   const router = useRouter();
 
   const [players,       setPlayers]       = useState<Player[]>([]);
@@ -62,6 +62,10 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
   const [lastDrawCount, setLastDrawCount] = useState<Record<string,number|null>>({});
   // ショーダウン後のカウントダウン（3→2→1）
   const [countdown, setCountdown] = useState<number|null>(null);
+  // 退室予約: null | 'afterHand' | 'nextBB'
+  const [leaveReservation, setLeaveReservation] = useState<null|'afterHand'|'nextBB'>(null);
+  // kicked通知メッセージ
+  const [kickedMsg, setKickedMsg] = useState<string|null>(null);
 
   // デバイス判定（SSR安全）: 初期値をSSR時は null にしてフラッシュを防ぐ
   const [layout, setLayout] = useState<'pc'|'portrait'|'landscape'|null>(null);
@@ -95,8 +99,13 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
     const onGameStarted = () => { setSelected([]); setMyDrew(false); setLastDrawCount({}); setCountdown(null); };
     const onTimerUpdate = ({ remaining }: { remaining:number }) => setTimerSec(remaining);
     const onKicked = ({ reason }:{ reason?:string } = {}) => {
-      if (reason) alert(reason);
-      router.push('/');
+      if (reason && reason !== 'reserved') {
+        // タイムアウトキックなど → 1.5秒メッセージ表示してからロビーへ
+        setKickedMsg(reason);
+        setTimeout(() => router.push('/'), 1500);
+      } else {
+        router.push('/');
+      }
     };
 
     socket.on('connect',     onConnect);
@@ -115,6 +124,8 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
     };
     socket.on('showdown', onShowdown);
     socket.on('kicked',      onKicked);
+    const onLeaveReservation = ({ type }: { type: null|'afterHand'|'nextBB' }) => setLeaveReservation(type);
+    socket.on('leaveReservation', onLeaveReservation);
 
     if (socket.connected) socket.emit('joinRoom', { roomId, name });
     else socket.connect();
@@ -123,6 +134,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
       socket.off('connect',onConnect); socket.off('gameState',onGameState);
       socket.off('gameStarted',onGameStarted); socket.off('timerUpdate',onTimerUpdate);
       socket.off('showdown',onShowdown); socket.off('kicked',onKicked);
+      socket.off('leaveReservation', onLeaveReservation);
     };
   }, [roomId, name]);
 
@@ -174,11 +186,41 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
   const clearSelected = () => { setSelected([]); socket.emit('updateSelected',{roomId,indices:[]}); };
   const handleBet   = (action:string) => socket.emit('betAction', {roomId, action});
   const handleLeave = () => { socket.emit('leaveRoom', {roomId}); router.push('/'); };
+  const handleLeaveReserve = (type: 'afterHand'|'nextBB'|'cancel') => {
+    socket.emit('reserveLeave', { roomId, type });
+  };
 
   // ===== バッジ =====
   const Badge = ({bg,color,label}:{bg:string,color:string,label:string}) => (
     <span style={{fontSize:9,fontFamily:'var(--font-title)',padding:'1px 5px',borderRadius:3,background:bg,color,flexShrink:0}}>{label}</span>
   );
+
+  // 退室予約チェックボックス（自分のカードの左側に表示）
+  const LeaveReserveBox = ({compact=false}:{compact?:boolean}) => {
+    if (meta.phase === 'waiting') return null;
+    const fs = compact ? 10 : 12;
+    const chk = (type: 'afterHand'|'nextBB') => leaveReservation === type;
+    const toggle = (type: 'afterHand'|'nextBB') =>
+      handleLeaveReserve(leaveReservation === type ? 'cancel' : type);
+    return (
+      <div style={{display:'flex',flexDirection:'column',gap:compact?4:6,justifyContent:'center',
+        padding:compact?'2px 4px':'4px 8px',
+        background:'rgba(0,0,0,0.3)',border:'1px solid rgba(201,168,76,0.2)',
+        borderRadius:6,flexShrink:0}}>
+        <div style={{fontFamily:'var(--font-title)',fontSize:fs-1,color:'var(--gold-dim)',
+          letterSpacing:'0.05em',whiteSpace:'nowrap' as const,marginBottom:compact?0:2}}>退室予約</div>
+        {(['afterHand','nextBB'] as const).map((type) => (
+          <label key={type} style={{display:'flex',alignItems:'center',gap:4,cursor:'pointer',
+            fontSize:fs,color:chk(type)?'var(--gold-bright)':'var(--cream-dim)',
+            fontFamily:'var(--font-body)',whiteSpace:'nowrap' as const}}>
+            <input type="checkbox" checked={chk(type)} onChange={()=>toggle(type)}
+              style={{accentColor:'var(--gold)',width:compact?10:12,height:compact?10:12,cursor:'pointer',flexShrink:0}}/>
+            {type==='afterHand'?'このハンド後':'次のBBで'}
+          </label>
+        ))}
+      </div>
+    );
+  };
 
   // ===== アクションボタン（2×2グリッド）=====
   const ActionButtons = ({compact=false}:{compact?:boolean}) => {
@@ -262,6 +304,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
     if (isBetPhase && !isMyTurn) return (
       <div style={actionColStyle}>
         <div style={infoStyle}>{curPlayer?`${curPlayer.name} がアクション中...`:'待機中...'}</div>
+        {onFastFold && btn(onFastFold, '⚡ FastFold', 'gold')}
       </div>
     );
 
@@ -278,6 +321,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
             </span>
           )}
         </div>
+        {onFastFold && btn(onFastFold, '⚡ FastFold', 'gold')}
       </div>
     );
 
@@ -398,6 +442,21 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
   // ==========================================================
   // ■ レイアウト未確定（SSR / 初回レンダリング前）
   // ==========================================================
+  // kickedメッセージオーバーレイ
+  if (kickedMsg) {
+    return (
+      <div style={{height:'100dvh',display:'flex',alignItems:'center',justifyContent:'center',
+        background:'var(--felt)',fontFamily:'var(--font-body)'}}>
+        <div style={{background:'linear-gradient(160deg,rgba(22,92,56,0.9),rgba(10,51,32,0.95))',
+          border:'1px solid var(--gold-dim)',borderRadius:12,padding:'32px 40px',
+          textAlign:'center',boxShadow:'0 8px 40px rgba(0,0,0,0.6)',maxWidth:320}}>
+          <div style={{fontFamily:'var(--font-title)',fontSize:28,color:'var(--gold)',marginBottom:12}}>退室</div>
+          <div style={{color:'var(--cream-dim)',fontSize:15,lineHeight:1.6}}>{kickedMsg}</div>
+        </div>
+      </div>
+    );
+  }
+
   if (layout === null) {
     return <div style={{height:'100dvh',display:'flex',alignItems:'center',justifyContent:'center',background:'var(--felt)',color:'var(--gold)',fontFamily:'var(--font-title)',fontSize:18}}>読み込み中...</div>;
   }
@@ -495,6 +554,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
             <div style={{margin:'1px 0'}}><TimerBar remaining={timerSec} limit={meta.timerLimit}/></div>
           )}
           <div style={{display:'flex',gap:isPortrait?2:2,justifyContent:'center',flexWrap:'nowrap' as const,margin:'2px 0'}}>
+            <div style={{display:'flex',gap:isPortrait?2:2,justifyContent:'center',flexWrap:'nowrap' as const}}>
             {p.hand.map((code, j) => (
               <div key={j} style={{display:'flex',flexDirection:'column' as const,alignItems:'center'}}>
                 <Card code={code} size={p.isSelf ? SELF_CARD : OTH_CARD}
@@ -507,6 +567,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
                 )}
               </div>
             ))}
+            </div>
           </div>
           {!p.isSelf && (isDrawPhase||isBetPhase) && dc!==null && (
             <div style={{
@@ -608,6 +669,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
               borderLeft:'1px solid rgba(201,168,76,0.15)',padding:'8px 6px',
               display:'flex',flexDirection:'column',justifyContent:'center',gap:6,overflow:'hidden'}}>
               <ActionButtons compact />
+              <LeaveReserveBox compact />
             </div>
           </div>
         </div>
@@ -681,6 +743,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
             </div>
             <div style={{display:'flex',flexDirection:'column',gap:6,flex:1,justifyContent:'center'}}>
               <ActionButtons compact />
+              <LeaveReserveBox compact />
             </div>
             <div style={{fontSize:8,color:'var(--gold-dim)',fontFamily:'var(--font-body)',textAlign:'center'}}>
               {effectiveMode==='badugi'?'★ Badugi':'★ 2-7 Low'}
@@ -780,16 +843,16 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
                 </div>
                 {p.isMyTurn&&meta.timerLimit>0&&timerSec!==null&&<TimerBar remaining={timerSec} limit={meta.timerLimit}/>}
                 <div style={{display:'flex',justifyContent:'center',gap:p.isSelf?7:4,flexWrap:'nowrap' as const,margin:'5px 0'}}>
-                  {p.hand.map((code,j)=>(
-                    <div key={j} style={{display:'flex',flexDirection:'column' as const,alignItems:'center'}}>
-                      <Card code={code} size={p.isSelf?'lg':'sm'}
-                        selected={p.isSelf&&selected.includes(j)}
-                        clickable={p.isSelf&&isDrawPhase&&isMyTurn&&!myDrew}
-                        folded={p.folded}
-                        onClick={()=>handleCardClick(j)} />
-                      {p.isSelf&&selected.includes(j)&&<span style={{fontSize:9,color:'#e84040',fontFamily:'var(--font-title)',marginTop:2}}>捨てる</span>}
-                    </div>
-                  ))}
+                    {p.hand.map((code,j)=>(
+                      <div key={j} style={{display:'flex',flexDirection:'column' as const,alignItems:'center'}}>
+                        <Card code={code} size={p.isSelf?'lg':'sm'}
+                          selected={p.isSelf&&selected.includes(j)}
+                          clickable={p.isSelf&&isDrawPhase&&isMyTurn&&!myDrew}
+                          folded={p.folded}
+                          onClick={()=>handleCardClick(j)} />
+                        {p.isSelf&&selected.includes(j)&&<span style={{fontSize:9,color:'#e84040',fontFamily:'var(--font-title)',marginTop:2}}>捨てる</span>}
+                      </div>
+                    ))}
                 </div>
                 {!p.isSelf&&(isDrawPhase||isBetPhase)&&(()=>{
                   const cnt=isDrawPhase?(p.drewThisRound?p.drawCount:null):(lastDrawCount[p.id]??null);
@@ -819,6 +882,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
             </div>
           )}
           <ActionButtons />
+          <LeaveReserveBox />
         </div>
       </div>
 
