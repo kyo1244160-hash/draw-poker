@@ -62,11 +62,20 @@ function get27Category(hand) {
 
 /** 2-7 の役名（日本語）を返す */
 function evaluate27Hand(hand) {
+  // 2-7 ローボール専用の役名
+  // ノーペアのみ「〇ロー」（最大カードで表示）
+  const cat = get27Category(hand);
+  if (cat === 0) {
+    // ノーペア: 最大カードを特定して「X ロー」と表示
+    const nums = hand.map((c) => RANK_ORDER[c[0]]).sort((a, b) => b - a);
+    const rankName = {2:'2',3:'3',4:'4',5:'5',6:'6',7:'7',8:'8',9:'9',10:'T',11:'J',12:'Q',13:'K',14:'A'};
+    return rankName[nums[0]] + ' ロー';
+  }
   const names = [
-    'ノーペア', 'ワンペア', 'ツーペア', 'スリーカード',
+    '', 'ワンペア', 'ツーペア', 'スリーカード',
     'ストレート', 'フラッシュ', 'フルハウス', 'フォーカード', 'ストレートフラッシュ',
   ];
-  return names[get27Category(hand)] ?? '不明';
+  return names[cat] ?? '不明';
 }
 
 /**
@@ -78,13 +87,11 @@ function compare27Hands(handA, handB) {
   const catB = get27Category(handB);
   if (catA !== catB) return catA - catB; // カテゴリが低いほど強い
 
-  // 両方ノーペア → 最大カードから順に比較（低いほど強い）
-  if (catA === 0) {
-    const numsA = handA.map((c) => RANK_ORDER[c[0]]).sort((a, b) => b - a);
-    const numsB = handB.map((c) => RANK_ORDER[c[0]]).sort((a, b) => b - a);
-    for (let i = 0; i < 5; i++) {
-      if (numsA[i] !== numsB[i]) return numsA[i] - numsB[i];
-    }
+  // 同カテゴリ → カードを降順に並べて順番に比較（低いほど強い）
+  const numsA = handA.map((c) => RANK_ORDER[c[0]]).sort((a, b) => b - a);
+  const numsB = handB.map((c) => RANK_ORDER[c[0]]).sort((a, b) => b - a);
+  for (let i = 0; i < numsA.length; i++) {
+    if (numsA[i] !== numsB[i]) return numsA[i] - numsB[i];
   }
   return 0;
 }

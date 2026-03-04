@@ -40,7 +40,7 @@ const RANK_LABEL: Record<string, string> = {
 
 /** サイズプリセット */
 const SIZE_PRESET = {
-  sm: { w: 38, h: 56, fontSize: 13, suitSize: 11 },
+  sm: { w: 32, h: 48, fontSize: 11, suitSize: 9 },
   md: { w: 52, h: 76, fontSize: 17, suitSize: 15 },
   lg: { w: 66, h: 96, fontSize: 21, suitSize: 19 },
 } as const;

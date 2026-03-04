@@ -63,8 +63,8 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
   // ショーダウン後のカウントダウン（3→2→1）
   const [countdown, setCountdown] = useState<number|null>(null);
 
-  // デバイス判定（SSR安全）
-  const [layout, setLayout] = useState<'pc'|'portrait'|'landscape'>('pc');
+  // デバイス判定（SSR安全）: 初期値をSSR時は null にしてフラッシュを防ぐ
+  const [layout, setLayout] = useState<'pc'|'portrait'|'landscape'|null>(null);
 
   useEffect(() => {
     const update = () => {
@@ -103,7 +103,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
     socket.on('gameState',   onGameState);
     socket.on('gameStarted', onGameStarted);
     socket.on('timerUpdate', onTimerUpdate);
-    socket.on('showdown', () => {
+    const onShowdown = () => {
       // 3秒カウントダウン表示
       setCountdown(3);
       const tick = setInterval(() => {
@@ -112,7 +112,8 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
           return prev - 1;
         });
       }, 1000);
-    });
+    };
+    socket.on('showdown', onShowdown);
     socket.on('kicked',      onKicked);
 
     if (socket.connected) socket.emit('joinRoom', { roomId, name });
@@ -121,7 +122,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
     return () => {
       socket.off('connect',onConnect); socket.off('gameState',onGameState);
       socket.off('gameStarted',onGameStarted); socket.off('timerUpdate',onTimerUpdate);
-      socket.off('showdown'); socket.off('kicked',onKicked);
+      socket.off('showdown',onShowdown); socket.off('kicked',onKicked);
     };
   }, [roomId, name]);
 
@@ -395,18 +396,25 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
   );
 
   // ==========================================================
+  // ■ レイアウト未確定（SSR / 初回レンダリング前）
+  // ==========================================================
+  if (layout === null) {
+    return <div style={{height:'100dvh',display:'flex',alignItems:'center',justifyContent:'center',background:'var(--felt)',color:'var(--gold)',fontFamily:'var(--font-title)',fontSize:18}}>読み込み中...</div>;
+  }
+
+  // ==========================================================
   // ■ スマホ共通: 楕円テーブル（縦/横自動対応）
   // ==========================================================
   if (layout === 'portrait' || layout === 'landscape') {
     const isPortrait = layout === 'portrait';
     const others     = orderedOthers;  // 自分基準で時計回りに並べた他プレイヤー
 
-    const vw = typeof window !== 'undefined' ? window.innerWidth  : 390;
-    const vh = typeof window !== 'undefined' ? window.innerHeight : 844;
-    const NAV_H  = 42;   // compact NavBar 実測高さ: padding 6px×2 + img 24px + border 1px
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const NAV_H  = 44;   // compact NavBar 高さ
     const POT_H  = meta.phase !== 'waiting' ? 32 : 0;
     const RULE_H = 16;
-    const ACT_W  = 116;  // アクションカラム幅
+    const ACT_W  = 130;  // アクションカラム幅
     const ACT_H  = 112;  // アクションパネル高さ（縦表示）
 
     let TW: number, TH: number;
@@ -420,14 +428,14 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
     }
     TW = Math.max(TW, 200); TH = Math.max(TH, 140);
 
-    // 楕円半径（横表示では横に広く、縦に狭く）
-    const RX = isPortrait ? TW * 0.34 : TW * 0.40;
-    const RY = isPortrait ? TH * 0.35 : TH * 0.34;
+    // 楕円半径（プレイヤーが重ならないよう広め）
+    const RX = isPortrait ? TW * 0.36 : TW * 0.42;
+    const RY = isPortrait ? TH * 0.37 : TH * 0.36;
     const CX = TW / 2;    const CY = TH / 2;
 
-    const BOX_W      = Math.max(70, Math.floor(Math.min(TW, TH) * 0.30));
-    const SELF_BOX_H = isPortrait ? Math.floor(TH * 0.38) : Math.floor(TH * 0.44);
-    const OTH_BOX_H  = isPortrait ? Math.floor(TH * 0.28) : Math.floor(TH * 0.36);
+    const BOX_W      = Math.max(65, Math.floor(Math.min(TW, TH) * 0.26));
+    const SELF_BOX_H = isPortrait ? Math.floor(TH * 0.34) : Math.floor(TH * 0.40);
+    const OTH_BOX_H  = isPortrait ? Math.floor(TH * 0.24) : Math.floor(TH * 0.32);
 
     const SELF_CARD: 'sm'|'md' = BOX_W >= 95 ? 'md' : 'sm';
     const OTH_CARD:  'sm'|'md' = 'sm';
@@ -462,8 +470,8 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
         <div key={p.id} style={{
           position:'absolute', left, top, width: BOX_W,
           textAlign:'center', padding:'3px 2px', borderRadius:7,
-          border: active ? '1.5px solid var(--gold)' : p.isWinner ? '1.5px solid var(--gold-bright)' : '1px solid rgba(201,168,76,0.2)',
-          boxShadow: active ? '0 0 10px rgba(201,168,76,0.5)' : p.isWinner ? '0 0 14px rgba(240,208,96,0.55)' : 'none',
+          border: active ? '1.5px solid var(--gold)' : p.isWinner ? '3px solid var(--gold-bright)' : '1px solid rgba(201,168,76,0.2)',
+          boxShadow: active ? '0 0 10px rgba(201,168,76,0.5)' : p.isWinner ? '0 0 30px rgba(240,208,96,0.85),0 0 0 3px rgba(240,208,96,0.2)' : 'none',
           background: p.isSelf ? 'rgba(10,50,30,0.85)' : active ? 'rgba(201,168,76,0.07)' : 'rgba(0,0,0,0.4)',
           opacity: (p.folded && !p.sittingOut) ? 0.4 : p.sittingOut ? 0.5 : 1,
           zIndex: p.isSelf ? 3 : 2, transition:'all 0.2s',
@@ -474,7 +482,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
             {p.isBB       && <Badge bg="#b85a10" color="#fff"    label="BB"/>}
             {p.folded && !p.sittingOut && <Badge bg="#444" color="#aaa" label="FOLD"/>}
             {p.sittingOut && <Badge bg="#555" color="#bbb" label="WAIT"/>}
-            {p.isWinner   && <Badge bg="#f0d060" color="#1a1200" label="WIN"/>}
+            {p.isWinner   && <Badge bg="#f0d060" color="#1a1200" label="🏆 WIN"/>}
           </div>
           <div style={{fontFamily:'var(--font-title)',fontSize:fs.name,color:p.isSelf?'var(--gold-bright)':'var(--cream)',
             whiteSpace:'nowrap' as const,overflow:'hidden',textOverflow:'ellipsis',letterSpacing:'0.02em',maxWidth:BOX_W-6}}>
@@ -566,6 +574,19 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
                 )}
               </div>
             )}
+
+            {/* ディーラーボタン（スマホ）*/}
+            {(()=>{
+              const dp = players.find((pp)=>pp.isDealer);
+              if (!dp || meta.dealerIndex<0) return null;
+              const {left:pl,top:pt}=getPosMobile(dp);
+              const bh2 = dp.isSelf ? SELF_BOX_H : OTH_BOX_H;
+              const dcx = pl+BOX_W/2; const dcy = pt+bh2/2;
+              const ddx = dcx-CX; const ddy = dcy-CY;
+              const dd = Math.sqrt(ddx*ddx+ddy*ddy);
+              const sc = dd>0?Math.max(0,(dd-30))/dd:0;
+              return <div key="m-d-btn" style={{position:'absolute',left:CX+ddx*sc-11,top:CY+ddy*sc-11,width:22,height:22,borderRadius:'50%',background:'#fff',border:'2px solid #444',display:'flex',alignItems:'center',justifyContent:'center',fontSize:9,fontWeight:'900',color:'#1a1a1a',boxShadow:'0 1px 4px rgba(0,0,0,0.7)',zIndex:5,pointerEvents:'none',fontFamily:'var(--font-title)'}}>D</div>;
+            })()}
             {/* 全プレイヤー */}
             {players.map((p) => renderMobilePlayer(p))}
           </div>
@@ -634,6 +655,17 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
             )}
             {/* 全プレイヤー */}
             {players.map((p) => renderMobilePlayer(p))}
+
+            {/* ディーラーD ボタン（横表示）*/}
+            {players.find((pp)=>pp.isDealer) && meta.dealerIndex>=0 && (()=>{
+              const dp=players.find((pp)=>pp.isDealer)!;
+              const pos=getPosMobile(dp); const bh2=dp.isSelf?SELF_BOX_H:OTH_BOX_H;
+              const dcx=pos.left+BOX_W/2; const dcy=pos.top+bh2/2;
+              const ddx=dcx-CX; const ddy=dcy-CY;
+              const dd=Math.sqrt(ddx*ddx+ddy*ddy);
+              const sc=dd>0?Math.max(0,(dd-28))/dd:0;
+              return <div key="ld" style={{position:"absolute",left:CX+ddx*sc-10,top:CY+ddy*sc-10,width:20,height:20,borderRadius:"50%",background:"#fff",border:"1.5px solid #444",display:"flex",alignItems:"center",justifyContent:"center",fontSize:8,fontWeight:"900",color:"#1a1a1a",boxShadow:"0 1px 4px rgba(0,0,0,0.7)",zIndex:5,pointerEvents:"none",fontFamily:"var(--font-title)"}}>D</div>;
+            })()}
             </div>{/* 内側コンテナ終了 */}
           </div>
           {/* アクションカラム */}
@@ -662,10 +694,10 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
   // ==========================================================
   // ■ PC版レイアウト（楕円テーブル）
   // ==========================================================
-  const TW=1100; const TH=760;
-  const CX=TW/2; const CY=TH/2-10;
-  const RX=390; const RY=270;
-  const BW=230;
+  const TW=Math.min(1100,Math.max(600,window.innerWidth-280)); const TH=Math.min(760,Math.max(460,window.innerHeight-96)); const CX=TW/2; const CY=TH/2-10;
+  const ACT_PANEL_W=280;
+  const RX=TW*0.353; const RY=TH*0.353;
+  const BW=Math.max(175,Math.floor(TW*0.21));
   const others = orderedOthers;  // 自分基準で時計回りに並べた他プレイヤー
 
   const getPos = (p:Player) => {
@@ -678,19 +710,19 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
     }
     const rad=(ang*Math.PI)/180;
     const cx=CX+RX*Math.cos(rad); const cy=CY+RY*Math.sin(rad);
-    const bh=p.isSelf?240:190;
+    const bh=p.isSelf?Math.floor(TH*0.31):Math.floor(TH*0.25);
     return {left:cx-BW/2, top:cy-bh/2};
   };
 
   const selfPlayer = players.find((p)=>p.isSelf);
 
   return (
-    <div style={{minHeight:'100vh',display:'flex',flexDirection:'column',alignItems:'center',paddingBottom:16,position:'relative',zIndex:1,fontFamily:'var(--font-body)'}}>
+    <div style={{height:'100dvh',display:'flex',flexDirection:'column',alignItems:'center',overflow:'hidden',position:'relative',zIndex:1,fontFamily:'var(--font-body)'}}>
       <NavBar />
       <PendingBar />
 
       {/* テーブル + アクション（横並び）*/}
-      <div style={{display:'flex',alignItems:'center',gap:0,width:'100%',maxWidth:TW+280,padding:'0 16px'}}>
+      <div style={{display:'flex',alignItems:'center',gap:0,width:'100%',maxWidth:TW+ACT_PANEL_W+32,padding:'0 16px',flex:1,minHeight:0}}>
         {/* テーブル */}
         <div style={{position:'relative',width:TW,height:TH,flexShrink:0}}>
           <div style={{position:'absolute',top:'50%',left:'50%',transform:'translate(-50%,-50%)',width:'70%',height:'62%',borderRadius:'50%',background:'radial-gradient(ellipse at 40% 40%,#1a6b42,#0a3320)',border:'8px solid var(--gold-dim)',boxShadow:'0 0 40px rgba(0,0,0,0.8),inset 0 0 30px rgba(0,0,0,0.4)',zIndex:0}} />
@@ -703,6 +735,21 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
             </div>
           )}
 
+
+          {/* ディーラーボタン（D の白い丸）*/}
+          {(()=>{
+            const btn = players.find((p)=>p.isDealer);
+            if (!btn || meta.dealerIndex<0) return null;
+            const pos = getPos(btn);
+            const bh = btn.isSelf ? Math.floor(TH*0.31) : Math.floor(TH*0.25);
+            const cx = pos.left + BW/2;
+            const cy = pos.top  + bh/2;
+            const dx = cx - CX; const dy = cy - CY;
+            const dist = Math.sqrt(dx*dx+dy*dy);
+            const scale = dist>0 ? Math.max(0,(dist-40))/dist : 0;
+            const bx = CX+dx*scale; const by = CY+dy*scale;
+            return <div key="d-btn" style={{position:'absolute',left:bx-14,top:by-14,width:28,height:28,borderRadius:'50%',background:'#fff',border:'2px solid #444',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:'var(--font-title)',fontSize:11,fontWeight:'900',color:'#1a1a1a',boxShadow:'0 2px 6px rgba(0,0,0,0.7)',zIndex:5,pointerEvents:'none'}}>D</div>;
+          })()}
           {/* プレイヤーボックス */}
           {players.map((p) => {
             const {left,top}=getPos(p);
@@ -714,7 +761,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
                 ...(p.isMyTurn&&!p.folded&&!p.sittingOut?{border:'1px solid var(--gold)',boxShadow:'0 0 18px rgba(201,168,76,0.5)',background:'rgba(201,168,76,0.08)'}:{}),
                 ...(p.folded&&!p.sittingOut?{opacity:0.4}:{}),
                 ...(p.sittingOut?{opacity:0.5,border:'1px solid rgba(255,255,255,0.1)'}:{}),
-                ...(p.isWinner?{border:'1px solid var(--gold-bright)',boxShadow:'0 0 22px rgba(240,208,96,0.6)',background:'rgba(201,168,76,0.12)'}:{}),
+                ...(p.isWinner?{border:'3px solid var(--gold-bright)',boxShadow:'0 0 40px rgba(240,208,96,0.9),0 0 0 4px rgba(240,208,96,0.25)',background:'rgba(201,168,76,0.22)'}:{}),
               }}>
                 <div style={{display:'flex',gap:4,justifyContent:'center',marginBottom:4,flexWrap:'wrap' as const}}>
                   {p.isDealer   && <Badge bg="#c9a84c" color="#1a1200" label="BTN"/>}
@@ -722,7 +769,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
                   {p.isBB       && <Badge bg="#b85a10" color="#fff"    label="BB"/>}
                   {p.folded&&!p.sittingOut && <Badge bg="#444" color="#aaa" label="FOLD"/>}
                   {p.sittingOut && <Badge bg="#555" color="#bbb" label="WAIT"/>}
-                  {p.isWinner   && <Badge bg="#f0d060" color="#1a1200" label="👑WIN"/>}
+                  {p.isWinner   && <Badge bg="#f0d060" color="#1a1200" label="🏆 WIN"/>}
                 </div>
                 <p style={{fontFamily:'var(--font-title)',fontSize:14,color:p.isSelf?'var(--gold-bright)':'var(--cream)',letterSpacing:'0.04em',margin:'0 0 3px',whiteSpace:'nowrap' as const,overflow:'hidden',textOverflow:'ellipsis'}}>
                   {p.isSelf?`${p.name} (YOU)`:p.name}
@@ -757,7 +804,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
 
         {/* アクションパネル（テーブル右側縦積み）*/}
         <div style={{
-          width:270,flexShrink:0,
+          width:ACT_PANEL_W,flexShrink:0,
           background:'linear-gradient(160deg,rgba(22,92,56,0.5),rgba(10,51,32,0.7))',
           border:'1px solid var(--gold-dim)',borderRadius:12,padding:'20px 18px',
           display:'flex',flexDirection:'column',justifyContent:'center',gap:12,
@@ -775,7 +822,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode }) => {
         </div>
       </div>
 
-      <p style={{textAlign:'center',fontSize:13,color:'var(--gold-dim)',fontFamily:'var(--font-body)',marginTop:10,padding:'0 12px'}}>
+      <p style={{textAlign:'center',fontSize:13,color:'var(--gold-dim)',fontFamily:'var(--font-body)',marginTop:4,padding:'0 8px',flexShrink:0}}>
         {effectiveMode==='badugi'?'★ Badugi: 全スート異なる低い4枚が最強。枚数が多い方が強い。':'★ 2-7 Lowball: 低い手が強い。フラッシュ・ストレートは弱い手。Aは常に最高位。'}
       </p>
     </div>

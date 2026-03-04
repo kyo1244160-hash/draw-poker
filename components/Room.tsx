@@ -36,6 +36,8 @@ export default function Room() {
   const [newMode,      setNewMode]      = useState<'27'|'badugi'|'mix'>('27');
   const [newPassword,  setNewPassword]  = useState('');
   const [createError,  setCreateError]  = useState('');
+  // スマホ用: 入室パネルを表示中かどうか
+  const [showJoinPanel, setShowJoinPanel] = useState(false);
 
   // ===== Socket.IO =====
   useEffect(() => {
@@ -63,6 +65,7 @@ export default function Room() {
   const handleSelect = (id: string) => {
     setSelected(id); setError(''); setPassword('');
     socket.emit('getRoomPlayers', id);
+    setShowJoinPanel(true); // スマホ: 選択したら入室パネルを表示
   };
 
   const handleJoin = () => {
@@ -110,9 +113,10 @@ export default function Room() {
         <div style={S.heroDivider} />
       </header>
 
+      {/* ===== PC: 2カラム / スマホ: 1カラム（入室パネル表示中は差し替え）===== */}
       <div style={S.layout}>
-        {/* ===== 左パネル: 部屋一覧 ===== */}
-        <section style={S.panel}>
+        {/* 部屋リストパネル: スマホで入室パネル表示中は非表示 */}
+        <section style={{ ...S.panel, ...(showJoinPanel ? { display: 'none' } : {}) }} className="room-list-panel">
           <div style={S.panelHeader}>
             <h2 style={S.panelTitle}><span style={S.titleLine}/>ROOMS<span style={S.titleLine}/></h2>
           </div>
@@ -182,9 +186,21 @@ export default function Room() {
           </div>
         </section>
 
-        {/* ===== 右パネル: 入室フォーム ===== */}
-        <section style={S.panel}>
-          <h2 style={S.panelTitle}>
+        {/* 入室パネル: スマホは showJoinPanel 時のみ表示、PC は常時表示 */}
+        <section style={{ ...S.panel, ...(showJoinPanel ? {} : {}) }} className="join-panel-wrapper">
+          {/* 戻るボタン: スマホのみ表示 */}
+          <div className="back-btn-row" style={{ display: 'none', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+            <button onClick={() => setShowJoinPanel(false)} style={S.createToggleBtn}>
+              ← 戻る
+            </button>
+            <h2 style={{ ...S.panelTitle, flex: 1, margin: 0 }}>
+              <span style={S.titleLine}/>
+              {selectedRoom ? selectedRoom.label.toUpperCase() : 'SELECT ROOM'}
+              <span style={S.titleLine}/>
+            </h2>
+          </div>
+          {/* タイトル: PC版 */}
+          <h2 style={S.panelTitle} className="join-panel-title">
             <span style={S.titleLine}/>
             {selectedRoom ? selectedRoom.label.toUpperCase() : 'SELECT ROOM'}
             <span style={S.titleLine}/>
@@ -249,6 +265,46 @@ export default function Room() {
       </div>
 
       <footer style={S.footer}><span style={S.suitRow}>♠ ♥ ♦ ♣</span></footer>
+
+      <style>{`
+        /* スマホ: 入室パネルを非表示→表示切替 */
+        @media (max-width: 767px) {
+          .room-list-panel {
+            display: ${showJoinPanel ? 'none' : 'block'} !important;
+            width: 100%;
+          }
+          .join-panel-wrapper {
+            display: ${showJoinPanel ? 'block' : 'none'} !important;
+            width: 100%;
+          }
+          .back-btn-row {
+            display: ${showJoinPanel ? 'flex' : 'none'} !important;
+          }
+          .join-panel-title {
+            display: none !important;
+          }
+        }
+        /* PC: 常時2カラム、戻るボタン非表示 */
+        @media (min-width: 768px) {
+          .room-list-panel {
+            display: block !important;
+            flex: 1;
+            min-width: 320px;
+          }
+          .join-panel-wrapper {
+            display: block !important;
+            flex: 1;
+            min-width: 320px;
+          }
+          .back-btn-row {
+            display: none !important;
+          }
+          .join-panel-title {
+            display: flex !important;
+            margin-bottom: 16px;
+          }
+        }
+      `}</style>
     </div>
   );
 }

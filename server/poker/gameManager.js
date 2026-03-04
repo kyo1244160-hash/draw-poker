@@ -208,8 +208,19 @@ function startGame(roomId, onTimeout) {
   }
 
   // SB / BB ポスト
-  const sbIndex = _nextActiveFromSafe(room, room.dealerIndex);
-  const bbIndex = _nextActiveFromSafe(room, sbIndex);
+  // ヘッズアップ特例: BTN(dealer) = SB、相手 = BB
+  const isHeadsUp = activePlayers.length === 2;
+
+  let sbIndex, bbIndex;
+  if (isHeadsUp) {
+    // ヘッズアップ: dealer = BTN = SB
+    sbIndex = room.dealerIndex;
+    bbIndex = _nextActiveFromSafe(room, sbIndex);
+  } else {
+    // 通常: dealer の左隣が SB
+    sbIndex = _nextActiveFromSafe(room, room.dealerIndex);
+    bbIndex = _nextActiveFromSafe(room, sbIndex);
+  }
   _postBlind(room, sbIndex, SMALL_BLIND);
   _postBlind(room, bbIndex, BIG_BLIND);
 
@@ -217,10 +228,12 @@ function startGame(roomId, onTimeout) {
   room.fixedDealerIdx = room.dealerIndex;
   room.fixedSbIdx     = sbIndex;
   room.fixedBbIdx     = bbIndex;
+  room.isHeadsUp      = isHeadsUp;
 
   // bet0（プリドロー）フェーズへ
-  // アクション順: UTG (BB の左隣) から開始し、最後に BB が option を持つ
-  const utgIndex = _nextActiveFromSafe(room, bbIndex);
+  // 通常: UTG (BB の左隣) から開始し、最後に BB が option を持つ
+  // ヘッズアップ: BTN/SB が先行アクション（コール or レイズ）、最後に BB が option を持つ
+  const bet0StartIndex = isHeadsUp ? sbIndex : _nextActiveFromSafe(room, bbIndex);
   room.phase      = 'bet0';
   room.currentBet = BIG_BLIND;  // BB が既にポスト済み
   room.raiseCount = 0;
@@ -240,7 +253,7 @@ function startGame(roomId, onTimeout) {
       p.acted = false;  // その他も未アクション
     }
   }
-  room.actionIndex = utgIndex;
+  room.actionIndex = bet0StartIndex;
   _startTimer(room);
 
   return room;
@@ -419,7 +432,7 @@ function betAction(roomId, socketId, action) {
 
   } else if (action === 'bet' || action === 'raise') {
     // 5bet-cap 超過はコールに変換
-    if (room.raiseCount >= MAX_RAISES) {
+    if (room.raiseCount > MAX_RAISES) {
       const actual = Math.min(toCall, player.chips);
       player.chips -= actual; player.bet += actual; room.pot += actual;
       player.acted = true;
@@ -474,13 +487,17 @@ function _nextPhase(room) {
 
   if (next.startsWith('draw')) {
     _resetDrawRound(room);
-    room.actionIndex = _nextActiveFromSafe(room, room.dealerIndex);
+    // ドローラウンド: 通常/ヘッズアップ共にSB(dealer)から先行
+    const dealerRef = room.fixedDealerIdx >= 0 ? room.fixedDealerIdx : room.dealerIndex;
+    room.actionIndex = _nextActiveFromSafe(room, dealerRef);
     _startTimer(room);
   } else if (next.startsWith('bet')) {
     // draw2以降（bet2, bet3）はビッグベット
     const betSize = isBigBetPhase(next) ? BIG_BET : SMALL_BET;
     _resetBetRound(room, betSize);
-    room.actionIndex = _nextActiveFromSafe(room, room.dealerIndex);
+    // ベットラウンド（bet1以降）: 通常/ヘッズアップ共にSB(dealer)から先行
+    const dealerRef = room.fixedDealerIdx >= 0 ? room.fixedDealerIdx : room.dealerIndex;
+    room.actionIndex = _nextActiveFromSafe(room, dealerRef);
     _startTimer(room);
   } else if (next === 'showdown') {
     _clearTimer(room);
@@ -535,7 +552,7 @@ function buildGameState(room, requesterId) {
         toCall,
         canCheck: isBetPhase && toCall === 0,
         // 5bet-cap: raiseCount < MAX_RAISES のときのみレイズ可
-        canRaise: isBetPhase && room.raiseCount < MAX_RAISES,
+        canRaise: isBetPhase && room.raiseCount <= MAX_RAISES,
         betSize:  room.betSize,
       } : {}),
       ...(isMyTurn ? { timerRemaining } : {}),
@@ -590,6 +607,11 @@ function leaveRoom(socketId) {
       room.pendingPlayers = room.pendingPlayers.filter((p) => p.id !== socketId);
       delete room._selectedIndices[socketId];
 
+      // プレイヤー削除後、固定インデックスをズレないよう補正
+      if (room.fixedDealerIdx > idx) room.fixedDealerIdx--;
+      if (room.fixedSbIdx     > idx) room.fixedSbIdx--;
+      if (room.fixedBbIdx     > idx) room.fixedBbIdx--;
+
       if (room.players.length === 0) {
         _clearTimer(room);
         // 全員退出 → フェーズをリセットして次の入室に備える
@@ -622,7 +644,8 @@ function removePlayer(socketId) { return leaveRoom(socketId); }
 
 function canAutoStart(roomId) {
   const room = rooms.get(roomId);
-  if (!room || room.phase !== 'showdown') return false;
+  if (!room) return false;
+  if (room.phase !== 'showdown' && room.phase !== 'waiting') return false;
   return room.players.filter((p) => !p.sittingOut).length + room.pendingPlayers.length >= 2;
 }
 
