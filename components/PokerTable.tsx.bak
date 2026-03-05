@@ -151,7 +151,6 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
     if (selfIdx < 0) return players.filter((p) => !p.isSelf);
     const len = players.length;
     const result: Player[] = [];
-    // 配列上の右隣(selfIdx-1)から逆順 → 画面上は右→上→左(時計回り)
     for (let i = 1; i < len; i++) {
       const p = players[(selfIdx + i) % len];
       if (!p.isSelf) result.push(p);
@@ -196,20 +195,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
     <span style={{fontSize:9,fontFamily:'var(--font-title)',padding:'1px 5px',borderRadius:3,background:bg,color,flexShrink:0}}>{label}</span>
   );
 
-  // カスタムチェックボックス（ポーカーテーマ）
-  const ChkBox = ({checked, onChange}:{checked:boolean, onChange:()=>void}) => (
-    <div onClick={onChange} style={{
-      width:13, height:13, borderRadius:3, flexShrink:0, cursor:'pointer',
-      border: checked ? '1.5px solid var(--gold)' : '1.5px solid rgba(201,168,76,0.35)',
-      background: checked ? 'var(--gold)' : 'rgba(0,0,0,0.45)',
-      display:'flex', alignItems:'center', justifyContent:'center',
-      transition:'all 0.15s', boxShadow: checked ? '0 0 5px rgba(201,168,76,0.4)' : 'none',
-    }}>
-      {checked && <span style={{color:'#1a1200',fontSize:9,fontWeight:'900',lineHeight:1,marginTop:-1}}>✓</span>}
-    </div>
-  );
-
-  // 退室予約チェックボックス
+  // 退室予約チェックボックス（自分のカードの左側に表示）
   const LeaveReserveBox = ({compact=false}:{compact?:boolean}) => {
     if (meta.phase === 'waiting') return null;
     const fs = compact ? 10 : 12;
@@ -217,24 +203,20 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
     const toggle = (type: 'afterHand'|'nextBB') =>
       handleLeaveReserve(leaveReservation === type ? 'cancel' : type);
     return (
-      <div style={{display:'flex',flexDirection:'column',gap:compact?5:6,justifyContent:'center',
-        padding:compact?'5px 6px':'6px 10px',
-        background:'rgba(0,0,0,0.35)',border:'1px solid rgba(201,168,76,0.2)',
+      <div style={{display:'flex',flexDirection:'column',gap:compact?4:6,justifyContent:'center',
+        padding:compact?'2px 4px':'4px 8px',
+        background:'rgba(0,0,0,0.3)',border:'1px solid rgba(201,168,76,0.2)',
         borderRadius:6,flexShrink:0}}>
         <div style={{fontFamily:'var(--font-title)',fontSize:fs-1,color:'var(--gold-dim)',
-          letterSpacing:'0.05em',whiteSpace:'nowrap' as const,marginBottom:1}}>退室予約</div>
+          letterSpacing:'0.05em',whiteSpace:'nowrap' as const,marginBottom:compact?0:2}}>退室予約</div>
         {(['afterHand','nextBB'] as const).map((type) => (
-          <div key={type} style={{display:'flex',alignItems:'center',gap:5,cursor:'pointer'}}
-            onClick={()=>toggle(type)}>
-            <ChkBox checked={chk(type)} onChange={()=>toggle(type)}/>
-            <span style={{
-              fontSize:fs, color:chk(type)?'var(--gold-bright)':'var(--cream-dim)',
-              fontFamily:'var(--font-body)', whiteSpace:'nowrap' as const,
-              userSelect:'none',
-            }}>
-              {type==='afterHand'?'このハンド後':'次のBBで'}
-            </span>
-          </div>
+          <label key={type} style={{display:'flex',alignItems:'center',gap:4,cursor:'pointer',
+            fontSize:fs,color:chk(type)?'var(--gold-bright)':'var(--cream-dim)',
+            fontFamily:'var(--font-body)',whiteSpace:'nowrap' as const}}>
+            <input type="checkbox" checked={chk(type)} onChange={()=>toggle(type)}
+              style={{accentColor:'var(--gold)',width:compact?10:12,height:compact?10:12,cursor:'pointer',flexShrink:0}}/>
+            {type==='afterHand'?'このハンド後':'次のBBで'}
+          </label>
         ))}
       </div>
     );
@@ -242,16 +224,15 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
 
   // ===== アクションボタン（2×2グリッド）=====
   const ActionButtons = ({compact=false}:{compact?:boolean}) => {
-    const fs  = compact ? 12 : 16;
-    const py  = compact ? 8  : 13;
-    const px  = compact ? 10 : 18;
+    const fs  = compact ? 13 : 16;
+    const py  = compact ? 10 : 13;
+    const px  = compact ? 8  : 18;
     const btn = (onClick:()=>void, label:string, variant:'gold'|'gray'|'red'|'outline') => {
       const base:React.CSSProperties = {
         padding: `${py}px ${px}px`, border:'none', borderRadius:7,
         fontSize:fs, fontWeight:'700', cursor:'pointer',
         fontFamily:'var(--font-title)', letterSpacing:'0.03em',
         textAlign:'center' as const, width:'100%', lineHeight:1.2,
-        whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis',
       };
       const variants = {
         gold:    { background:'linear-gradient(135deg,var(--gold),var(--gold-dim))', color:'#1a1200', boxShadow:'0 2px 10px rgba(201,168,76,0.4)' },
@@ -263,7 +244,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
     };
 
     // 2列グリッドラッパー
-    const Grid2 = ({children}:{children?:React.ReactNode}) => (
+    const Grid2 = ({children}:{children:React.ReactNode}) => (
       <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap: compact?5:8, width:'100%'}}>
         {children}
       </div>
@@ -284,11 +265,11 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
 
     if (isDrawPhase && isMyTurn && !myDrew) return (
       <div style={actionColStyle}>
-        <div style={{...infoStyle, gridColumn:'unset'}}>
-          {selected.length>0?`${selected.length}枚選択中`:'捨てるカードを選択'}
-        </div>
-        {btn(handleDraw, selected.length>0 ? `🔄 ${selected.length}枚交換` : '✋ スタンドパット', 'gold')}
-        {selected.length>0 && btn(clearSelected,'選択解除','outline')}
+        <Grid2>
+          <div style={infoStyle}>{selected.length>0?`${selected.length}枚選択中`:'捨てるカードを選択'}</div>
+          {btn(handleDraw, selected.length>0?`🔄 ${selected.length}枚`:'✋ Stand Pat', 'gold')}
+          {selected.length>0 ? btn(clearSelected,'選択解除','outline') : <div/>}
+        </Grid2>
       </div>
     );
 
@@ -300,21 +281,23 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
 
     if (isBetPhase && isMyTurn && self) return (
       <div style={actionColStyle}>
-        <div style={{...infoStyle, gridColumn:'unset'}}>
-          {self.toCall!>0?`コール: ${self.toCall}`:'チェック or ベット'}
-          <span style={{fontSize:fs-3,opacity:0.65,display:'block'}}>単位:{self.betSize} Bet {raiseDisplay}</span>
-        </div>
-        {btn(()=>handleBet('fold'),'フォールド','red')}
-        {self.canCheck
-          ? btn(()=>handleBet('check'),'チェック','gray')
-          : btn(()=>handleBet('call'),`コール (${self.toCall})`,'gray')
-        }
-        {self.canRaise
-          ? btn(()=>handleBet(meta.currentBet===0?'bet':'raise'),
-              meta.currentBet===0?`ベット (+${self.betSize})`:`レイズ (+${self.betSize})`,
-              'gold')
-          : null
-        }
+        <Grid2>
+          <div style={infoStyle}>
+            {self.toCall!>0?`コール: ${self.toCall}`:'チェック or ベット'}
+            <span style={{fontSize:fs-3,opacity:0.65,display:'block'}}>単位:{self.betSize} Bet {raiseDisplay}</span>
+          </div>
+          {btn(()=>handleBet('fold'),'フォールド','red')}
+          {self.canCheck
+            ? btn(()=>handleBet('check'),'チェック','gray')
+            : btn(()=>handleBet('call'),`コール\n(${self.toCall})`,'gray')
+          }
+          {self.canRaise
+            ? btn(()=>handleBet(meta.currentBet===0?'bet':'raise'),
+                meta.currentBet===0?`ベット\n(${self.betSize})`:`レイズ\n(+${self.betSize})`,
+                'gold')
+            : <div/>
+          }
+        </Grid2>
       </div>
     );
 
@@ -436,16 +419,15 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
   // ===== テーブル中央テキスト =====
   const CenterInfo = ({big=false}:{big?:boolean}) => meta.phase==='waiting' ? null : (
     <div style={{textAlign:'center',pointerEvents:'none'}}>
-      <div style={{fontFamily:'var(--font-title)',fontSize:big?13:10,color:modeColor,letterSpacing:'0.12em',opacity:0.85,marginBottom:2}}>
+      <div style={{fontFamily:'var(--font-title)',fontSize:big?13:10,color:modeColor,letterSpacing:'0.12em',opacity:0.85,marginBottom:3}}>
         {MODE_LABEL[effectiveMode]}
       </div>
-      <div style={{fontFamily:'var(--font-title)',fontSize:big?20:13,letterSpacing:'0.15em',
+      <div style={{fontFamily:'var(--font-title)',fontSize:big?22:14,letterSpacing:'0.18em',
         color:isBetPhase?'var(--gold-bright)':isDrawPhase?'#88ddff':'var(--cream-dim)',
         textShadow:'0 0 12px rgba(0,0,0,0.9)',lineHeight:1.1}}>
         {PHASE_LABEL[meta.phase]}
       </div>
-      {meta.pot>0 && <div style={{fontSize:big?16:11,color:'#f0d060',fontWeight:'700',marginTop:3,fontFamily:'var(--font-title)'}}>🏦 {meta.pot}</div>}
-      {isBetPhase && meta.currentBet>0 && <div style={{fontSize:big?12:9,color:'#ffcc44',marginTop:1,fontFamily:'var(--font-body)'}}>BET {meta.currentBet} · {raiseDisplay}</div>}
+      {isBetPhase && <div style={{fontSize:big?12:9,color:'rgba(255,255,255,0.45)',marginTop:2,fontFamily:'var(--font-body)'}}>Bet {raiseDisplay}</div>}
     </div>
   );
 
@@ -491,8 +473,8 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
     const NAV_H  = 44;   // compact NavBar 高さ
     const POT_H  = meta.phase !== 'waiting' ? 32 : 0;
     const RULE_H = 16;
-    const ACT_W  = 148;  // アクションカラム幅
-    const ACT_H  = 120;  // アクションパネル高さ（縦表示）
+    const ACT_W  = 130;  // アクションカラム幅
+    const ACT_H  = 112;  // アクションパネル高さ（縦表示）
 
     let TW: number, TH: number;
     if (isPortrait) {
@@ -506,24 +488,21 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
     TW = Math.max(TW, 200); TH = Math.max(TH, 140);
 
     // 楕円半径（プレイヤーが重ならないよう広め）
-    const RX = isPortrait ? TW * 0.42 : TW * 0.44;
-    const RY = isPortrait ? TH * 0.42 : TH * 0.40;
+    const RX = isPortrait ? TW * 0.36 : TW * 0.42;
+    const RY = isPortrait ? TH * 0.37 : TH * 0.36;
     const CX = TW / 2;    const CY = TH / 2;
 
-    // 他プレイヤーbox幅: xs カード5枚(20px)+gap(1px)×4=104px が収まる最小値
-    const OTH_BOX_W  = Math.max(138, Math.floor(Math.min(TW, TH) * 0.30));
-    // 自分box幅: sm カード5枚(32px)+gap(4px)×4=176px が収まるよう広め
-    const SELF_BOX_W = Math.min(Math.floor(TW * 0.60), TW - 16);
+    const BOX_W      = Math.max(65, Math.floor(Math.min(TW, TH) * 0.26));
     const SELF_BOX_H = isPortrait ? Math.floor(TH * 0.34) : Math.floor(TH * 0.40);
-    const OTH_BOX_H  = isPortrait ? Math.floor(TH * 0.26) : Math.floor(TH * 0.32);
+    const OTH_BOX_H  = isPortrait ? Math.floor(TH * 0.24) : Math.floor(TH * 0.32);
 
-    const SELF_CARD: 'sm'|'md' = 'sm';
-    const OTH_CARD:  'xs'|'sm'|'md' = 'xs';
+    const SELF_CARD: 'sm'|'md' = BOX_W >= 95 ? 'md' : 'sm';
+    const OTH_CARD:  'sm'|'md' = 'sm';
 
     // portrait: 上部扇状、landscape: 左右対称
     const SLOTS = isPortrait
-      ? [145, -145, -90, -35, 35]
-      : [150, -150,  -90,  -30, 30];
+      ? [-90, -145, -35, 145, 35]
+      : [-90,  -30,  30, 150, 210];
 
     const getPosMobile = (p: Player) => {
       let ang: number;
@@ -533,26 +512,23 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
         ang = SLOTS[idx] ?? (-90 + 72 * (idx + 1));
       }
       const rad = (ang * Math.PI) / 180;
-      const bw  = p.isSelf ? SELF_BOX_W : OTH_BOX_W;
       const bh  = p.isSelf ? SELF_BOX_H : OTH_BOX_H;
       return {
-        left: CX + RX * Math.cos(rad) - bw / 2,
+        left: CX + RX * Math.cos(rad) - BOX_W / 2,
         top:  CY + RY * Math.sin(rad) - bh / 2,
       };
     };
 
-    const fs = { name: Math.max(9, Math.floor(OTH_BOX_W * 0.10)), chip: Math.max(9, Math.floor(OTH_BOX_W * 0.095)) };
+    const fs = { name: Math.max(9, Math.floor(BOX_W * 0.12)), chip: Math.max(9, Math.floor(BOX_W * 0.115)) };
 
     const renderMobilePlayer = (p: Player) => {
       const {left, top} = getPosMobile(p);
       const active = p.isMyTurn && !p.folded && !p.sittingOut;
       const dc = isDrawPhase ? (p.drewThisRound ? p.drawCount : null) : (lastDrawCount[p.id] ?? null);
-      const bw = p.isSelf ? SELF_BOX_W : OTH_BOX_W;
       return (
         <div key={p.id} style={{
-          position:'absolute', left, top, width: bw,
+          position:'absolute', left, top, width: BOX_W,
           textAlign:'center', padding:'3px 2px', borderRadius:7,
-          overflow: p.isSelf ? 'visible' : 'hidden',
           border: active ? '1.5px solid var(--gold)' : p.isWinner ? '3px solid var(--gold-bright)' : '1px solid rgba(201,168,76,0.2)',
           boxShadow: active ? '0 0 10px rgba(201,168,76,0.5)' : p.isWinner ? '0 0 30px rgba(240,208,96,0.85),0 0 0 3px rgba(240,208,96,0.2)' : 'none',
           background: p.isSelf ? 'rgba(10,50,30,0.85)' : active ? 'rgba(201,168,76,0.07)' : 'rgba(0,0,0,0.4)',
@@ -568,11 +544,11 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
             {p.isWinner   && <Badge bg="#f0d060" color="#1a1200" label="🏆 WIN"/>}
           </div>
           <div style={{fontFamily:'var(--font-title)',fontSize:fs.name,color:p.isSelf?'var(--gold-bright)':'var(--cream)',
-            whiteSpace:'nowrap' as const,overflow:'hidden',textOverflow:'ellipsis',letterSpacing:'0.02em'}}>
+            whiteSpace:'nowrap' as const,overflow:'hidden',textOverflow:'ellipsis',letterSpacing:'0.02em',maxWidth:BOX_W-6}}>
             {p.isSelf ? `${p.name}(YOU)` : p.name}
           </div>
           <div style={{fontFamily:'var(--font-body)',fontSize:fs.chip,color:'#88dd88',lineHeight:1.2}}>
-            💵{p.chips}{p.bet>0&&<span style={{display:'inline-block',marginLeft:3,padding:'0 4px',borderRadius:3,background:'rgba(201,168,76,0.25)',color:'#f0d060',fontWeight:'700',fontSize:fs.chip+1}}> B{p.bet}</span>}
+            💵{p.chips}{p.bet>0&&<span style={{color:'var(--gold)'}}> B{p.bet}</span>}
           </div>
           {p.isMyTurn && meta.timerLimit>0 && timerSec!==null && (
             <div style={{margin:'1px 0'}}><TimerBar remaining={timerSec} limit={meta.timerLimit}/></div>
@@ -595,12 +571,11 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
           </div>
           {!p.isSelf && (isDrawPhase||isBetPhase) && dc!==null && (
             <div style={{
-              fontSize: Math.max(9, Math.floor(OTH_BOX_W * 0.11)),
-              color:'#fff', fontWeight:'700', marginTop:3,
-              background:'rgba(40,100,200,0.55)', borderRadius:4,
-              padding:'1px 4px', display:'inline-block',
+              fontSize: Math.max(11, Math.floor(BOX_W * 0.13)),
+              color:'#88bbff', fontWeight:'700', marginTop:2,
+              letterSpacing:'0.02em',
             }}>
-              {dc===0 ? 'pat' : `${dc}枚`}
+              {dc===0 ? '✋ pat' : `🔄 ${dc}枚`}
             </div>
           )}
           {p.result && (
@@ -637,11 +612,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
                     letterSpacing:'0.05em',marginBottom:3,
                     textShadow:'0 0 6px rgba(201,168,76,0.6)'}}>
                     🏦 {meta.pot}
-                    {isBetPhase && meta.currentBet>0 && <span style={{
-                      marginLeft:6, padding:'1px 5px', borderRadius:3,
-                      background:'rgba(201,168,76,0.3)', color:'#f5cc40',
-                      fontSize:9, fontWeight:'700'
-                    }}>BET {meta.currentBet}</span>}
+                    {isBetPhase && meta.currentBet>0 && <span style={{color:'var(--cream-dim)',fontSize:9,marginLeft:6}}>BET {meta.currentBet}</span>}
                   </div>
                 )}
                 <div style={{fontFamily:'var(--font-title)',fontSize:9,color:modeColor,letterSpacing:'0.1em',opacity:0.8}}>
@@ -671,11 +642,10 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
               if (!dp || meta.dealerIndex<0) return null;
               const {left:pl,top:pt}=getPosMobile(dp);
               const bh2 = dp.isSelf ? SELF_BOX_H : OTH_BOX_H;
-              const bw2 = dp.isSelf ? SELF_BOX_W : OTH_BOX_W;
-              const dcx = pl+bw2/2; const dcy = pt+bh2/2;
+              const dcx = pl+BOX_W/2; const dcy = pt+bh2/2;
               const ddx = dcx-CX; const ddy = dcy-CY;
               const dd = Math.sqrt(ddx*ddx+ddy*ddy);
-              const sc = dd>0?Math.max(0,(dd-80))/dd:0;
+              const sc = dd>0?Math.max(0,(dd-55))/dd:0;
               return <div key="m-d-btn" style={{position:'absolute',left:CX+ddx*sc-11,top:CY+ddy*sc-11,width:22,height:22,borderRadius:'50%',background:'#fff',border:'2px solid #444',display:'flex',alignItems:'center',justifyContent:'center',fontSize:9,fontWeight:'900',color:'#1a1a1a',boxShadow:'0 1px 4px rgba(0,0,0,0.7)',zIndex:5,pointerEvents:'none',fontFamily:'var(--font-title)'}}>D</div>;
             })()}
             {/* 全プレイヤー */}
@@ -696,7 +666,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
             </div>
             {/* アクションボタン右カラム */}
             <div style={{width:ACT_W+2,flexShrink:0,background:'rgba(0,0,0,0.3)',
-              borderLeft:'1px solid rgba(201,168,76,0.15)',padding:'8px 8px',
+              borderLeft:'1px solid rgba(201,168,76,0.15)',padding:'8px 6px',
               display:'flex',flexDirection:'column',justifyContent:'center',gap:6,overflow:'hidden'}}>
               <ActionButtons compact />
               <LeaveReserveBox compact />
@@ -752,10 +722,10 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
             {players.find((pp)=>pp.isDealer) && meta.dealerIndex>=0 && (()=>{
               const dp=players.find((pp)=>pp.isDealer)!;
               const pos=getPosMobile(dp); const bh2=dp.isSelf?SELF_BOX_H:OTH_BOX_H;
-              const bw2l=dp.isSelf?SELF_BOX_W:OTH_BOX_W; const dcx=pos.left+bw2l/2; const dcy=pos.top+bh2/2;
+              const dcx=pos.left+BOX_W/2; const dcy=pos.top+bh2/2;
               const ddx=dcx-CX; const ddy=dcy-CY;
               const dd=Math.sqrt(ddx*ddx+ddy*ddy);
-              const sc=dd>0?Math.max(0,(dd-80))/dd:0;
+              const sc=dd>0?Math.max(0,(dd-55))/dd:0;
               return <div key="ld" style={{position:"absolute",left:CX+ddx*sc-10,top:CY+ddy*sc-10,width:20,height:20,borderRadius:"50%",background:"#fff",border:"1.5px solid #444",display:"flex",alignItems:"center",justifyContent:"center",fontSize:8,fontWeight:"900",color:"#1a1a1a",boxShadow:"0 1px 4px rgba(0,0,0,0.7)",zIndex:5,pointerEvents:"none",fontFamily:"var(--font-title)"}}>D</div>;
             })()}
             </div>{/* 内側コンテナ終了 */}
@@ -763,7 +733,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
           {/* アクションカラム */}
           <div style={{width:ACT_W+4,flexShrink:0,background:'rgba(0,0,0,0.3)',
             borderLeft:'1px solid rgba(201,168,76,0.15)',
-            display:'flex',flexDirection:'column',justifyContent:'space-between',overflow:'hidden',padding:'6px 8px'}}>
+            display:'flex',flexDirection:'column',justifyContent:'space-between',overflow:'hidden',padding:'6px 5px'}}>
             <div>
               {meta.pendingPlayers.length>0 && (
                 <div style={{fontSize:8,color:'var(--gold-dim)',fontStyle:'italic',marginBottom:4}}>
@@ -797,7 +767,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
     let ang:number;
     if (p.isSelf) { ang=90; }
     else {
-      const slots=[150,-150,-90,-30,30];
+      const slots=[-90,-30,30,150,210];
       const idx=others.findIndex((o)=>o.id===p.id);
       ang=slots[idx]??(-90+60*(idx+1));
     }
@@ -839,7 +809,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
             const cy = pos.top  + bh/2;
             const dx = cx - CX; const dy = cy - CY;
             const dist = Math.sqrt(dx*dx+dy*dy);
-            const scale = dist>0 ? Math.max(0,(dist-100))/dist : 0;
+            const scale = dist>0 ? Math.max(0,(dist-70))/dist : 0;
             const bx = CX+dx*scale; const by = CY+dy*scale;
             return <div key="d-btn" style={{position:'absolute',left:bx-14,top:by-14,width:28,height:28,borderRadius:'50%',background:'#fff',border:'2px solid #444',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:'var(--font-title)',fontSize:11,fontWeight:'900',color:'#1a1a1a',boxShadow:'0 2px 6px rgba(0,0,0,0.7)',zIndex:5,pointerEvents:'none'}}>D</div>;
           })()}

@@ -40,12 +40,13 @@ const RANK_LABEL: Record<string, string> = {
 
 /** サイズプリセット */
 const SIZE_PRESET = {
-  sm: { w: 32, h: 48, fontSize: 11, suitSize: 9 },
-  md: { w: 52, h: 76, fontSize: 17, suitSize: 15 },
-  lg: { w: 66, h: 96, fontSize: 21, suitSize: 19 },
+  xs: { w: 26, h: 38, fontSize: 11, suitSize:  8, suitMult: 1.2 },
+  sm: { w: 32, h: 48, fontSize: 11, suitSize:  9, suitMult: 1.3 },
+  md: { w: 52, h: 76, fontSize: 17, suitSize: 15, suitMult: 2.5 },
+  lg: { w: 66, h: 96, fontSize: 21, suitSize: 19, suitMult: 2.5 },
 } as const;
 
-type CardSize = 'sm' | 'md' | 'lg';
+type CardSize = 'xs' | 'sm' | 'md' | 'lg';
 
 interface CardProps {
   code:      string;
@@ -109,23 +110,37 @@ const Card: React.FC<CardProps> = ({
           <span style={{ fontSize: dim.fontSize * 1.3, color: 'rgba(255,255,255,0.3)', lineHeight: 1 }}>♦</span>
         </div>
       ) : (
-        /* 表面: 左上にランク、中央に大きなスート */
-        <>
-          {/* 左上: ランク */}
-          <div style={{ position: 'absolute', top: 3, left: 5, lineHeight: 1 }}>
+        /* 表面 */
+        (size === 'xs' || size === 'sm') ? (
+          /* xs/sm: ランク＋スートを縦積み中央表示 */
+          <div style={{
+            position: 'absolute', inset: 0,
+            display: 'flex', flexDirection: 'column',
+            alignItems: 'center', justifyContent: 'center', gap: 2,
+          }}>
             <span style={{
               fontSize: dim.fontSize, fontWeight: '900', color,
               fontFamily: 'Georgia, "Times New Roman", serif', lineHeight: 1,
             }}>{rank}</span>
+            <span style={{ fontSize: dim.suitSize * dim.suitMult, color, lineHeight: 1 }}>{symbol}</span>
           </div>
-          {/* 中央: スートマーク（大・鮮明） */}
-          <div style={{
-            position: 'absolute', inset: 0,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            <span style={{ fontSize: dim.suitSize * 2.5, color, lineHeight: 1 }}>{symbol}</span>
-          </div>
-        </>
+        ) : (
+          /* md/lg: 左上にランク、中央に大きなスート */
+          <>
+            <div style={{ position: 'absolute', top: 3, left: 5, lineHeight: 1 }}>
+              <span style={{
+                fontSize: dim.fontSize, fontWeight: '900', color,
+                fontFamily: 'Georgia, "Times New Roman", serif', lineHeight: 1,
+              }}>{rank}</span>
+            </div>
+            <div style={{
+              position: 'absolute', inset: 0,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <span style={{ fontSize: dim.suitSize * dim.suitMult, color, lineHeight: 1 }}>{symbol}</span>
+            </div>
+          </>
+        )
       )}
     </div>
   );
