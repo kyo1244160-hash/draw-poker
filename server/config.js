@@ -30,7 +30,10 @@ module.exports = {
   BIG_BET:      20,     // ビッグベットの1単位
 
   // 5bet-cap: ベット1回 + レイズ4回 = 最大5アクション
-  MAX_RAISES:   4,
+  // ⚠️ 変更禁止: MAX_RAISES=5 かつ raiseCount は bet0 で 1 スタート が正しい設定。
+  //   MAX_RAISES=4 にすると 4/5 でレイズ不可（5bet目が打てない）バグになる。
+  //   MAX_RAISES=5 のまま raiseCount を 0 スタートにすると BET60 まで可能になるバグになる。
+  MAX_RAISES:   5,  // raiseCount が 5 に達したらキャップ（1〜5段階、表示は1/5〜5/5）
 
   // ===== 制限時間（秒）=====
   // 0 にするとタイマーなし

@@ -9,7 +9,7 @@
  * 全て viewport 内に収まり、スクロール不要。
  */
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/router';
 import { socket } from '../socket';
 import Card from './Card';
@@ -66,6 +66,13 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
   const [leaveReservation, setLeaveReservation] = useState<null|'afterHand'|'nextBB'>(null);
   // kicked通知メッセージ
   const [kickedMsg, setKickedMsg] = useState<string|null>(null);
+  // アクション表示 { playerId -> { label, key } }
+  const [actionFlash, setActionFlash] = useState<Record<string,{label:string,key:number}>>({});
+  // チェンジ枚数フラッシュ { playerId -> { count, key } }
+  const [drawFlash, setDrawFlash] = useState<Record<string,{count:number,key:number}>>({});
+  // 前回gameStateでのdrewThisRound状態 { playerId -> boolean }
+  // false→true に変化したときだけフラッシュ発火（再発火防止）
+  const prevDrewRef = useRef<Record<string,boolean>>({});
 
   // デバイス判定（SSR安全）: 初期値をSSR時は null にしてフラッシュを防ぐ
   const [layout, setLayout] = useState<'pc'|'portrait'|'landscape'|null>(null);
@@ -87,7 +94,8 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
   useEffect(() => {
     const onConnect     = () => socket.emit('joinRoom', { roomId, name });
     const onGameState   = ({ players:pl, meta:m }: { players:Player[]; meta:Meta }) => {
-      setPlayers(pl); setMeta(m);
+      setMeta((prev) => { return m; });
+      setPlayers(pl);
       const self = pl.find((p) => p.isSelf);
       if (self) setMyDrew(self.drewThisRound);
       setLastDrawCount((prev) => {
@@ -95,8 +103,51 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
         for (const p of pl) { if (p.drawCount !== null) next[p.id] = p.drawCount; }
         return next;
       });
+      // チェンジフラッシュ: 前回からdrewThisRound が false→true になったプレイヤーだけ発火
+      // これにより同じラウンド内での再発火を確実に防止する
+      if (m.phase.startsWith('draw')) {
+        const newFlashes: {pid:string, cnt:number}[] = [];
+        for (const p of pl) {
+          if (!p.drewThisRound || p.drawCount === null) continue;
+          const wasDrawn = prevDrewRef.current[p.id] ?? false;
+          if (!wasDrawn) {
+            // 今回初めてdrewThisRound=trueになった → フラッシュ発火
+            newFlashes.push({ pid: p.id, cnt: p.drawCount as number });
+          }
+        }
+        // prevDrewRefを今回のstateで更新
+        const newPrevDrew: Record<string,boolean> = {};
+        for (const p of pl) { newPrevDrew[p.id] = p.drewThisRound; }
+        prevDrewRef.current = newPrevDrew;
+
+        if (newFlashes.length > 0) {
+          setDrawFlash((prev) => {
+            const next2 = { ...prev };
+            for (const { pid, cnt } of newFlashes) {
+              next2[pid] = { count: cnt, key: Date.now() };
+            }
+            return next2;
+          });
+          const pidsToRemove = newFlashes.map(f => f.pid);
+          setTimeout(() => {
+            setDrawFlash((cur) => {
+              const n = { ...cur };
+              for (const pid of pidsToRemove) delete n[pid];
+              return n;
+            });
+          }, 2500);
+        }
+      } else {
+        // ドローフェーズ以外（BETフェーズ・showdown）ではprevDrewをリセット
+        prevDrewRef.current = {};
+        setDrawFlash({});
+      }
     };
-    const onGameStarted = () => { setSelected([]); setMyDrew(false); setLastDrawCount({}); setCountdown(null); };
+    const onGameStarted = () => {
+      setSelected([]); setMyDrew(false); setLastDrawCount({});
+      setCountdown(null); setDrawFlash({});
+      prevDrewRef.current = {};
+    };
     const onTimerUpdate = ({ remaining }: { remaining:number }) => setTimerSec(remaining);
     const onKicked = ({ reason }:{ reason?:string } = {}) => {
       if (reason && reason !== 'reserved') {
@@ -126,6 +177,25 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
     socket.on('kicked',      onKicked);
     const onLeaveReservation = ({ type }: { type: null|'afterHand'|'nextBB' }) => setLeaveReservation(type);
     socket.on('leaveReservation', onLeaveReservation);
+    const ACTION_LABEL: Record<string,string> = {
+      fold:'フォールド', check:'チェック', call:'コール', bet:'ベット', raise:'レイズ',
+    };
+    const onPlayerAction = ({ playerId, action }: { playerId:string; action:string }) => {
+      const label = ACTION_LABEL[action] ?? action;
+      setActionFlash((prev) => ({
+        ...prev,
+        [playerId]: { label, key: Date.now() },
+      }));
+      // 2秒後に消去
+      setTimeout(() => {
+        setActionFlash((prev) => {
+          const next = {...prev};
+          delete next[playerId];
+          return next;
+        });
+      }, 2000);
+    };
+    socket.on('playerAction', onPlayerAction);
 
     if (socket.connected) socket.emit('joinRoom', { roomId, name });
     else socket.connect();
@@ -135,6 +205,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
       socket.off('gameStarted',onGameStarted); socket.off('timerUpdate',onTimerUpdate);
       socket.off('showdown',onShowdown); socket.off('kicked',onKicked);
       socket.off('leaveReservation', onLeaveReservation);
+      socket.off('playerAction', onPlayerAction);
     };
   }, [roomId, name]);
 
@@ -164,7 +235,8 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
   const drawRound     = ['draw1','draw2','draw3'].indexOf(meta.phase)+1;
   const curPlayer     = players.find((p) => p.isMyTurn);
   const effectiveMode = meta.currentMode ?? (mode==='mix'?'27':mode);
-  const raiseDisplay  = `${meta.raiseCount}/${meta.maxRaises+1}`;
+  // ⚠️ 変更禁止: raiseCount/maxRaises が正しい表示式。(maxRaises+1) にすると分母が6になり5/6表示になるバグになる。
+  const raiseDisplay  = `${meta.raiseCount}/${meta.maxRaises}`;
   const modeColor     = effectiveMode==='badugi' ? '#cc9966' : '#88bbee';
   const modeBg        = effectiveMode==='badugi' ? 'rgba(204,119,68,0.22)' : 'rgba(68,136,204,0.22)';
   const modeBorder    = effectiveMode==='badugi' ? 'rgba(204,119,68,0.45)' : 'rgba(68,136,204,0.45)';
@@ -238,6 +310,142 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
         ))}
       </div>
     );
+  };
+
+  // ===== 縦長専用: 画面下部2行横並びアクションパネル =====
+  // レイアウト:
+  //   行1: フォールド | コール/チェック
+  //   行2: レイズ     | 退室予約チェックボックス（横並び）
+  const PortraitActionPanel = () => {
+    const btn = (onClick:()=>void, label:string, variant:'gold'|'gray'|'red'|'outline') => {
+      const variants: Record<string,React.CSSProperties> = {
+        gold:    { background:'linear-gradient(135deg,var(--gold),var(--gold-dim))', color:'#1a1200', boxShadow:'0 2px 8px rgba(201,168,76,0.4)' },
+        gray:    { background:'rgba(255,255,255,0.12)', color:'var(--cream)', border:'1px solid rgba(255,255,255,0.25)' },
+        red:     { background:'#8b1a1a', color:'#ffd0d0' },
+        outline: { background:'rgba(255,255,255,0.06)', color:'var(--cream-dim)', border:'1px solid var(--gold-dim)' },
+      };
+      return (
+        <button onClick={onClick} style={{
+          padding:'10px 6px', border:'none', borderRadius:7,
+          fontSize:13, fontWeight:'700', cursor:'pointer',
+          fontFamily:'var(--font-title)', letterSpacing:'0.03em',
+          textAlign:'center' as const, lineHeight:1.2, whiteSpace:'nowrap' as const,
+          overflow:'hidden', textOverflow:'ellipsis', width:'100%',
+          ...variants[variant],
+        }}>{label}</button>
+      );
+    };
+
+    // 退室予約を横コンパクト表示（レイズボタン右に並べる）
+    const InlineLeave = () => {
+      if (meta.phase === 'waiting') return null;
+      const chk = (type: 'afterHand'|'nextBB') => leaveReservation === type;
+      const toggle = (type: 'afterHand'|'nextBB') =>
+        handleLeaveReserve(leaveReservation === type ? 'cancel' : type);
+      return (
+        <div style={{display:'flex',flexDirection:'column',justifyContent:'center',
+          gap:6, padding:'6px 8px',
+          background:'rgba(0,0,0,0.35)', border:'1px solid rgba(201,168,76,0.2)',
+          borderRadius:7, height:'100%', boxSizing:'border-box' as const}}>
+          {(['afterHand','nextBB'] as const).map((type) => (
+            <div key={type} style={{display:'flex',alignItems:'center',gap:5,cursor:'pointer'}}
+              onClick={()=>toggle(type)}>
+              <ChkBox checked={chk(type)} onChange={()=>toggle(type)}/>
+              <span style={{fontSize:10, color:chk(type)?'var(--gold-bright)':'var(--cream-dim)',
+                fontFamily:'var(--font-body)', whiteSpace:'nowrap' as const, userSelect:'none' as const}}>
+                {type==='afterHand'?'このハンド後':'次のBBで'}
+              </span>
+            </div>
+          ))}
+        </div>
+      );
+    };
+
+    if (meta.phase === 'waiting') return (
+      <div style={{textAlign:'center', fontSize:12, color:'var(--cream-dim)',
+        fontStyle:'italic', padding:'8px 0', fontFamily:'var(--font-body)'}}>
+        {players.length < 2 ? 'もう1人参加を待っています' : 'ゲームを準備中...'}
+      </div>
+    );
+
+    if (isDrawPhase && isMyTurn && !myDrew) return (
+      <div style={{display:'flex',flexDirection:'column',gap:5}}>
+        <div style={{textAlign:'center',fontSize:11,color:'var(--cream-dim)',fontStyle:'italic',fontFamily:'var(--font-body)'}}>
+          {selected.length>0 ? selected.length+'枚選択中' : '捨てるカードを選択'}
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>
+          {btn(handleDraw, selected.length>0 ? ('🔄 '+selected.length+'枚交換') : '✋ スタンドパット', 'gold')}
+          {selected.length>0
+            ? btn(clearSelected,'選択解除','outline')
+            : <InlineLeave />
+          }
+        </div>
+        {selected.length>0 && <InlineLeave />}
+      </div>
+    );
+
+    if (isDrawPhase && (!isMyTurn || myDrew)) return (
+      <div style={{display:'flex',flexDirection:'column',gap:5}}>
+        <div style={{textAlign:'center',fontSize:11,color:'var(--cream-dim)',fontStyle:'italic',fontFamily:'var(--font-body)'}}>
+          {myDrew ? '他プレイヤーを待っています...' : ((curPlayer?.name??'')+'がドロー中...')}
+        </div>
+        <InlineLeave />
+      </div>
+    );
+
+    if (isBetPhase && isMyTurn && self) return (
+      <div style={{display:'flex',flexDirection:'column',gap:5}}>
+        <div style={{textAlign:'center',fontSize:11,color:'var(--cream-dim)',fontFamily:'var(--font-body)'}}>
+          {(self.toCall!>0 ? ('コール: '+self.toCall) : 'チェック or ベット')}
+          <span style={{fontSize:9,opacity:0.65,marginLeft:6}}>{'単位:'+self.betSize+' Bet '+raiseDisplay}</span>
+        </div>
+        {/* 行1: フォールド | コール or チェック */}
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>
+          {btn(()=>handleBet('fold'),'フォールド','red')}
+          {self.canCheck
+            ? btn(()=>handleBet('check'),'チェック','gray')
+            : btn(()=>handleBet('call'),'コール ('+self.toCall+')','gray')
+          }
+        </div>
+        {/* 行2: レイズ | 退室予約（横並び） */}
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,alignItems:'stretch'}}>
+          {self.canRaise
+            ? btn(()=>handleBet(meta.currentBet===0?'bet':'raise'),
+                meta.currentBet===0 ? ('ベット (+'+self.betSize+')') : ('レイズ (+'+self.betSize+')'),
+                'gold')
+            : <div />
+          }
+          <InlineLeave />
+        </div>
+      </div>
+    );
+
+    if (isBetPhase && !isMyTurn) return (
+      <div style={{display:'flex',flexDirection:'column',gap:5}}>
+        <div style={{textAlign:'center',fontSize:11,color:'var(--cream-dim)',fontStyle:'italic',fontFamily:'var(--font-body)'}}>
+          {curPlayer ? (curPlayer.name+' がアクション中...') : '待機中...'}
+        </div>
+        <InlineLeave />
+      </div>
+    );
+
+    if (meta.phase === 'showdown') return (
+      <div style={{display:'flex',flexDirection:'column',gap:4,alignItems:'center'}}>
+        <div style={{textAlign:'center',fontSize:12,color:'var(--cream-dim)',fontStyle:'italic',fontFamily:'var(--font-body)'}}>
+          次のゲームを準備中...
+          {countdown !== null && (
+            <span style={{display:'block',fontFamily:'var(--font-title)',
+              fontSize:22,color:'var(--gold-bright)',textAlign:'center' as const,lineHeight:1,marginTop:2,
+              textShadow:'0 0 12px rgba(201,168,76,0.7)'}}>
+              {countdown}
+            </span>
+          )}
+        </div>
+        <InlineLeave />
+      </div>
+    );
+
+    return <InlineLeave />;
   };
 
   // ===== アクションボタン（2×2グリッド）=====
@@ -492,12 +700,13 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
     const POT_H  = meta.phase !== 'waiting' ? 32 : 0;
     const RULE_H = 16;
     const ACT_W  = 148;  // アクションカラム幅
-    const ACT_H  = 120;  // アクションパネル高さ（縦表示）
+    // 縦長: ボタン2行(各44px)+gap+padding = 約110px（退室予約はレイズ右に横並び）
+    const ACT_H  = 110;
 
     let TW: number, TH: number;
     if (isPortrait) {
       TW = vw - 8;
-      TH = vh - NAV_H - POT_H - RULE_H - ACT_H - 10;
+      TH = vh - NAV_H - ACT_H - 4;
     } else {
       // 横表示: ナビバー高さを引いた全高さ、幅はアクションカラム分引く
       TH = vh - NAV_H - 4;
@@ -548,11 +757,47 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
       const active = p.isMyTurn && !p.folded && !p.sittingOut;
       const dc = isDrawPhase ? (p.drewThisRound ? p.drawCount : null) : (lastDrawCount[p.id] ?? null);
       const bw = p.isSelf ? SELF_BOX_W : OTH_BOX_W;
+      const flash = actionFlash[p.id];
+      const dflash = drawFlash[p.id];
       return (
-        <div key={p.id} style={{
-          position:'absolute', left, top, width: bw,
+        <div key={p.id} style={{position:'absolute', left, top, width:bw, overflow:'visible', zIndex: p.isSelf ? 3 : 2}}>
+        {/* アクションフラッシュ */}
+        {flash && (
+          <div key={flash.key} style={{
+            position:'absolute', top:-32,
+            left: p.isDealer ? 'calc(50% + 18px)' : '50%',
+            transform:'translateX(-50%)',
+            background: flash.label==='フォールド' ? 'rgba(139,26,26,0.92)'
+              : flash.label==='チェック'  ? 'rgba(30,100,60,0.92)'
+              : flash.label==='コール'    ? 'rgba(30,80,160,0.92)'
+              : flash.label==='ベット'    ? 'rgba(160,120,10,0.92)'
+              : 'rgba(160,60,10,0.92)', // レイズ
+            color:'#fff', fontFamily:'var(--font-title)',
+            fontSize:11, fontWeight:'700', padding:'3px 10px',
+            borderRadius:20, whiteSpace:'nowrap' as const,
+            boxShadow:'0 2px 8px rgba(0,0,0,0.5)',
+            pointerEvents:'none', zIndex:10,
+            animation:'actionPop 2s ease-out forwards',
+          }}>{flash.label}</div>
+        )}
+        {/* チェンジ枚数フラッシュ（他プレイヤーのみ） */}
+        {dflash && (
+          <div key={dflash.key} style={{
+            position:'absolute', top: flash ? -52 : -32,
+            left:'50%', transform:'translateX(-50%)',
+            background:'rgba(20,80,180,0.93)',
+            color:'#fff', fontFamily:'var(--font-title)',
+            fontSize:11, fontWeight:'700', padding:'3px 10px',
+            borderRadius:20, whiteSpace:'nowrap' as const,
+            boxShadow:'0 2px 8px rgba(0,0,0,0.5)',
+            pointerEvents:'none', zIndex:10,
+            animation:'actionPop 2.5s ease-out forwards',
+          }}>{dflash.count===0 ? '✋ パット' : `🔄 ${dflash.count}枚チェンジ`}</div>
+        )}
+        <div style={{
+          position:'relative', width: bw,
           textAlign:'center', padding:'3px 2px', borderRadius:7,
-          overflow: p.isSelf ? 'visible' : 'hidden',
+          overflow: 'hidden',
           border: active ? '1.5px solid var(--gold)' : p.isWinner ? '3px solid var(--gold-bright)' : '1px solid rgba(201,168,76,0.2)',
           boxShadow: active ? '0 0 10px rgba(201,168,76,0.5)' : p.isWinner ? '0 0 30px rgba(240,208,96,0.85),0 0 0 3px rgba(240,208,96,0.2)' : 'none',
           background: p.isSelf ? 'rgba(10,50,30,0.85)' : active ? 'rgba(201,168,76,0.07)' : 'rgba(0,0,0,0.4)',
@@ -593,11 +838,11 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
             ))}
             </div>
           </div>
-          {!p.isSelf && (isDrawPhase||isBetPhase) && dc!==null && (
+          {(isDrawPhase||isBetPhase) && dc!==null && (
             <div style={{
               fontSize: Math.max(9, Math.floor(OTH_BOX_W * 0.11)),
               color:'#fff', fontWeight:'700', marginTop:3,
-              background:'rgba(40,100,200,0.55)', borderRadius:4,
+              background: p.isSelf ? 'rgba(20,80,180,0.7)' : 'rgba(40,100,200,0.55)', borderRadius:4,
               padding:'1px 4px', display:'inline-block',
             }}>
               {dc===0 ? 'pat' : `${dc}枚`}
@@ -609,6 +854,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
               {p.result}
             </div>
           )}
+        </div>
         </div>
       );
     };
@@ -681,26 +927,25 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
             {/* 全プレイヤー */}
             {players.map((p) => renderMobilePlayer(p))}
           </div>
-          {/* アクションパネル（下部）+ ルール */}
-          <div style={{flex:1,display:'flex',overflow:'hidden',minHeight:0}}>
-            <div style={{flex:1,display:'flex',flexDirection:'column',justifyContent:'center',
-              padding:'4px 8px',overflow:'hidden',minWidth:0}}>
-              {meta.pendingPlayers.length>0 && (
-                <div style={{fontSize:9,color:'var(--gold-dim)',fontStyle:'italic',marginBottom:2}}>
-                  ⏳ {meta.pendingPlayers.join(', ')}
-                </div>
-              )}
+          {/* ===== 縦長: 画面下部固定アクションパネル ===== */}
+          <div style={{
+            flex:1, display:'flex', flexDirection:'column', justifyContent:'flex-end',
+            background:'rgba(0,0,0,0.35)', borderTop:'1px solid rgba(201,168,76,0.2)',
+            padding:'6px 8px 8px', overflow:'hidden', minHeight:0,
+          }}>
+            {/* ルール・待機情報（上段） */}
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
               <div style={{fontSize:9,color:'var(--gold-dim)',fontFamily:'var(--font-body)'}}>
                 {effectiveMode==='badugi'?'★ Badugi: 全スート異なる低い4枚が最強':'★ 2-7: 低い手が強い。A最高位'}
               </div>
+              {meta.pendingPlayers.length>0 && (
+                <div style={{fontSize:9,color:'var(--gold-dim)',fontStyle:'italic'}}>
+                  ⏳ {meta.pendingPlayers.join(', ')}
+                </div>
+              )}
             </div>
-            {/* アクションボタン右カラム */}
-            <div style={{width:ACT_W+2,flexShrink:0,background:'rgba(0,0,0,0.3)',
-              borderLeft:'1px solid rgba(201,168,76,0.15)',padding:'8px 8px',
-              display:'flex',flexDirection:'column',justifyContent:'center',gap:6,overflow:'hidden'}}>
-              <ActionButtons compact />
-              <LeaveReserveBox compact />
-            </div>
+            {/* アクションボタン（2行横並び）+ 退室予約 */}
+            <PortraitActionPanel />
           </div>
         </div>
       );
@@ -846,10 +1091,46 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
           {/* プレイヤーボックス */}
           {players.map((p) => {
             const {left,top}=getPos(p);
+            const flash=actionFlash[p.id];
+            const dflash=drawFlash[p.id];
             return (
-              <div key={p.id} style={{
-                position:'absolute',zIndex:1,textAlign:'center',padding:'8px 6px',borderRadius:11,
-                border:'1px solid transparent',transition:'all 0.25s',left,top,width:BW,
+              <div key={p.id} style={{position:'absolute',left,top,width:BW,zIndex:2,overflow:'visible'}}>
+              {/* アクションフラッシュ */}
+              {flash && (
+                <div key={flash.key} style={{
+                  position:'absolute', top:-38,
+                  left: p.isDealer ? 'calc(50% + 22px)' : '50%',
+                  transform:'translateX(-50%)',
+                  background: flash.label==='フォールド' ? 'rgba(139,26,26,0.92)'
+                    : flash.label==='チェック'  ? 'rgba(30,100,60,0.92)'
+                    : flash.label==='コール'    ? 'rgba(30,80,160,0.92)'
+                    : flash.label==='ベット'    ? 'rgba(160,120,10,0.92)'
+                    : 'rgba(160,60,10,0.92)',
+                  color:'#fff', fontFamily:'var(--font-title)',
+                  fontSize:13, fontWeight:'700', padding:'4px 14px',
+                  borderRadius:20, whiteSpace:'nowrap' as const,
+                  boxShadow:'0 2px 10px rgba(0,0,0,0.5)',
+                  pointerEvents:'none', zIndex:20,
+                  animation:'actionPop 2s ease-out forwards',
+                }}>{flash.label}</div>
+              )}
+              {/* チェンジ枚数フラッシュ（他プレイヤーのみ） */}
+              {dflash && (
+                <div key={dflash.key} style={{
+                  position:'absolute', top: flash ? -62 : -38,
+                  left:'50%', transform:'translateX(-50%)',
+                  background:'rgba(20,80,180,0.93)',
+                  color:'#fff', fontFamily:'var(--font-title)',
+                  fontSize:13, fontWeight:'700', padding:'4px 14px',
+                  borderRadius:20, whiteSpace:'nowrap' as const,
+                  boxShadow:'0 2px 10px rgba(0,0,0,0.5)',
+                  pointerEvents:'none', zIndex:20,
+                  animation:'actionPop 2.5s ease-out forwards',
+                }}>{dflash.count===0 ? '✋ パット' : `🔄 ${dflash.count}枚チェンジ`}</div>
+              )}
+              <div style={{
+                position:'relative',textAlign:'center',padding:'8px 6px',borderRadius:11,
+                border:'1px solid transparent',transition:'all 0.25s',width:BW,
                 ...(p.isSelf?{background:'rgba(10,50,30,0.8)',border:'1px solid rgba(201,168,76,0.35)'}:{}),
                 ...(p.isMyTurn&&!p.folded&&!p.sittingOut?{border:'1px solid var(--gold)',boxShadow:'0 0 18px rgba(201,168,76,0.5)',background:'rgba(201,168,76,0.08)'}:{}),
                 ...(p.folded&&!p.sittingOut?{opacity:0.4}:{}),
@@ -884,12 +1165,13 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
                       </div>
                     ))}
                 </div>
-                {!p.isSelf&&(isDrawPhase||isBetPhase)&&(()=>{
+                {(isDrawPhase||isBetPhase)&&(()=>{
                   const cnt=isDrawPhase?(p.drewThisRound?p.drawCount:null):(lastDrawCount[p.id]??null);
-                  if(cnt===null) return isDrawPhase?<p style={{fontSize:13,color:'#88bbff',fontStyle:'italic',marginTop:2}}>⏳ thinking...</p>:null;
-                  return <p style={{fontSize:15,color:'#88bbff',fontWeight:'700',marginTop:3,letterSpacing:'0.02em'}}>{cnt===0?'✋ Stand pat':`🔄 ${cnt}枚`}</p>;
+                  if(cnt===null) return (!p.isSelf&&isDrawPhase)?<p style={{fontSize:13,color:'#88bbff',fontStyle:'italic',marginTop:2}}>⏳ thinking...</p>:null;
+                  return <p style={{fontSize:15,color: p.isSelf?'#aaccff':'#88bbff',fontWeight:'700',marginTop:3,letterSpacing:'0.02em'}}>{cnt===0?'✋ Stand pat':`🔄 ${cnt}枚`}</p>;
                 })()}
                 {p.result&&<p style={{fontSize:13,color:p.isWinner?'var(--gold-bright)':'var(--cream-dim)',fontFamily:'var(--font-title)',marginTop:4,letterSpacing:'0.04em',fontWeight:p.isWinner?'700':'400'}}>{p.result}</p>}
+              </div>
               </div>
             );
           })}

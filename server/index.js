@@ -37,6 +37,7 @@ const {
   leaveRoom, startGame, drawCards, betAction, updateSelectedIndices,
   buildGameState, removePlayer, canAutoStart, getAllRooms,
   incrementTimeout, resetTimeout,
+  getRoomMode, getRoom,
 } = require('./poker/gameManager');
 
 const { registerZoomHandlers, getAllPools, getWaitingCount, getTotalCount } = require('./zoom/zoomManager');
@@ -216,9 +217,20 @@ app.prepare().then(() => {
     // ----- ベットアクション -----
     socket.on('betAction', ({ roomId, action }) => {
       if (!roomId || !action) return;
+      // アクション前のプレイヤー名を記録
+      const roomBefore = getRoom(roomId);
+      const actingPlayer = roomBefore
+        ? roomBefore.players.find((p) => p.id === socket.id)
+        : null;
       const room = betAction(roomId, socket.id, action);
       if (!room) { socket.emit('error', { message: 'そのアクションはできません' }); return; }
-      resetTimeout(roomId, socket.id);  // アクション成功 → タイムアウトカウントリセット
+      resetTimeout(roomId, socket.id);
+      // アクション名を全員に通知
+      io.to(roomId).emit('playerAction', {
+        playerId: socket.id,
+        playerName: actingPlayer ? actingPlayer.name : '',
+        action,
+      });
       _broadcast(io, roomId);
       if (room.phase === 'showdown') { io.to(roomId).emit('showdown'); _scheduleAutoStart(io, roomId); }
     });
@@ -266,7 +278,9 @@ function _handleLeave(io, socket, roomId) {
   _broadcastLobbyUpdate(io, roomId);
   _broadcast(io, roomId);
   const room = getOrCreateRoom(roomId);
-  if (room.phase === 'showdown') _scheduleAutoStart(io, roomId);
+  // showdownのままなら次ゲームを試みる（waitingにリセットされていたら不要）
+  if (room && room.phase === 'showdown') _scheduleAutoStart(io, roomId);
+  // waitingになった（人数不足でリセット）なら参加者到着を待つだけ
 }
 
 /**
@@ -391,6 +405,9 @@ function _tryAutoStart(io, roomId) {
   }
 }
 
+// 二重スケジュール防止セット
+const _pendingAutoStart = new Set();
+
 /** ショーダウン後の自動スタート。FastFoldテーブルは即スタート、通常部屋は3秒待つ */
 function _scheduleAutoStart(io, roomId) {
   const room = getOrCreateRoom(roomId);
@@ -400,8 +417,13 @@ function _scheduleAutoStart(io, roomId) {
     // FastFoldテーブルは即スタート
     if (canAutoStart(roomId)) _tryAutoStart(io, roomId);
   } else {
-    // 通常部屋は3秒待つ
-    setTimeout(() => { if (canAutoStart(roomId)) _tryAutoStart(io, roomId); }, 3000);
+    // 通常部屋は3秒待つ（二重スケジュール防止）
+    if (_pendingAutoStart.has(roomId)) return;
+    _pendingAutoStart.add(roomId);
+    setTimeout(() => {
+      _pendingAutoStart.delete(roomId);
+      if (canAutoStart(roomId)) _tryAutoStart(io, roomId);
+    }, 3000);
   }
 }
 

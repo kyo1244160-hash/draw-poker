@@ -31,7 +31,7 @@ const SMALL_BLIND = cfg.SMALL_BLIND;
 const BIG_BLIND   = cfg.BIG_BLIND;
 const SMALL_BET   = cfg.SMALL_BET;   // 10
 const BIG_BET     = cfg.BIG_BET;     // 20
-const MAX_RAISES  = cfg.MAX_RAISES;  // 4（5bet-cap）
+const MAX_RAISES  = cfg.MAX_RAISES;  // 5（5bet-cap: raiseCount 1〜5）
 const MAX_PLAYERS = cfg.MAX_PLAYERS; // 6
 const STARTING_CHIPS = cfg.STARTING_BB * cfg.BB_VALUE;
 
@@ -237,7 +237,9 @@ function startGame(roomId, onTimeout) {
   const bet0StartIndex = isHeadsUp ? sbIndex : _nextActiveFromSafe(room, bbIndex);
   room.phase      = 'bet0';
   room.currentBet = BIG_BLIND;  // BB が既にポスト済み
-  room.raiseCount = 0;
+  // ⚠️ 変更禁止: raiseCount は 1 スタート（BBポストを1bet目として扱う）。
+  //   0 スタートにすると bet0 フェーズで6段階分アクション可能になり BET60 まで打てるバグになる。
+  room.raiseCount = 1;  // BBポストを1bet目としてカウント（5bet-cap: 1〜5）
   room.betSize    = SMALL_BET;
 
   // 全員の acted を正しく初期化
@@ -432,8 +434,10 @@ function betAction(roomId, socketId, action) {
     player.acted = true;
 
   } else if (action === 'bet' || action === 'raise') {
-    // 5bet-cap 超過はコールに変換
-    if (room.raiseCount > MAX_RAISES) {
+    // ⚠️ 変更禁止: キャップ判定は >= MAX_RAISES(5)。
+    //   > MAX_RAISES にすると raiseCount=5 でもレイズ可能になり BET60 まで打てるバグになる。
+    //   canRaise は < MAX_RAISES(5) で raiseCount=4(4/5) でもレイズ可、raiseCount=5(5/5) でレイズ不可。
+    if (room.raiseCount >= MAX_RAISES) {
       const actual = Math.min(toCall, player.chips);
       player.chips -= actual; player.bet += actual; room.pot += actual;
       player.acted = true;
@@ -563,8 +567,9 @@ function buildGameState(room, requesterId) {
       ...(isSelf ? {
         toCall,
         canCheck: isBetPhase && toCall === 0,
-        // 5bet-cap: raiseCount < MAX_RAISES のときのみレイズ可
-        canRaise: isBetPhase && room.raiseCount <= MAX_RAISES,
+    // ⚠️ 変更禁止: raiseCount < MAX_RAISES(5) のときのみレイズ可。
+    //   raiseCount=4(4/5) → レイズ可、raiseCount=5(5/5) → レイズ不可（キャップ）
+    canRaise: isBetPhase && room.raiseCount < MAX_RAISES,
         betSize:  room.betSize,
       } : {}),
       ...(isMyTurn ? { timerRemaining } : {}),
@@ -579,8 +584,9 @@ function buildGameState(room, requesterId) {
     pot:            room.pot,
     currentBet:     room.currentBet,
     betSize:        room.betSize,
-    // レイズ表示: raiseCount（現在のベット段階）, maxRaises（上限）
-    // クライアントでは (raiseCount + 1) / (MAX_RAISES + 1) = "1/5" 形式で表示
+    // raiseCount: bet0は1スタート（BBポスト=1）、bet1〜は0スタート。maxRaises=5。
+    // クライアント表示: raiseCount / maxRaises = "1/5"〜"5/5"
+    // ⚠️ 変更禁止: クライアント側の表示式は raiseCount/maxRaises（+1 不要）
     raiseCount:     room.raiseCount,
     maxRaises:      MAX_RAISES,
     dealerIndex:    dealerIdx,   // 固定値（フォールドで変わらない）
@@ -612,6 +618,7 @@ function leaveRoom(socketId) {
           if (room.phase.startsWith('draw'))     _advanceDrawAction(room);
           else if (room.phase.startsWith('bet')) _advanceBetAction(room);
         }
+        // splice後のインデックスずれを補正（advance後のindexも対象）
         if (room.actionIndex > idx) room.actionIndex--;
       }
 
@@ -623,6 +630,9 @@ function leaveRoom(socketId) {
       if (room.fixedDealerIdx > idx) room.fixedDealerIdx--;
       if (room.fixedSbIdx     > idx) room.fixedSbIdx--;
       if (room.fixedBbIdx     > idx) room.fixedBbIdx--;
+
+      const activeAfterLeave = room.players.filter((p) => !p.sittingOut && !p.folded).length;
+      const totalAfterLeave  = room.players.length + room.pendingPlayers.length;
 
       if (room.players.length === 0) {
         _clearTimer(room);
@@ -639,6 +649,17 @@ function leaveRoom(socketId) {
         room._potAwarded    = false;
         room._selectedIndices = {};
         if (room.isUserCreated) rooms.delete(roomId);
+      } else if (room.phase === 'showdown' && activeAfterLeave + room.pendingPlayers.length < 2) {
+        // showdown中に退室してゲーム開始不可な人数になった → waitingにリセット
+        _clearTimer(room);
+        room.phase       = 'waiting';
+        room.pot         = 0;
+        room.actionIndex = -1;
+        room.deck        = [];
+        room.discardPile = [];
+        room._potAwarded = false;
+        room._selectedIndices = {};
+        for (const p of room.players) { p.sittingOut = false; p.hand = []; p.bet = 0; p.folded = false; p.drewThisRound = false; p.drawCount = null; }
       }
       return roomId;
     }
@@ -721,11 +742,13 @@ function resetTimeout(roomId, socketId) {
   if (player) player.timeoutCount = 0;
 }
 
+function getRoom(roomId) { return rooms.get(roomId) || null; }
+
 module.exports = {
   getOrCreateRoom, joinRoom, leaveRoom, fastFoldPlayer,
   startGame, drawCards, betAction, updateSelectedIndices,
   buildGameState, removePlayer, canAutoStart, getAllRooms,
   incrementTimeout, resetTimeout,
-  getRoomMode,
+  getRoomMode, getRoom,
   STARTING_CHIPS, SMALL_BLIND, BIG_BLIND, SMALL_BET, BIG_BET, MAX_PLAYERS,
 };
