@@ -40,7 +40,7 @@ const {
   getRoomMode, getRoom,
 } = require('./poker/gameManager');
 
-const { registerZoomHandlers, getAllPools, getWaitingCount, getTotalCount } = require('./zoom/zoomManager');
+const { registerZoomHandlers, getAllPools, getWaitingCount, getTotalCount, handleZoomShowdown } = require('./zoom/zoomManager');
 
 // ===== Next.js =====
 const dev    = process.env.NODE_ENV !== 'production';
@@ -211,7 +211,8 @@ app.prepare().then(() => {
       if (!room) { socket.emit('error', { message: 'ドローできません（あなたのターンではありません）' }); return; }
       resetTimeout(roomId, socket.id);  // アクション成功 → タイムアウトカウントリセット
       _broadcast(io, roomId);
-      if (room.phase === 'showdown') { io.to(roomId).emit('showdown'); _scheduleAutoStart(io, roomId); }
+      // ZoomテーブルはzoomManagerが管理するためindex.jsからはautoStartしない
+      if (room.phase === 'showdown') { io.to(roomId).emit('showdown'); if (room.isZoomTable) handleZoomShowdown(io, roomId); else _scheduleAutoStart(io, roomId); }
     });
 
     // ----- ベットアクション -----
@@ -232,7 +233,7 @@ app.prepare().then(() => {
         action,
       });
       _broadcast(io, roomId);
-      if (room.phase === 'showdown') { io.to(roomId).emit('showdown'); _scheduleAutoStart(io, roomId); }
+      if (room.phase === 'showdown') { io.to(roomId).emit('showdown'); if (room.isZoomTable) handleZoomShowdown(io, roomId); else _scheduleAutoStart(io, roomId); }
     });
 
     // ----- 切断 -----
@@ -317,7 +318,7 @@ function _makeTimeoutHandler(io, roomId) {
 
     _broadcast(io, rid);
     const room = getOrCreateRoom(rid);
-    if (room.phase === 'showdown') { io.to(rid).emit('showdown'); _scheduleAutoStart(io, rid); }
+    if (room?.phase === 'showdown') { io.to(rid).emit('showdown'); if (room.isZoomTable) handleZoomShowdown(io, rid); else _scheduleAutoStart(io, rid); }
   };
 }
 

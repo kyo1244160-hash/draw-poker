@@ -455,6 +455,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
         <div style={{textAlign:'center',fontSize:11,color:'var(--cream-dim)',fontStyle:'italic',fontFamily:'var(--font-body)'}}>
           {curPlayer ? (curPlayer.name+' がアクション中...') : '待機中...'}
         </div>
+        {onFastFold && btn(onFastFold, '⚡ FastFold', 'gold')}
         <InlineLeave />
       </div>
     );
@@ -471,6 +472,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
             </span>
           )}
         </div>
+        {onFastFold && btn(onFastFold, '⚡ FastFold', 'gold')}
         <InlineLeave />
       </div>
     );
