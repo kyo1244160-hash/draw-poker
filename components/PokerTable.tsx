@@ -138,9 +138,39 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
           }, 2500);
         }
       } else {
-        // ドローフェーズ以外（BETフェーズ・showdown）ではprevDrewをリセット
-        prevDrewRef.current = {};
-        setDrawFlash({});
+        // ドローフェーズ以外（BETフェーズ・showdown）に遷移した場合、
+        // 最後にドローしたプレイヤー（draw中にフラッシュ未発火）がいればここで発火させてからリセット
+        const lateFlashes: {pid:string, cnt:number}[] = [];
+        for (const p of pl) {
+          if (!p.drewThisRound || p.drawCount === null) continue;
+          const wasDrawn = prevDrewRef.current[p.id] ?? false;
+          if (!wasDrawn) {
+            lateFlashes.push({ pid: p.id, cnt: p.drawCount as number });
+          }
+        }
+        // prevDrewRefを現在のstateで更新（BETフェーズ中の再発火を防ぐ）
+        const newPrevDrew2: Record<string,boolean> = {};
+        for (const p of pl) { newPrevDrew2[p.id] = p.drewThisRound; }
+        prevDrewRef.current = newPrevDrew2;
+        if (lateFlashes.length > 0) {
+          setDrawFlash(() => {
+            const next2: Record<string,{count:number,key:number}> = {};
+            for (const { pid, cnt } of lateFlashes) {
+              next2[pid] = { count: cnt, key: Date.now() };
+            }
+            return next2;
+          });
+          const pidsToRemove = lateFlashes.map(f => f.pid);
+          setTimeout(() => {
+            setDrawFlash((cur) => {
+              const n = { ...cur };
+              for (const pid of pidsToRemove) delete n[pid];
+              return n;
+            });
+          }, 2500);
+        } else {
+          setDrawFlash({});
+        }
       }
     };
     const onGameStarted = () => {
@@ -736,17 +766,26 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
 
     const getPosMobile = (p: Player) => {
       let ang: number;
+      let topOffset = 0;
       if (p.isSelf) { ang = 90; }
       else {
         const idx = others.findIndex((o) => o.id === p.id);
         ang = SLOTS[idx] ?? (-90 + 72 * (idx + 1));
+        // 縦表示: 自プレイヤー（90°）に隣接する左右プレイヤー（idx=0, idx=最後）を上にずらして重なりを防ぐ
+        if (isPortrait && (idx === 0 || idx === others.length - 1)) {
+          topOffset = -45;
+        }
+        // 縦表示: 上側3人（-145°,-90°,-35° → sin<0 = 上部）をタイトルバーから離すため下にずらす
+        if (isPortrait && idx >= 1 && idx <= 3) {
+          topOffset += 40;
+        }
       }
       const rad = (ang * Math.PI) / 180;
       const bw  = p.isSelf ? SELF_BOX_W : OTH_BOX_W;
       const bh  = p.isSelf ? SELF_BOX_H : OTH_BOX_H;
       return {
         left: CX + RX * Math.cos(rad) - bw / 2,
-        top:  CY + RY * Math.sin(rad) - bh / 2,
+        top:  CY + RY * Math.sin(rad) - bh / 2 + topOffset,
       };
     };
 
