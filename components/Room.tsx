@@ -3,14 +3,18 @@
  *
  * 機能:
  *   - 部屋一覧（固定部屋 + ユーザー作成部屋）
- *   - 部屋作成（ゲームタイプ・パスワード設定）
+ *   - Google ログイン / ニックネーム設定
  *   - パスワード付き部屋への入室
  *   - 各部屋の参加者一覧
  */
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
+import { useSession } from 'next-auth/react';
 import { socket } from '../socket';
+import UserMenu from './UserMenu';
+import NicknameSetup from './NicknameSetup';
+import LoginPromptModal from './LoginPromptModal';
 
 // ===== 型定義 =====
 interface RoomInfo {
@@ -25,20 +29,22 @@ interface RoomInfo {
 
 export default function Room() {
   const router = useRouter();
-  const [rooms,        setRooms]        = useState<RoomInfo[]>([]);
-  const [selected,     setSelected]     = useState<string | null>(null);
-  const [roomPlayers,  setRoomPlayers]  = useState<string[]>([]);
-  const [name,         setName]         = useState('');
-  const [password,     setPassword]     = useState(''); // 入室用パスワード
-  const [error,        setError]        = useState('');
-  const [showCreate,   setShowCreate]   = useState(false);
-  // 部屋作成フォーム
-  const [newLabel,     setNewLabel]     = useState('');
-  const [newMode,      setNewMode]      = useState<'27'|'badugi'|'mix'>('27');
-  const [newPassword,  setNewPassword]  = useState('');
-  const [createError,  setCreateError]  = useState('');
-  // スマホ用: 入室パネルを表示中かどうか
+  const { data: session, status } = useSession();
+
+  const [rooms,         setRooms]         = useState<RoomInfo[]>([]);
+  const [selected,      setSelected]      = useState<string | null>(null);
+  const [roomPlayers,   setRoomPlayers]   = useState<string[]>([]);
+  const [password,      setPassword]      = useState('');
+  const [error,         setError]         = useState('');
+  const [showCreate,    setShowCreate]    = useState(false);
+  const [newLabel,      setNewLabel]      = useState('');
+  const [newMode,       setNewMode]       = useState<'27'|'badugi'|'mix'>('27');
+  const [newPassword,   setNewPassword]   = useState('');
+  const [createError,   setCreateError]   = useState('');
   const [showJoinPanel, setShowJoinPanel] = useState(false);
+  // モーダル表示制御
+  const [showLoginPrompt,   setShowLoginPrompt]   = useState(false);
+  const [showNicknameSetup, setShowNicknameSetup] = useState(false);
 
   // ===== Socket.IO =====
   useEffect(() => {
@@ -46,7 +52,6 @@ export default function Room() {
     socket.on('roomList',    (list: RoomInfo[]) => setRooms(list));
     socket.on('lobbyUpdate', (players: string[]) => setRoomPlayers(players));
     socket.on('roomCreated', ({ roomId }: { roomId: string }) => {
-      // 作成後すぐにその部屋を選択
       setSelected(roomId);
       setShowCreate(false);
       setNewLabel(''); setNewMode('27'); setNewPassword('');
@@ -62,26 +67,41 @@ export default function Room() {
     };
   }, []);
 
+  // ロビーアクセス時: 未ログインならモーダルを表示
+  useEffect(() => {
+    if (status === 'unauthenticated') {
+      setShowLoginPrompt(true);
+    }
+  }, [status]);
+
   // ===== ハンドラ =====
   const handleSelect = (id: string) => {
     setSelected(id); setError(''); setPassword('');
     socket.emit('getRoomPlayers', id);
-    setShowJoinPanel(true); // スマホ: 選択したら入室パネルを表示
+    setShowJoinPanel(true);
   };
 
   const handleJoin = () => {
-    if (!name.trim())  { setError('名前を入力してください');  return; }
-    if (!selected)     { setError('部屋を選択してください'); return; }
+    // 未ログイン
+    if (status !== 'authenticated') {
+      setShowLoginPrompt(true);
+      return;
+    }
+    // ニックネーム未設定
+    if (!session?.user?.nickname) {
+      setShowNicknameSetup(true);
+      return;
+    }
+    if (!selected) { setError('部屋を選択してください'); return; }
     const room = rooms.find((r) => r.id === selected);
     if (room?.hasPassword && !password.trim()) { setError('パスワードを入力してください'); return; }
 
+    const nickname = session.user.nickname;
     if (room?.isZoom) {
-      // FastFold（Zoom）: joinRoom は送らず /zoom/[poolId] へ遷移
-      // プールへの参加は ZoomTable 側で z:join として送信する
-      router.push(`/zoom/${encodeURIComponent(selected)}?name=${encodeURIComponent(name.trim())}`);
+      router.push(`/zoom/${encodeURIComponent(selected)}?name=${encodeURIComponent(nickname)}`);
     } else {
-      socket.emit('joinRoom', { roomId: selected, name: name.trim(), password: password.trim() || undefined });
-      router.push(`/room/${encodeURIComponent(selected)}?name=${encodeURIComponent(name.trim())}`);
+      socket.emit('joinRoom', { roomId: selected, name: nickname, password: password.trim() || undefined });
+      router.push(`/room/${encodeURIComponent(selected)}?name=${encodeURIComponent(nickname)}`);
     }
   };
 
@@ -93,20 +113,38 @@ export default function Room() {
 
   const selectedRoom = rooms.find((r) => r.id === selected);
 
-  // モードの表示色
-  const modeColor = (mode: string) =>
-    mode === 'badugi' ? '#cc9966' : mode === 'mix' ? '#aa88dd' : '#88bbee';
-  const modeBg = (mode: string) =>
-    mode === 'badugi' ? 'rgba(204,119,68,0.2)' : mode === 'mix' ? 'rgba(170,136,221,0.2)' : 'rgba(68,136,204,0.2)';
-  const modeBorder = (mode: string) =>
-    mode === 'badugi' ? 'rgba(204,119,68,0.4)' : mode === 'mix' ? 'rgba(170,136,221,0.4)' : 'rgba(68,136,204,0.4)';
-  const modeLabel = (mode: string) =>
-    mode === 'badugi' ? 'Badugi' : mode === 'mix' ? 'Mix (2-7↔Badugi)' : '2-7 Triple Draw';
-  const modeLeftBorder = (mode: string) =>
-    mode === 'badugi' ? '#cc7744' : mode === 'mix' ? '#aa88dd' : '#4488cc';
+  const modeColor      = (mode: string) => mode === 'badugi' ? '#cc9966' : mode === 'mix' ? '#aa88dd' : '#88bbee';
+  const modeBg         = (mode: string) => mode === 'badugi' ? 'rgba(204,119,68,0.2)' : mode === 'mix' ? 'rgba(170,136,221,0.2)' : 'rgba(68,136,204,0.2)';
+  const modeBorder     = (mode: string) => mode === 'badugi' ? 'rgba(204,119,68,0.4)' : mode === 'mix' ? 'rgba(170,136,221,0.4)' : 'rgba(68,136,204,0.4)';
+  const modeLabel      = (mode: string) => mode === 'badugi' ? 'Badugi' : mode === 'mix' ? 'Mix (2-7↔Badugi)' : '2-7 Triple Draw';
+  const modeLeftBorder = (mode: string) => mode === 'badugi' ? '#cc7744' : mode === 'mix' ? '#aa88dd' : '#4488cc';
 
   return (
     <div style={S.page}>
+      {/* ログイン促進モーダル */}
+      {showLoginPrompt && (
+        <LoginPromptModal onClose={() => setShowLoginPrompt(false)} />
+      )}
+
+      {/* ニックネーム設定モーダル */}
+      {showNicknameSetup && (
+        <NicknameSetup
+          onComplete={(nickname) => {
+            setShowNicknameSetup(false);
+            // 設定完了後にそのまま入室
+            if (selected) {
+              const room = rooms.find((r) => r.id === selected);
+              if (room?.isZoom) {
+                router.push(`/zoom/${encodeURIComponent(selected)}?name=${encodeURIComponent(nickname)}`);
+              } else {
+                socket.emit('joinRoom', { roomId: selected, name: nickname, password: password.trim() || undefined });
+                router.push(`/room/${encodeURIComponent(selected)}?name=${encodeURIComponent(nickname)}`);
+              }
+            }
+          }}
+        />
+      )}
+
       {/* ===== ヘッダー ===== */}
       <header style={S.hero}>
         <div style={S.logoWrap}>
@@ -119,17 +157,20 @@ export default function Room() {
         <div style={S.heroDivider} />
         <h1 style={S.heroTitle}>Poker Room Pastis</h1>
         <div style={S.heroDivider} />
+        {/* ログイン状態 */}
+        <div style={S.userMenuWrap}>
+          <UserMenu onNicknameNeeded={() => setShowNicknameSetup(true)} />
+        </div>
       </header>
 
-      {/* ===== PC: 2カラム / スマホ: 1カラム（入室パネル表示中は差し替え）===== */}
+      {/* ===== PC: 2カラム / スマホ: 1カラム ===== */}
       <div style={S.layout}>
-        {/* 部屋リストパネル: スマホで入室パネル表示中は非表示 */}
+        {/* 部屋リストパネル */}
         <section style={{ ...S.panel, ...(showJoinPanel ? { display: 'none' } : {}) }} className="room-list-panel">
           <div style={S.panelHeader}>
             <h2 style={S.panelTitle}><span style={S.titleLine}/>ROOMS<span style={S.titleLine}/></h2>
           </div>
 
-          {/* 凡例 */}
           <div style={S.legend}>
             {[['27','2-7'],['badugi','Badugi'],['mix','Mix']].map(([m,l]) => (
               <span key={m} style={S.legendItem}>
@@ -141,7 +182,6 @@ export default function Room() {
             </span>
           </div>
 
-          {/* 部屋リスト */}
           <div style={S.roomGrid}>
             {rooms.map((r) => (
               <button key={r.id} onClick={() => handleSelect(r.id)} style={{
@@ -167,20 +207,16 @@ export default function Room() {
           </div>
         </section>
 
-        {/* 入室パネル: スマホは showJoinPanel 時のみ表示、PC は常時表示 */}
-        <section style={{ ...S.panel, ...(showJoinPanel ? {} : {}) }} className="join-panel-wrapper">
-          {/* 戻るボタン: スマホのみ表示 */}
+        {/* 入室パネル */}
+        <section style={{ ...S.panel }} className="join-panel-wrapper">
           <div className="back-btn-row" style={{ display: 'none', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-            <button onClick={() => setShowJoinPanel(false)} style={S.createToggleBtn}>
-              ← 戻る
-            </button>
+            <button onClick={() => setShowJoinPanel(false)} style={S.createToggleBtn}>← 戻る</button>
             <h2 style={{ ...S.panelTitle, flex: 1, margin: 0 }}>
               <span style={S.titleLine}/>
               {selectedRoom ? selectedRoom.label.toUpperCase() : 'SELECT ROOM'}
               <span style={S.titleLine}/>
             </h2>
           </div>
-          {/* タイトル: PC版 */}
           <h2 style={S.panelTitle} className="join-panel-title">
             <span style={S.titleLine}/>
             {selectedRoom ? selectedRoom.label.toUpperCase() : 'SELECT ROOM'}
@@ -189,17 +225,15 @@ export default function Room() {
 
           {selectedRoom ? (
             <>
-              {/* ゲーム説明 */}
               <div style={S.ruleBox}>
                 <p style={S.ruleTitle}>{modeLabel(selectedRoom.mode)}</p>
-                {selectedRoom.isZoom && <p style={{ ...S.ruleText, color: '#aadd88' }}>⚡ FastFold: フォールドした瞬間に次のテーブルへ移動。6人集まり次第すぐにゲーム開始。</p>}
+                {selectedRoom.isZoom && <p style={{ ...S.ruleText, color: '#aadd88' }}>⚡ FastFold: フォールドした瞬間に次のテーブルへ移動。</p>}
                 {selectedRoom.mode === 'badugi' && <p style={S.ruleText}>4枚の手札 × 3回ドロー。スートが全て異なる低い手が最強。</p>}
                 {selectedRoom.mode === '27'     && <p style={S.ruleText}>5枚の手札 × 3回ドロー。低い手が強い。フラッシュ・ストレートは弱い。</p>}
                 {selectedRoom.mode === 'mix'    && <p style={S.ruleText}>BTNが1周するごとに 2-7 と Badugi を交互に切替。</p>}
                 <p style={S.ruleText}>開始チップ: 100BB（毎ゲームリセット）</p>
               </div>
 
-              {/* 参加者一覧 */}
               <div style={S.playerList}>
                 <p style={S.listLabel}>現在の参加者</p>
                 {roomPlayers.length === 0
@@ -213,14 +247,27 @@ export default function Room() {
                 }
               </div>
 
-              {/* 入室フォーム */}
               <div style={S.formArea}>
-                <label style={S.inputLabel}>YOUR NAME</label>
-                <input type="text" maxLength={12} placeholder="名前を入力..."
-                  value={name} onChange={(e) => { setName(e.target.value); setError(''); }}
-                  onKeyDown={(e) => e.key === 'Enter' && handleJoin()}
-                  style={S.input}
-                />
+                {/* ログイン状態に応じたフォーム */}
+                {status === 'unauthenticated' && (
+                  <div style={S.loginPrompt}>
+                    <p style={S.loginPromptText}>入室するには Google ログインが必要です</p>
+                  </div>
+                )}
+                {status === 'authenticated' && !session?.user?.nickname && (
+                  <div style={S.loginPrompt}>
+                    <p style={S.loginPromptText}>ニックネームを設定してから入室できます</p>
+                    <button style={S.setupPromptBtn} onClick={() => setShowNicknameSetup(true)}>
+                      ニックネームを設定 →
+                    </button>
+                  </div>
+                )}
+                {status === 'authenticated' && session?.user?.nickname && (
+                  <div style={S.nicknameDisplay}>
+                    <span style={S.inputLabel}>NAME</span>
+                    <span style={S.nicknameText}>{session.user.nickname}</span>
+                  </div>
+                )}
                 {selectedRoom.hasPassword && (
                   <>
                     <label style={{ ...S.inputLabel, marginTop: 8 }}>PASSWORD</label>
@@ -249,7 +296,6 @@ export default function Room() {
       <footer style={S.footer}><span style={S.suitRow}>♠ ♥ ♦ ♣</span></footer>
 
       <style>{`
-        /* スマホ: 入室パネルを非表示→表示切替 */
         @media (max-width: 767px) {
           .room-list-panel {
             display: ${showJoinPanel ? 'none' : 'block'} !important;
@@ -266,25 +312,11 @@ export default function Room() {
             display: none !important;
           }
         }
-        /* PC: 常時2カラム、戻るボタン非表示 */
         @media (min-width: 768px) {
-          .room-list-panel {
-            display: block !important;
-            flex: 1;
-            min-width: 320px;
-          }
-          .join-panel-wrapper {
-            display: block !important;
-            flex: 1;
-            min-width: 320px;
-          }
-          .back-btn-row {
-            display: none !important;
-          }
-          .join-panel-title {
-            display: flex !important;
-            margin-bottom: 16px;
-          }
+          .room-list-panel { display: block !important; flex: 1; min-width: 320px; }
+          .join-panel-wrapper { display: block !important; flex: 1; min-width: 320px; }
+          .back-btn-row { display: none !important; }
+          .join-panel-title { display: flex !important; margin-bottom: 16px; }
         }
       `}</style>
     </div>
@@ -297,17 +329,13 @@ const S: Record<string, React.CSSProperties> = {
   logoWrap:        { display: 'flex', justifyContent: 'center', marginBottom: 10 },
   heroDivider:     { height: 1, background: 'linear-gradient(90deg, transparent, var(--gold), transparent)', margin: '10px auto', width: 400 },
   heroTitle:       { fontFamily: 'var(--font-title)', fontSize: 'clamp(26px, 4vw, 50px)', color: 'var(--gold-bright)', letterSpacing: '0.1em', textShadow: '0 0 28px rgba(201,168,76,0.35), 2px 2px 0 rgba(0,0,0,0.8)', margin: '6px 0' },
+  userMenuWrap:    { display: 'flex', justifyContent: 'center', marginTop: 16 },
   layout:          { display: 'flex', gap: 24, width: '100%', maxWidth: 1100, alignItems: 'flex-start', flexWrap: 'wrap' as const },
   panel:           { flex: 1, minWidth: 320, background: 'linear-gradient(160deg, rgba(22,92,56,0.6), rgba(10,51,32,0.8))', border: '1px solid var(--gold-dim)', borderRadius: 12, padding: '24px 28px', boxShadow: 'var(--shadow), var(--inset)', overflowY: 'auto' as const, maxHeight: '75vh' },
   panelHeader:     { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
   panelTitle:      { fontFamily: 'var(--font-title)', fontSize: 13, letterSpacing: '0.4em', color: 'var(--gold)', textAlign: 'center', display: 'flex', alignItems: 'center', gap: 10, margin: 0 },
   titleLine:       { flex: 1, height: 1, background: 'linear-gradient(90deg, transparent, var(--gold-dim))' },
   createToggleBtn: { fontFamily: 'var(--font-title)', fontSize: 10, letterSpacing: '0.06em', padding: '6px 12px', background: 'rgba(201,168,76,0.15)', border: '1px solid var(--gold-dim)', borderRadius: 5, color: 'var(--gold)', cursor: 'pointer' },
-  createForm:      { background: 'rgba(0,0,0,0.25)', border: '1px solid rgba(201,168,76,0.2)', borderRadius: 8, padding: '16px', marginBottom: 16, display: 'flex', flexDirection: 'column' as const, gap: 8 },
-  createTitle:     { fontFamily: 'var(--font-title)', fontSize: 11, color: 'var(--gold)', letterSpacing: '0.2em', margin: 0 },
-  createInput:     { padding: '10px 14px', fontSize: 15, fontFamily: 'var(--font-body)', background: 'rgba(0,0,0,0.4)', border: '1px solid var(--gold-dim)', borderRadius: 6, color: 'var(--cream)', outline: 'none', width: '100%', boxSizing: 'border-box' as const },
-  modeSelect:      { display: 'flex', gap: 6, flexWrap: 'wrap' as const },
-  modeBtn:         { flex: 1, padding: '7px 6px', borderRadius: 5, cursor: 'pointer', fontSize: 11, fontFamily: 'var(--font-title)', letterSpacing: '0.04em', transition: 'all 0.15s' },
   legend:          { display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap' as const },
   legendItem:      { display: 'flex', alignItems: 'center', gap: 5, fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--cream-dim)' },
   legendDot:       { display: 'inline-block', width: 9, height: 9, borderRadius: '50%', flexShrink: 0 },
@@ -337,4 +365,9 @@ const S: Record<string, React.CSSProperties> = {
   placeholder:     { display: 'flex', flexDirection: 'column' as const, alignItems: 'center', justifyContent: 'center', height: 200 },
   footer:          { marginTop: 40, textAlign: 'center' },
   suitRow:         { fontFamily: 'var(--font-body)', fontSize: 24, color: 'var(--gold-dim)', letterSpacing: 18 },
+  loginPrompt:     { background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(201,168,76,0.2)', borderRadius: 8, padding: '12px 16px', display: 'flex', flexDirection: 'column' as const, gap: 8, alignItems: 'flex-start' },
+  loginPromptText: { color: 'var(--cream-dim)', fontSize: 14, fontFamily: 'var(--font-body)', margin: 0 },
+  setupPromptBtn:  { background: 'rgba(201,168,76,0.2)', border: '1px solid var(--gold-dim)', borderRadius: 5, color: 'var(--gold)', fontSize: 13, cursor: 'pointer', padding: '6px 12px', fontFamily: 'var(--font-title)' },
+  nicknameDisplay: { display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0' },
+  nicknameText:    { color: 'var(--cream)', fontSize: 20, fontFamily: 'var(--font-body)', fontWeight: 600 },
 };

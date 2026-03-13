@@ -226,9 +226,8 @@ app.prepare().then(() => {
       const room = betAction(roomId, socket.id, action);
       if (!room) { socket.emit('error', { message: 'そのアクションはできません' }); return; }
       resetTimeout(roomId, socket.id);
-      // アクション名を全員に通知
+      // アクション名を全員に通知（socket.id は含めない）
       io.to(roomId).emit('playerAction', {
-        playerId: socket.id,
         playerName: actingPlayer ? actingPlayer.name : '',
         action,
       });

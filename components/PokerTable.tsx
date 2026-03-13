@@ -66,9 +66,9 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
   const [leaveReservation, setLeaveReservation] = useState<null|'afterHand'|'nextBB'>(null);
   // kicked通知メッセージ
   const [kickedMsg, setKickedMsg] = useState<string|null>(null);
-  // アクション表示 { playerId -> { label, key } }
+  // アクション表示 { playerName -> { label, key } }
   const [actionFlash, setActionFlash] = useState<Record<string,{label:string,key:number}>>({});
-  // チェンジ枚数フラッシュ { playerId -> { count, key } }
+  // チェンジ枚数フラッシュ { playerName -> { count, key } }
   const [drawFlash, setDrawFlash] = useState<Record<string,{count:number,key:number}>>({});
   // 前回gameStateでのdrewThisRound状態 { playerId -> boolean }
   // false→true に変化したときだけフラッシュ発火（再発火防止）
@@ -210,17 +210,17 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
     const ACTION_LABEL: Record<string,string> = {
       fold:'フォールド', check:'チェック', call:'コール', bet:'ベット', raise:'レイズ',
     };
-    const onPlayerAction = ({ playerId, action }: { playerId:string; action:string }) => {
+    const onPlayerAction = ({ playerName, action }: { playerName:string; action:string }) => {
       const label = ACTION_LABEL[action] ?? action;
       setActionFlash((prev) => ({
         ...prev,
-        [playerId]: { label, key: Date.now() },
+        [playerName]: { label, key: Date.now() },
       }));
       // 2秒後に消去
       setTimeout(() => {
         setActionFlash((prev) => {
           const next = {...prev};
-          delete next[playerId];
+          delete next[playerName];
           return next;
         });
       }, 2000);
@@ -798,7 +798,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
       const active = p.isMyTurn && !p.folded && !p.sittingOut;
       const dc = isDrawPhase ? (p.drewThisRound ? p.drawCount : null) : (lastDrawCount[p.id] ?? null);
       const bw = p.isSelf ? SELF_BOX_W : OTH_BOX_W;
-      const flash = actionFlash[p.id];
+      const flash = actionFlash[p.name];
       const dflash = drawFlash[p.id];
       return (
         <div key={p.id} style={{position:'absolute', left, top, width:bw, overflow:'visible', zIndex: p.isSelf ? 3 : 2}}>
@@ -1132,7 +1132,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
           {/* プレイヤーボックス */}
           {players.map((p) => {
             const {left,top}=getPos(p);
-            const flash=actionFlash[p.id];
+            const flash=actionFlash[p.name];
             const dflash=drawFlash[p.id];
             return (
               <div key={p.id} style={{position:'absolute',left,top,width:BW,zIndex:2,overflow:'visible'}}>
