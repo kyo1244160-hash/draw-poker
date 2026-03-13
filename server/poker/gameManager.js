@@ -627,9 +627,13 @@ function leaveRoom(socketId) {
       delete room._selectedIndices[socketId];
 
       // プレイヤー削除後、固定インデックスをズレないよう補正
-      if (room.fixedDealerIdx > idx) room.fixedDealerIdx--;
-      if (room.fixedSbIdx     > idx) room.fixedSbIdx--;
-      if (room.fixedBbIdx     > idx) room.fixedBbIdx--;
+      // 退室プレイヤー自身が SB/BB/Dealer だった場合は -1（無効）にする
+      if      (room.fixedDealerIdx === idx) room.fixedDealerIdx = -1;
+      else if (room.fixedDealerIdx  >  idx) room.fixedDealerIdx--;
+      if      (room.fixedSbIdx === idx) room.fixedSbIdx = -1;
+      else if (room.fixedSbIdx  >  idx) room.fixedSbIdx--;
+      if      (room.fixedBbIdx === idx) room.fixedBbIdx = -1;
+      else if (room.fixedBbIdx  >  idx) room.fixedBbIdx--;
 
       const activeAfterLeave = room.players.filter((p) => !p.sittingOut && !p.folded).length;
       const totalAfterLeave  = room.players.length + room.pendingPlayers.length;

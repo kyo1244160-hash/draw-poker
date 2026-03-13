@@ -293,32 +293,62 @@ function _makeTimeoutHandler(io, roomId) {
   return (rid, phase, playerId) => {
     console.log(`[timeout] ${playerId} in ${rid} at ${phase}`);
 
+    // アクション実行 ─ 成否を必ず確認する。
+    //
+    // 【競合の背景】
+    // Node.js のイベントループでは タイマーフェーズ（setTimeout）は
+    // I/O フェーズ（socket.io イベント）より先に処理される。
+    // そのため「タイマー残り ~0秒の瞬間にクライアントがアクションを送信」すると
+    //   1. タイマーフェーズ: このコールバックが先に実行される
+    //   2. I/O フェーズ: クライアントのアクションが処理されるが、
+    //      ターンは既に進んでいるため betAction/drawCards が null を返す
+    //      → resetTimeout が呼ばれない
+    // これが 3 回蓄積すると不当な kick が発生していた。
+    //
+    // 修正: アクションが null（＝既に別経路でターンが進んでいる）の場合は
+    // incrementTimeout を呼ばずに早期リターンする。
+    let acted = false;
     if (phase.startsWith('draw')) {
       const room    = getOrCreateRoom(rid);
       const indices = room._selectedIndices[playerId] ?? [];
-      drawCards(rid, playerId, indices);
+      acted = !!drawCards(rid, playerId, indices);
     } else if (phase.startsWith('bet')) {
-      betAction(rid, playerId, 'fold');
+      acted = !!betAction(rid, playerId, 'fold');
     }
 
-    // 連続タイムアウトカウント → 3回で退室
-    const shouldKick = incrementTimeout(rid, playerId);
-    if (shouldKick) {
-      console.log(`[kick-timeout] ${playerId} in ${rid} (3 consecutive timeouts)`);
-      leaveRoom(playerId);
-      // 対象ソケットに kicked を通知
-      const targetSocket = io.sockets.sockets.get(playerId);
-      if (targetSocket) {
-        targetSocket.emit('kicked', { reason: '連続タイムアウトにより退室されました' });
-        targetSocket.leave(rid);
-      }
-      io.emit('roomList', getLobbyList());
-      _broadcastLobbyUpdate(io, rid);
+    if (!acted) {
+      console.log(`[timeout-skip] ${playerId}: action already resolved, skip count`);
+      return;
     }
 
     _broadcast(io, rid);
     const room = getOrCreateRoom(rid);
     if (room?.phase === 'showdown') { io.to(rid).emit('showdown'); if (room.isZoomTable) handleZoomShowdown(io, rid); else _scheduleAutoStart(io, rid); }
+
+    // 連続タイムアウトカウント → 3回で退室
+    // タイマー切れ直前のアクションが I/O フェーズで到達して resetTimeout を
+    // 呼ぶ可能性があるため、200ms の猶予を設けてから kick を確定する。
+    const shouldKick = incrementTimeout(rid, playerId);
+    if (shouldKick) {
+      setTimeout(() => {
+        const room2   = getOrCreateRoom(rid);
+        const player2 = room2?.players.find((p) => p.id === playerId);
+        if (!player2 || (player2.timeoutCount ?? 0) < 3) {
+          console.log(`[kick-timeout-cancel] ${playerId}: action arrived within grace period`);
+          return;
+        }
+        console.log(`[kick-timeout] ${playerId} in ${rid} (3 consecutive timeouts)`);
+        leaveRoom(playerId);
+        const targetSocket = io.sockets.sockets.get(playerId);
+        if (targetSocket) {
+          targetSocket.emit('kicked', { reason: '連続タイムアウトにより退室されました' });
+          targetSocket.leave(rid);
+        }
+        io.emit('roomList', getLobbyList());
+        _broadcastLobbyUpdate(io, rid);
+        _broadcast(io, rid);
+      }, 200);
+    }
   };
 }
 
