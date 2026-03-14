@@ -23,5 +23,9 @@ services:
         value: production
       - key: PORT
         value: 10000
+      # BOT_SERVER: ボットが自サーバーへ接続するURL（NEXTAUTH_URL と同じ値）
+      # 未設定の場合は NEXTAUTH_URL 環境変数から自動取得するため、
+      # Render の環境変数に NEXTAUTH_URL=https://draw-poker.onrender.com が
+      # 設定されていれば BOT_SERVER の設定は不要
     healthCheckPath: /api/health
     autoDeploy: true

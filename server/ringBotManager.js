@@ -9,7 +9,13 @@
 const { io } = require('socket.io-client');
 const { decideBotDraw, decideBotBetAction } = require('./poker/botManager');
 
-const SERVER     = process.env.BOT_SERVER || 'http://localhost:3000';
+// BOT_SERVER 環境変数が未設定の場合、NEXTAUTH_URL または ALLOWED_ORIGIN から自動解決する
+// Render 本番環境では NEXTAUTH_URL=https://draw-poker.onrender.com が設定されているため
+// ボットが正しく本番サーバーへ接続できる
+const SERVER = process.env.BOT_SERVER
+  || process.env.NEXTAUTH_URL
+  || process.env.ALLOWED_ORIGIN
+  || 'http://localhost:3000';
 const BOT_SECRET = process.env.BOT_SECRET ?? 'pastis-internal-bot';
 
 const BOT_NAMES = [
@@ -37,9 +43,11 @@ class RingBot {
   start() {
     if (this.stopped) return;
     this.socket = io(SERVER, {
-      path:       '/socket.io',
-      transports: ['websocket'],
-      auth:       { token: `bot:${BOT_SECRET}`, botName: this.name },
+      path:              '/socket.io',
+      transports:        ['websocket', 'polling'],  // polling へのフォールバックを許可
+      reconnectionDelay: 3000,
+      timeout:           10000,
+      auth:              { token: `bot:${BOT_SECRET}`, botName: this.name },
     });
     const s = this.socket;
 
@@ -201,9 +209,11 @@ class FastFoldBot {
   start() {
     if (this.stopped) return;
     this.socket = io(SERVER, {
-      path:       '/socket.io',
-      transports: ['websocket'],
-      auth:       { token: `bot:${BOT_SECRET}`, botName: this.name },
+      path:              '/socket.io',
+      transports:        ['websocket', 'polling'],  // polling へのフォールバックを許可
+      reconnectionDelay: 3000,
+      timeout:           10000,
+      auth:              { token: `bot:${BOT_SECRET}`, botName: this.name },
     });
     const s = this.socket;
 
