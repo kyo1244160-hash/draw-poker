@@ -75,6 +75,7 @@ export default function Room() {
   const [showNicknameSetup, setShowNicknameSetup] = useState(false);
   const [socketError,       setSocketError]       = useState('');
   const [tournaments, setTournaments] = useState<TournamentInfo[]>([]);
+  const [joining,     setJoining]     = useState(false);  // 入室待機中フラグ
 
   // ===== Socket.IO =====
   useEffect(() => {
@@ -102,6 +103,7 @@ export default function Room() {
     socket.on('joinError', ({ message, fullRoomId: fid }: { message: string; fullRoomId?: string }) => {
       setError(message);
       setFullRoomId(fid ?? null);
+      setJoining(false);  // 入室失敗 → ボタンを戻す
     });
 
     if (socket.connected) {
@@ -158,10 +160,28 @@ export default function Room() {
     const nickname = session.user.nickname;
     if (room?.isZoom) {
       router.push(`/zoom/${encodeURIComponent(selected)}?name=${encodeURIComponent(nickname)}`);
-    } else {
-      socket.emit('joinRoom', { roomId: selected, password: password.trim() || undefined });
-      router.push(`/room/${encodeURIComponent(selected)}?name=${encodeURIComponent(nickname)}`);
+      return;
     }
+
+    // joinRoom 送信 → gameState を受け取ってからページ遷移
+    // （即遷移するとjoinErrorがPokerTable側で受け取れないため）
+    setJoining(true);
+    setError('');
+    setFullRoomId(null);
+
+    const targetRoomId = selected;
+    const onFirstGameState = () => {
+      router.push(`/room/${encodeURIComponent(targetRoomId)}?name=${encodeURIComponent(nickname)}`);
+    };
+    // joinError が来たら gameState リスナーをキャンセルして joining を解除
+    const onJoinFail = () => {
+      socket.off('gameState', onFirstGameState);
+      setJoining(false);
+    };
+    socket.once('gameState', onFirstGameState);
+    socket.once('joinError', onJoinFail);
+
+    socket.emit('joinRoom', { roomId: targetRoomId, password: password.trim() || undefined });
   };
 
   const handleCreate = () => {
@@ -412,7 +432,10 @@ export default function Room() {
                     })()}
                   </div>
                 )}
-                <button onClick={handleJoin} style={S.joinBtn}>入室する →</button>
+                <button onClick={handleJoin} style={{ ...S.joinBtn, opacity: joining ? 0.6 : 1, cursor: joining ? 'wait' : 'pointer' }}
+                  disabled={joining}>
+                  {joining ? '入室中...' : '入室する →'}
+                </button>
               </div>
             </>
           ) : (

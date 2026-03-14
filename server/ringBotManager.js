@@ -172,7 +172,6 @@ function renameBot(botId, newName) {
   return true;
 }
 
-module.exports = { addBots, removeBot, removeAllBots, listBots, renameBot, addFastFoldBots, removeFastFoldBots, listFastFoldBots };
 
 // ==========================================================
 // ■ FastFold（Zoom）ボット管理
@@ -318,3 +317,5 @@ function removeFastFoldBots(poolId) {
 function listFastFoldBots() {
   return [..._ffBots.values()].map(b => b.toJSON());
 }
+
+module.exports = { addBots, removeBot, removeAllBots, listBots, renameBot, addFastFoldBots, removeFastFoldBots, listFastFoldBots };

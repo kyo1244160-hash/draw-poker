@@ -745,7 +745,12 @@ function canAutoStart(roomId) {
   const room = rooms.get(roomId);
   if (!room) return false;
   if (room.phase !== 'showdown' && room.phase !== 'waiting') return false;
-  return room.players.filter((p) => !p.sittingOut).length + room.pendingPlayers.length >= 2;
+  // startGame の先頭で sittingOut = false にリセットするため、
+  // waiting フェーズでは sittingOut プレイヤーも参加人数に含めてよい
+  const countPlayers = room.phase === 'waiting'
+    ? room.players.length
+    : room.players.filter((p) => !p.sittingOut).length;
+  return countPlayers + room.pendingPlayers.length >= 2;
 }
 
 function getAllRooms() { return rooms; }

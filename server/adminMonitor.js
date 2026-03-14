@@ -238,7 +238,7 @@ router.post('/tournaments/:tournamentId/start', async (req, res) => {
     }
 
     const entries = await getEntries(tournamentId);
-    if (entries.length < 1) {
+    if (entries.length < 2) {
       return res.status(400).json({ error: 'NOT_ENOUGH_PLAYERS', count: entries.length });
     }
 

@@ -67,6 +67,10 @@ export const updateTournamentStatus: (
   tournamentId: string, status: string
 ) => Promise<{ id: string; status: string } | null> = adminDb.updateTournamentStatus;
 
+export const deleteTournament: (
+  tournamentId: string
+) => Promise<{ id: string } | null> = adminDb.deleteTournament;
+
 export const listBlindSchedules: () => Promise<{
   id: string; name: string; description: string | null; levels: unknown;
 }[]> = adminDb.listBlindSchedules;

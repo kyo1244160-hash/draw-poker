@@ -97,6 +97,21 @@ async function listBlindSchedules() {
   `;
 }
 
+/**
+ * トーナメント削除
+ * schema.sql で ON DELETE CASCADE のため
+ * tournament_entries / tournament_results も連鎖削除される
+ * running 中は削除不可（呼び出し側でガードすること）
+ */
+async function deleteTournament(tournamentId) {
+  const [row] = await sql`
+    DELETE FROM tournaments
+    WHERE id = ${tournamentId}
+    RETURNING id
+  `;
+  return row ?? null;
+}
+
 /** ニックネーム強制変更（管理者用） */
 async function forceChangeNickname(accountId, nickname) {
   const [row] = await sql`
@@ -114,6 +129,7 @@ module.exports = {
   listTournaments,
   createTournament,
   updateTournamentStatus,
+  deleteTournament,
   listBlindSchedules,
   forceChangeNickname,
 };

@@ -66,6 +66,10 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
   const [leaveReservation, setLeaveReservation] = useState<null|'afterHand'|'nextBB'>(null);
   // kicked通知メッセージ
   const [kickedMsg, setKickedMsg] = useState<string|null>(null);
+  // pending待機中メッセージ（ゲーム進行中に入室→次のハンドから参加）
+  const [pendingMsg, setPendingMsg] = useState<string|null>(null);
+  // トーナメント開始通知 { tournamentId, tableId, countdown }
+  const [tournamentAlert, setTournamentAlert] = useState<{ tournamentId:string; countdown:number } | null>(null);
   // アクション表示 { playerName -> { label, key } }
   const [actionFlash, setActionFlash] = useState<Record<string,{label:string,key:number}>>({});
   // チェンジ枚数フラッシュ { playerName -> { count, key } }
@@ -96,6 +100,8 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
     const onGameState   = ({ players:pl, meta:m }: { players:Player[]; meta:Meta }) => {
       setMeta((prev) => { return m; });
       setPlayers(pl);
+      // pending待機中にgameStateが届いた = ゲーム開始 or 自分が参加中 → メッセージ消去
+      if (pl.some((p: Player) => p.isSelf)) setPendingMsg(null);
       const self = pl.find((p) => p.isSelf);
       if (self) setMyDrew(self.drewThisRound);
       setLastDrawCount((prev) => {
@@ -177,6 +183,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
       setSelected([]); setMyDrew(false); setLastDrawCount({});
       setCountdown(null); setDrawFlash({});
       prevDrewRef.current = {};
+      setPendingMsg(null);  // 待機メッセージを消す
     };
     const onTimerUpdate = ({ remaining }: { remaining:number }) => setTimerSec(remaining);
     const onKicked = ({ reason }:{ reason?:string } = {}) => {
@@ -188,6 +195,17 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
         router.push('/');
       }
     };
+    // joinError: 入室失敗（満員など）→ メッセージを表示してロビーへ戻す
+    const onJoinError = ({ message }:{ message:string; fullRoomId?:string }) => {
+      setKickedMsg(message);
+      setTimeout(() => router.push('/'), 2500);
+    };
+    // pendingJoin: ゲーム進行中に入室 → 次のハンドから参加（待機表示）
+    const onPendingJoin = ({ message }:{ message:string }) => {
+      setPendingMsg(message);
+    };
+    // gameStarted で pending 解除（ゲームが始まったら待機メッセージを消す）
+    // ※ gameStarted は既に onGameStarted で購読済みだが、pendingMsg クリアを追記
 
     socket.on('connect',     onConnect);
     socket.on('gameState',   onGameState);
@@ -205,6 +223,8 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
     };
     socket.on('showdown', onShowdown);
     socket.on('kicked',      onKicked);
+    socket.on('joinError',   onJoinError);
+    socket.on('pendingJoin', onPendingJoin);
     const onLeaveReservation = ({ type }: { type: null|'afterHand'|'nextBB' }) => setLeaveReservation(type);
     socket.on('leaveReservation', onLeaveReservation);
     const ACTION_LABEL: Record<string,string> = {
@@ -227,6 +247,12 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
     };
     socket.on('playerAction', onPlayerAction);
 
+    // トーナメント開始通知（リングゲーム中に受け取った場合）
+    const onTournamentStarting = ({ tournamentId }: { tournamentId:string; tableId:string }) => {
+      setTournamentAlert({ tournamentId, countdown: 5 });
+    };
+    socket.on('t:tournamentStarting', onTournamentStarting);
+
     if (socket.connected) {
       socket.emit('joinRoom', { roomId });
     } else {
@@ -239,10 +265,26 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
       socket.off('connect',onConnect); socket.off('gameState',onGameState);
       socket.off('gameStarted',onGameStarted); socket.off('timerUpdate',onTimerUpdate);
       socket.off('showdown',onShowdown); socket.off('kicked',onKicked);
+      socket.off('joinError',   onJoinError);
+      socket.off('pendingJoin', onPendingJoin);
       socket.off('leaveReservation', onLeaveReservation);
       socket.off('playerAction', onPlayerAction);
+      socket.off('t:tournamentStarting', onTournamentStarting);
     };
   }, [roomId, name]);
+
+  // ===== トーナメント開始カウントダウン =====
+  useEffect(() => {
+    if (!tournamentAlert) return;
+    if (tournamentAlert.countdown <= 0) {
+      router.push(`/tournament/${tournamentAlert.tournamentId}/draw`);
+      return;
+    }
+    const t = setTimeout(() => {
+      setTournamentAlert((prev) => prev ? { ...prev, countdown: prev.countdown - 1 } : null);
+    }, 1000);
+    return () => clearTimeout(t);
+  }, [tournamentAlert, router]);
 
   // ===== 計算 =====
   const self          = players.find((p) => p.isSelf);
@@ -399,7 +441,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
     if (meta.phase === 'waiting') return (
       <div style={{textAlign:'center', fontSize:12, color:'var(--cream-dim)',
         fontStyle:'italic', padding:'8px 0', fontFamily:'var(--font-body)'}}>
-        {players.length < 2 ? 'もう1人参加を待っています' : 'ゲームを準備中...'}
+        {pendingMsg ?? (players.length < 2 ? 'もう1人参加を待っています' : 'ゲームを準備中...')}
       </div>
     );
 
@@ -523,7 +565,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
 
     if (meta.phase === 'waiting') return (
       <div style={actionColStyle}>
-        <div style={infoStyle}>{players.length < 2 ? 'もう1人参加を待っています' : 'ゲームを準備中...'}</div>
+        <div style={infoStyle}>{pendingMsg ?? (players.length < 2 ? 'もう1人参加を待っています' : 'ゲームを準備中...')}</div>
       </div>
     );
 
@@ -704,6 +746,36 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
 
   // ==========================================================
   // ■ レイアウト未確定（SSR / 初回レンダリング前）
+  // ==========================================================
+  // トーナメント開始通知オーバーレイ
+  if (tournamentAlert) {
+    return (
+      <div style={{height:'100dvh',display:'flex',alignItems:'center',justifyContent:'center',
+        background:'var(--felt)',fontFamily:'var(--font-body)',zIndex:9999}}>
+        <div style={{background:'linear-gradient(160deg,rgba(10,51,32,0.97),rgba(5,25,15,0.99))',
+          border:'1px solid var(--gold)',borderRadius:14,padding:'40px 48px',
+          textAlign:'center',boxShadow:'0 8px 48px rgba(0,0,0,0.8)',maxWidth:360}}>
+          <div style={{fontSize:48,marginBottom:12}}>🏆</div>
+          <div style={{fontFamily:'var(--font-title)',fontSize:22,color:'var(--gold)',letterSpacing:'0.08em',marginBottom:12}}>
+            トーナメント開始！
+          </div>
+          <div style={{color:'var(--cream-dim)',fontSize:15,lineHeight:1.7,marginBottom:20}}>
+            参加登録したトーナメントが始まりました。<br/>
+            <span style={{color:'var(--gold)',fontWeight:'bold',fontSize:18}}>{tournamentAlert.countdown}</span> 秒後に移動します...
+          </div>
+          <button
+            onClick={() => router.push(`/tournament/${tournamentAlert.tournamentId}/draw`)}
+            style={{fontFamily:'var(--font-title)',fontSize:13,padding:'10px 28px',
+              background:'linear-gradient(135deg,var(--gold),var(--gold-dim))',
+              border:'none',borderRadius:6,color:'#1a1200',fontWeight:700,cursor:'pointer',letterSpacing:'0.06em'}}
+          >
+            今すぐ移動
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   // ==========================================================
   // kickedメッセージオーバーレイ
   if (kickedMsg) {

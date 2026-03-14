@@ -242,6 +242,31 @@ export default function AdminPage() {
     fetchTBots(tournamentId);
   };
 
+  // トーナメント削除
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const handleDeleteTournament = async (tournamentId: string) => {
+    setDeleting(true);
+    try {
+      const res = await fetch('/api/admin/tournaments', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tournamentId }),
+      });
+      const d = await res.json();
+      if (res.ok) {
+        setTournaments((prev) => prev.filter((t) => t.id !== tournamentId));
+      } else {
+        alert(`削除エラー: ${d.error}`);
+      }
+    } catch {
+      alert('通信エラーが発生しました');
+    } finally {
+      setDeleting(false);
+      setDeleteConfirmId(null);
+    }
+  };
+
   // ===== 権限チェック =====
   useEffect(() => {
     if (status === 'loading') return;
@@ -393,6 +418,7 @@ export default function AdminPage() {
         {/* ===== ユーザー管理 ===== */}
         {tab === 'users' && (
           <div style={S.section}>
+            <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
             <table style={S.table}>
               <thead>
                 <tr>
@@ -416,6 +442,7 @@ export default function AdminPage() {
                 ))}
               </tbody>
             </table>
+            </div>
           </div>
         )}
 
@@ -511,6 +538,7 @@ export default function AdminPage() {
             </div>
 
             {/* 一覧 */}
+            <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
             <table style={S.table}>
               <thead>
                 <tr>
@@ -557,6 +585,12 @@ export default function AdminPage() {
                               style={{ fontSize: 11, background: tBotPanel === t.id ? 'rgba(201,168,76,0.3)' : 'rgba(201,168,76,0.1)', border: '1px solid var(--gold-dim)', color: 'var(--gold)', borderRadius: 4, padding: '3px 8px', cursor: 'pointer', whiteSpace: 'nowrap' as const }}
                               onClick={() => toggleTBotPanel(t.id)}
                             >🤖 BOT{tBotPanel === t.id ? ' ▲' : ' ▼'}</button>
+                          )}
+                          {t.status !== 'running' && (
+                            <button
+                              style={{ fontSize: 11, background: 'rgba(139,26,26,0.4)', border: '1px solid rgba(204,34,34,0.5)', color: '#ffaaaa', borderRadius: 4, padding: '3px 8px', cursor: 'pointer', whiteSpace: 'nowrap' as const }}
+                              onClick={() => setDeleteConfirmId(t.id)}
+                            >🗑 削除</button>
                           )}
                         </div>
                         {startMsg[t.id] && (
@@ -668,6 +702,7 @@ export default function AdminPage() {
                 )}
               </tbody>
             </table>
+            </div>
           </div>
         )}
         {/* ===== ボット管理 ===== */}
@@ -841,6 +876,37 @@ export default function AdminPage() {
           </div>
         )}
       </div>
+
+      {/* ===== トーナメント削除確認モーダル ===== */}
+      {deleteConfirmId && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', backdropFilter: 'blur(3px)' }}
+          onClick={() => setDeleteConfirmId(null)}>
+          <div style={{ background: 'linear-gradient(160deg,#0e1a0e,#061006)', border: '1px solid var(--gold-dim)', borderRadius: 14, padding: '36px 40px', maxWidth: 400, width: '90%', textAlign: 'center', boxShadow: '0 8px 48px rgba(0,0,0,0.8)' }}
+            onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontSize: 36, marginBottom: 12 }}>🗑</div>
+            <h2 style={{ fontFamily: 'var(--font-title)', fontSize: 18, color: 'var(--gold)', letterSpacing: '0.08em', margin: '0 0 16px' }}>
+              トーナメントを削除
+            </h2>
+            <p style={{ fontFamily: 'var(--font-body)', fontSize: 15, color: 'var(--cream)', lineHeight: 1.7, margin: '0 0 8px' }}>
+              <strong style={{ color: 'var(--gold)' }}>{tournaments.find(t => t.id === deleteConfirmId)?.name}</strong> を削除しますか？
+            </p>
+            <p style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: '#ee8888', margin: '0 0 28px' }}>
+              参加登録・結果データもすべて削除されます。この操作は取り消せません。
+            </p>
+            <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
+              <button
+                style={{ background: 'transparent', border: '1px solid var(--gold-dim)', color: 'var(--cream-dim)', borderRadius: 6, padding: '10px 24px', fontSize: 13, cursor: 'pointer', fontFamily: 'var(--font-title)' }}
+                onClick={() => setDeleteConfirmId(null)}
+              >キャンセル</button>
+              <button
+                style={{ background: 'linear-gradient(135deg,#8b1a1a,#5a1010)', border: '1px solid #cc4444', color: '#ffcccc', borderRadius: 6, padding: '10px 24px', fontSize: 13, cursor: deleting ? 'wait' : 'pointer', fontFamily: 'var(--font-title)', fontWeight: 700 }}
+                onClick={() => handleDeleteTournament(deleteConfirmId)}
+                disabled={deleting}
+              >{deleting ? '削除中...' : '削除する'}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

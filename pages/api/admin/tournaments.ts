@@ -13,7 +13,7 @@ import { authOptions } from '../auth/[...nextauth]';
 import { withAdminAuth } from '../../../lib/auth';
 import {
   listTournaments, createTournament,
-  updateTournamentStatus, listBlindSchedules,
+  updateTournamentStatus, deleteTournament, listBlindSchedules,
 } from '../../../lib/db';
 import { randomUUID } from 'crypto';
 
@@ -84,6 +84,25 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
     const row = await updateTournamentStatus(tournamentId, status);
     if (!row) return res.status(404).json({ error: 'トーナメントが見つかりません' });
     return res.status(200).json({ id: row.id, status: row.status });
+  }
+
+  // DELETE: トーナメント削除
+  if (req.method === 'DELETE') {
+    const { tournamentId } = req.body as { tournamentId?: string };
+    if (!tournamentId) {
+      return res.status(400).json({ error: 'tournamentId は必須です' });
+    }
+    // running 中は削除不可
+    const [target] = await listTournaments({ limit: 1, offset: 0 }).then(
+      (rows) => rows.filter((r) => r.id === tournamentId)
+    );
+    if (!target) return res.status(404).json({ error: 'トーナメントが見つかりません' });
+    if (target.status === 'running') {
+      return res.status(400).json({ error: '進行中のトーナメントは削除できません。先にキャンセルまたは終了してください。' });
+    }
+    const deleted = await deleteTournament(tournamentId);
+    if (!deleted) return res.status(404).json({ error: '削除に失敗しました' });
+    return res.status(200).json({ ok: true, id: deleted.id });
   }
 
   return res.status(405).json({ error: 'Method not allowed' });

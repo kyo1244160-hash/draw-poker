@@ -198,26 +198,28 @@ export default function TournamentDrawPage() {
   return (
     <div style={{ height:'100dvh', display:'flex', flexDirection:'column' as const, overflow:'hidden', background:'var(--felt)', color:'var(--cream)', fontFamily:'var(--font-body)' }}>
 
-      {/* ナビバー（リングゲームと同じスタイル）*/}
+      {/* ナビバー — PC: フルサイズ / スマホ: コンパクト（高さを抑えてテーブル領域を確保）*/}
       <nav style={{
         display:'flex', alignItems:'center', justifyContent:'space-between',
-        padding:'14px 24px', borderBottom:'1px solid var(--gold-dim)',
-        background:'rgba(0,0,0,0.25)', flexShrink:0,
+        padding:'6px 10px', borderBottom:'1px solid var(--gold-dim)',
+        background:'rgba(0,0,0,0.25)', flexShrink:0, gap:8,
       }}>
-        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-          <img src="/icons/icon-72.png" alt="logo" style={{ width:32, height:32, borderRadius:'50%' }} />
-          <span style={{ fontFamily:'var(--font-title)', fontSize:18, color:'var(--gold)', letterSpacing:'0.07em' }}>Poker Room Pastis</span>
+        <div style={{ display:'flex', alignItems:'center', gap:6, flexShrink:0 }}>
+          <img src="/icons/icon-72.png" alt="logo" style={{ width:24, height:24, borderRadius:'50%' }} />
+          <span style={{ fontFamily:'var(--font-title)', fontSize:13, color:'var(--gold)', letterSpacing:'0.06em', whiteSpace:'nowrap' as const }}>Pastis</span>
         </div>
-        {/* トーナメント情報バー（ナビ内に統合）*/}
-        <TournamentInfoBar blind={blind} status={status} />
+        {/* トーナメント情報バー（中央）*/}
+        <div style={{ flex:1, minWidth:0, overflow:'hidden' }}>
+          <TournamentInfoBar blind={blind} status={status} />
+        </div>
         <button
           onClick={() => router.push('/')}
-          style={{ fontFamily:'var(--font-title)', fontSize:11, padding:'5px 12px', background:'rgba(139,26,26,0.55)', border:'1px solid rgba(204,34,34,0.4)', borderRadius:4, color:'#ffaaaa', cursor:'pointer' }}
+          style={{ fontFamily:'var(--font-title)', fontSize:11, padding:'4px 10px', background:'rgba(139,26,26,0.55)', border:'1px solid rgba(204,34,34,0.4)', borderRadius:4, color:'#ffaaaa', cursor:'pointer', flexShrink:0, whiteSpace:'nowrap' as const }}
         >ロビーへ</button>
       </nav>
 
-      {/* ゲームテーブル（全画面）*/}
-      <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', overflow:'hidden', padding:'8px 16px' }}>
+      {/* ゲームテーブル — flex:1 で残り全高さを使う。TournamentTable 内部もこの高さに合わせる */}
+      <div style={{ flex:1, display:'flex', overflow:'hidden', minHeight:0 }}>
         <TournamentTable
           players={players}
           meta={meta}

@@ -297,21 +297,12 @@ app.prepare().then(() => {
         return;
       }
 
-      // ゲーム進行中に pending で入室してしまった場合はキャンセルして案内
-      // （ロビー表示とjoinRoom処理のタイミングがずれると発生する競合）
+      // ゲーム進行中に pending で入室した場合：
+      //   トーナメントテーブル、ボット → pending のまま待機（既存動作）
+      //   通常リングゲームの人間プレイヤー → pending のまま待機し「次のハンドから参加」を通知
       if (result === 'pending' && !tournamentManager.isTournamentTable(roomId)) {
-        leaveRoom(socket.id);
-        const sameMode = getLobbyList()
-          .filter(r => r.mode === room.mode && r.id !== roomId && !r.isZoom);
-        const MAX = room.maxPlayers ?? 6;
-        const available = sameMode.filter(r => r.count < MAX);
-        let message = 'この部屋は現在ゲーム進行中のため入室できません。';
-        if (available.length > 0) {
-          const names = available.slice(0, 3).map(r => `${r.label}（${r.count}/${MAX}人）`).join('、');
-          message += ` 空きのある部屋: ${names}`;
-        }
-        socket.emit('joinError', { message, fullRoomId: roomId });
-        return;
+        // pending 待機中であることを本人に通知（入室はできているが次ゲーム待ち）
+        socket.emit('pendingJoin', { message: 'ゲーム進行中です。次のハンドから自動的に参加します。' });
       }
 
       socket.join(roomId);
@@ -322,9 +313,8 @@ app.prepare().then(() => {
       _broadcastLobbyUpdate(io, roomId);
       _broadcast(io, roomId);
 
-      // 自動スタート（waiting + 2人以上）
-      const activeCount = room.players.filter((p) => !p.sittingOut).length;
-      if (room.phase === 'waiting' && activeCount >= 2) {
+      // 自動スタート（waiting + 2人以上、canAutoStart で pendingPlayers も含めてチェック）
+      if (canAutoStart(roomId)) {
         _tryAutoStart(io, roomId);
       }
     });
