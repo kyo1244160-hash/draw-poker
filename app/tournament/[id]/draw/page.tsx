@@ -219,7 +219,8 @@ export default function TournamentDrawPage() {
       </nav>
 
       {/* ゲームテーブル — flex:1 で残り全高さを使う。TournamentTable 内部もこの高さに合わせる */}
-      <div style={{ flex:1, display:'flex', overflow:'hidden', minHeight:0 }}>
+      {/* paddingTop: フラッシュバッジ（上方向に最大70px飛び出す）がナビバーで隠れないよう余白を確保 */}
+      <div style={{ flex:1, display:'flex', overflow:'hidden', minHeight:0, paddingTop:8 }}>
         <TournamentTable
           players={players}
           meta={meta}

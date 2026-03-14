@@ -238,7 +238,9 @@ router.post('/tournaments/:tournamentId/start', async (req, res) => {
     }
 
     const entries = await getEntries(tournamentId);
-    if (entries.length < 2) {
+    // 管理者による手動開始は1人でも許可（BOT追加でテスト可能）
+    // 自動スケジューラは2人以上を要求するが、手動開始は1人から許可する
+    if (entries.length < 1) {
       return res.status(400).json({ error: 'NOT_ENOUGH_PLAYERS', count: entries.length });
     }
 
@@ -417,7 +419,8 @@ router.post('/tournament-bots/:tournamentId/add', (req, res) => {
   const tournament = getTournament(req.params.tournamentId);
   if (!tournament) return res.status(404).json({ error: 'トーナメントが見つかりません' });
 
-  const n = Math.min(Math.max(1, parseInt(count) || 1), 6);
+  // テーブル数 × 最大6人 = 複数テーブル分を一度に追加できるよう上限を30に拡大
+  const n = Math.min(Math.max(1, parseInt(count) || 1), 30);
   const targets = tableId ? [tableId] : tournament.tableIds;
   const added = [];
 
@@ -491,6 +494,11 @@ const _tBotNames = [
   'Dealer-Dan', 'Poker-Pete', 'Lucky-Lou', 'Bluff-Bill',
   'Ace-Anna', 'Check-Chris', 'Raise-Ray', 'Call-Carl',
   'Fold-Frank', 'Bet-Betty', 'River-Rita', 'Flop-Fred',
+  'All-In-Al', 'Slow-Play-Sam', 'Tight-Tom', 'Loose-Liz',
+  'Squeeze-Sue', 'Cold-Call-Cole', 'Triple-Tim', 'Badugi-Bob',
+  'Draw-Dave', 'Showdown-Shawn', 'Pot-Pam', 'Chip-Chuck',
+  'Stack-Steve', 'Blind-Bud', 'Turn-Terry', 'River-Rex',
+  'Nuts-Nancy', 'Flush-Fiona',
 ];
 function _pickBotName(existingNames) {
   const used = new Set(existingNames);

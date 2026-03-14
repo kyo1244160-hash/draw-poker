@@ -433,12 +433,17 @@ export default function TournamentTable({
             const flash  = actionFlash[p.name];
             const dflash = drawFlash[p.id];
             const active = p.isMyTurn && !p.folded && !p.sittingOut;
+            // 上段プレイヤー（top < CY）はバッジをボックスの下に表示して見切れを防ぐ
+            const bh = p.isSelf ? Math.floor(TH*0.31) : Math.floor(TH*0.25);
+            const isTopHalf = top < CY;
+            const flashTop = isTopHalf ? bh + 4 : -38;
+            const dflashTop = isTopHalf ? (flash ? bh + 28 : bh + 4) : (flash ? -62 : -38);
             return (
               <div key={p.id} style={{position:'absolute',left,top,width:BW,zIndex:2,overflow:'visible'}}>
                 {/* アクションフラッシュ */}
                 {flash&&(
                   <div key={flash.key} style={{
-                    position:'absolute',top:-38,
+                    position:'absolute',top:flashTop,
                     left:p.isDealer?'calc(50% + 22px)':'50%',transform:'translateX(-50%)',
                     background: flash.label==='フォールド'?'rgba(139,26,26,0.92)'
                       : flash.label==='チェック'?'rgba(30,100,60,0.92)'
@@ -454,7 +459,7 @@ export default function TournamentTable({
                 {/* チェンジ枚数フラッシュ */}
                 {dflash&&(
                   <div key={dflash.key} style={{
-                    position:'absolute',top:flash?-62:-38,left:'50%',transform:'translateX(-50%)',
+                    position:'absolute',top:dflashTop,left:'50%',transform:'translateX(-50%)',
                     background:'rgba(20,80,180,0.93)',color:'#fff',fontFamily:'var(--font-title)',
                     fontSize:13,fontWeight:'700',padding:'4px 14px',borderRadius:20,whiteSpace:'nowrap',
                     boxShadow:'0 2px 10px rgba(0,0,0,0.5)',pointerEvents:'none',zIndex:20,
@@ -592,11 +597,16 @@ export default function TournamentTable({
     const bw = p.isSelf ? SELF_W : OTH_W;
     const flash  = actionFlash[p.name];
     const dflash = drawFlash[p.id];
+    // 上半分のプレイヤーはバッジをボックス下に表示して見切れを防ぐ
+    const bh_m = p.isSelf ? SELF_H : OTH_H;
+    const isTopHalf_m = top < CY_M;
+    const flashTop_m  = isTopHalf_m ? bh_m + 4 : -32;
+    const dflashTop_m = isTopHalf_m ? (flash ? bh_m + 24 : bh_m + 4) : (flash ? -52 : -32);
     return (
       <div key={p.id} style={{position:'absolute',left,top,width:bw,overflow:'visible',zIndex:p.isSelf?3:2}}>
         {flash&&(
           <div key={flash.key} style={{
-            position:'absolute',top:-32,
+            position:'absolute',top:flashTop_m,
             left:p.isDealer?'calc(50% + 18px)':'50%',transform:'translateX(-50%)',
             background: flash.label==='フォールド'?'rgba(139,26,26,0.92)'
               : flash.label==='チェック'?'rgba(30,100,60,0.92)'
@@ -611,7 +621,7 @@ export default function TournamentTable({
         )}
         {dflash&&(
           <div key={dflash.key} style={{
-            position:'absolute',top:flash?-52:-32,left:'50%',transform:'translateX(-50%)',
+            position:'absolute',top:dflashTop_m,left:'50%',transform:'translateX(-50%)',
             background:'rgba(20,80,180,0.93)',color:'#fff',fontFamily:'var(--font-title)',
             fontSize:11,fontWeight:'700',padding:'3px 10px',borderRadius:20,whiteSpace:'nowrap',
             boxShadow:'0 2px 8px rgba(0,0,0,0.5)',pointerEvents:'none',zIndex:10,

@@ -354,7 +354,7 @@ export default function AdminPage() {
         const msg: Record<string, string> = {
           ALREADY_RUNNING: '既にメモリ上で稼働中です',
           INVALID_STATUS:  `ステータスが不正です (${d.status})`,
-          NOT_ENOUGH_PLAYERS: `参加者が不足しています (${d.count}人)`,
+          NOT_ENOUGH_PLAYERS: `参加者が不足しています (${d.count}人。自分1人で参加登録してから開始できます)`,
           START_FAILED:    'テーブル作成に失敗しました',
         };
         setStartMsg((prev) => ({ ...prev, [tournamentId]: `❌ ${msg[d.error] ?? d.error}` }));
@@ -510,12 +510,12 @@ export default function AdminPage() {
                   ))}
                 </select>
               </label>
-              <div style={{ display: 'flex', flexDirection: 'column' as const, gap: 6 }}>
-                <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr 140px', gap: 8, fontFamily: 'var(--font-title)', fontSize: 11, color: 'var(--gold-dim)', letterSpacing: '0.06em' }}>
-                  <span>順位</span><span>account_id</span><span>最終チップ</span>
+              <div style={{ display: 'flex', flexDirection: 'column' as const, gap: 6, overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '60px 1fr 100px', gap: 6, fontFamily: 'var(--font-title)', fontSize: 11, color: 'var(--gold-dim)', letterSpacing: '0.06em' }}>
+                  <span>順位</span><span>account_id</span><span>最終Chip</span>
                 </div>
                 {resultRows.map((row, i) => (
-                  <div key={i} style={{ display: 'grid', gridTemplateColumns: '80px 1fr 140px 36px', gap: 8, alignItems: 'center' }}>
+                  <div key={i} style={{ display: 'grid', gridTemplateColumns: '60px 1fr 100px 30px', gap: 6, alignItems: 'center' }}>
                     <input style={S.input} type="number" min={1} value={row.finalRank}
                       onChange={(e) => setResultRows((prev) => prev.map((r, j) => j === i ? { ...r, finalRank: Number(e.target.value) } : r))} />
                     <input style={S.input} value={row.accountId} placeholder="account_id"
@@ -621,8 +621,8 @@ export default function AdminPage() {
                               ))}
                             </select>
                             <input
-                              type="number" min={1} max={6}
-                              style={{ ...S.input, padding: '4px 8px', fontSize: 12, width: 60 }}
+                              type="number" min={1} max={30}
+                              style={{ ...S.input, padding: '4px 8px', fontSize: 12, width: 64 }}
                               value={tBotCount}
                               onChange={(e) => setTBotCount(Number(e.target.value))}
                             />

@@ -8,10 +8,24 @@
 
 // ===== 共通定数 =====
 
-/** ランクの強さ（2が最低、Aが最高）*/
+/**
+ * 2-7 Triple Draw 用ランク順（A は最高位 = 最弱）
+ * Badugi では使用しないこと
+ */
 const RANK_ORDER = {
   '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7,
   '8': 8, '9': 9, 'T': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 14,
+};
+
+/**
+ * Badugi 専用ランク順（A は最低位 = 最強）
+ * Badugi はローボール + A は 1 扱い
+ * 最強手: A(1)-2-3-4
+ */
+const RANK_ORDER_BADUGI = {
+  'A': 1,
+  '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7,
+  '8': 8, '9': 9, 'T': 10, 'J': 11, 'Q': 12, 'K': 13,
 };
 
 // ==========================================================
@@ -110,7 +124,11 @@ function compare27Hands(handA, handB) {
 
 /**
  * Badugi の有効カード（バドゥギ構成）を取り出す
- * 同ランク・同スートを除去し、最も強い（低ランク）組み合わせを返す
+ * 同ランク・同スートを除去し、最も強い（低ランク・最大枚数）組み合わせを返す
+ *
+ * 貪欲法（低ランク優先）は「同ランクのどのスートを選ぶか」によって
+ * 後続カードのスート重複が変わるため最適解にならない場合がある。
+ * 手札は常に4枚なので全部分集合（最大16通り）を総当たりで評価する。
  *
  * @param {string[]} hand - 4枚の手札
  * @returns {{ cards: string[], count: number }} 有効カードとその枚数
@@ -118,25 +136,34 @@ function compare27Hands(handA, handB) {
 function getBadugiEffective(hand) {
   if (!hand || hand.length === 0) return { cards: [], count: 0 };
 
-  // ランク昇順でソート（低いほど優先）
-  const sorted = [...hand].sort((a, b) => RANK_ORDER[a[0]] - RANK_ORDER[b[0]]);
+  let best = [];
 
-  const usedRanks = new Set();
-  const usedSuits = new Set();
-  const effective = [];
+  // 全部分集合を評価（hand.length <= 4 なので最大 2^4 = 16 通り）
+  for (let mask = 1; mask < (1 << hand.length); mask++) {
+    const selected = hand.filter((_, i) => mask & (1 << i));
+    const ranks = selected.map((c) => c[0]);
+    const suits = selected.map((c) => c.slice(-1));
 
-  for (const card of sorted) {
-    const rank = card[0];
-    const suit = card.slice(-1);
-    // ランク・スートが未使用のカードだけ採用
-    if (!usedRanks.has(rank) && !usedSuits.has(suit)) {
-      effective.push(card);
-      usedRanks.add(rank);
-      usedSuits.add(suit);
+    // ランク・スートがすべて異なる組み合わせだけ有効
+    if (new Set(ranks).size !== ranks.length) continue;
+    if (new Set(suits).size !== suits.length) continue;
+
+    if (selected.length > best.length) {
+      // 枚数が多ければ無条件で更新
+      best = selected;
+    } else if (selected.length === best.length) {
+      // 同枚数の場合: 最大ランクから順に比較し、小さい方（強い方）を採用
+      // Badugi では A=1（最低位）なので RANK_ORDER_BADUGI を使用
+      const numsNew  = selected.map((c) => RANK_ORDER_BADUGI[c[0]]).sort((a, b) => b - a);
+      const numsBest = best.map((c) => RANK_ORDER_BADUGI[c[0]]).sort((a, b) => b - a);
+      for (let i = 0; i < numsNew.length; i++) {
+        if (numsNew[i] < numsBest[i]) { best = selected; break; }
+        if (numsNew[i] > numsBest[i]) break;
+      }
     }
   }
 
-  return { cards: effective, count: effective.length };
+  return { cards: best, count: best.length };
 }
 
 /** Badugi の役名（日本語）を返す */
@@ -161,8 +188,9 @@ function compareBadugiHands(handA, handB) {
   if (effA.count !== effB.count) return effB.count - effA.count; // 多い方が強い
 
   // 同枚数 → 最大ランクから順に比較（低いほど強い）
-  const numsA = effA.cards.map((c) => RANK_ORDER[c[0]]).sort((a, b) => b - a);
-  const numsB = effB.cards.map((c) => RANK_ORDER[c[0]]).sort((a, b) => b - a);
+  // Badugi では A=1（最低位）なので RANK_ORDER_BADUGI を使用
+  const numsA = effA.cards.map((c) => RANK_ORDER_BADUGI[c[0]]).sort((a, b) => b - a);
+  const numsB = effB.cards.map((c) => RANK_ORDER_BADUGI[c[0]]).sort((a, b) => b - a);
   for (let i = 0; i < numsA.length; i++) {
     if (numsA[i] !== numsB[i]) return numsA[i] - numsB[i];
   }
