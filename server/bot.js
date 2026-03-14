@@ -100,7 +100,12 @@ class Bot {
   }
 
   connect() {
-    this.socket = io(SERVER, { path:'/socket.io', transports:['websocket'] });
+    const BOT_SECRET = process.env.BOT_SECRET ?? 'pastis-internal-bot';
+    this.socket = io(SERVER, {
+      path:       '/socket.io',
+      transports: ['websocket'],
+      auth:       { token: `bot:${BOT_SECRET}`, botName: this.name },
+    });
     const s = this.socket;
 
     s.on('connect', () => {

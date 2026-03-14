@@ -1,31 +1,54 @@
 /**
  * server/db/client.js — Supabase (PostgreSQL) 接続クライアント
  *
- * postgres パッケージを使用してタグ付きテンプレートリテラルでクエリを発行する。
- * SQL インジェクション対策のため、文字列結合でのクエリ組み立ては禁止。
- *
- * 使用例:
- *   const sql = require('./client');
- *   const rows = await sql`SELECT * FROM accounts WHERE id = ${id}`;
+ * lazy init + 詳細ログ付き
  */
 
 const postgres = require('postgres');
 
-if (!process.env.DATABASE_URL) {
-  throw new Error('[db] DATABASE_URL が設定されていません。.env.local を確認してください。');
+let _sql = null;
+let _connectAttempted = false;
+
+function getSql() {
+  if (_sql) return _sql;
+
+  if (!process.env.DATABASE_URL) {
+    console.error('[db] ❌ DATABASE_URL が未設定です。.env.local を確認してください。');
+    throw new Error('[db] DATABASE_URL が設定されていません。');
+  }
+
+  if (!_connectAttempted) {
+    _connectAttempted = true;
+    // パスワードを隠してURLを表示
+    const masked = process.env.DATABASE_URL.replace(/:([^:@]+)@/, ':***@');
+    console.log('[db] 接続先:', masked);
+  }
+
+  _sql = postgres(process.env.DATABASE_URL, {
+    max: 5,
+    idle_timeout: 30,
+    connect_timeout: 10,
+    ssl: 'require',
+    debug: false,
+    onnotice: (notice) => console.log('[db] notice:', notice.message),
+  });
+
+  return _sql;
 }
 
-const sql = postgres(process.env.DATABASE_URL, {
-  // Render の短命コネクションに対応するため接続プールを小さめに設定
-  max: 5,
-  // アイドル接続を 30 秒で切断（Supabase の接続数制限対策）
-  idle_timeout: 30,
-  // 接続確立のタイムアウト
-  connect_timeout: 10,
-  // SSL 必須（Supabase は常に SSL）
-  ssl: 'require',
-  // 本番以外ではクエリをコンソールに出力しない
-  debug: false,
-});
+// sql`...` 形式で使えるラッパー（エラーを詳細ログ付きでラップ）
+module.exports = async function sql(strings, ...values) {
+  try {
+    return await getSql()(strings, ...values);
+  } catch (err) {
+    console.error('[db] ❌ クエリエラー:', err.message);
+    console.error('[db]   code:', err.code);
+    console.error('[db]   detail:', err.detail ?? '(なし)');
+    throw err;
+  }
+};
 
-module.exports = sql;
+module.exports.begin  = (...a) => getSql().begin(...a);
+module.exports.end    = (...a) => getSql().end(...a);
+module.exports.unsafe = (...a) => getSql().unsafe(...a);
+module.exports.options = () => getSql().options;

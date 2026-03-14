@@ -19,7 +19,7 @@ export default function UserMenu({ onNicknameNeeded }: Props) {
   if (!session) {
     return (
       <div style={S.wrap}>
-        <button style={S.loginBtn} onClick={() => signIn('google')}>
+        <button style={S.loginBtn} onClick={() => signIn('google', { callbackUrl: '/' })}>
           <GoogleIcon />
           <span>Google でログイン</span>
         </button>

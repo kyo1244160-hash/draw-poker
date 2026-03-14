@@ -21,15 +21,17 @@ export const authOptions: NextAuthOptions = {
 
   callbacks: {
     async signIn({ user }) {
+      console.log('[NextAuth] signIn 開始 - user.id:', user.id, 'email:', user.email);
       try {
         await upsertAccount({
           id:         user.id,
           email:      user.email!,
           googleName: user.name ?? undefined,
         });
+        console.log('[NextAuth] signIn 成功 - upsertAccount OK');
         return true;
       } catch (err) {
-        console.error('[NextAuth] signIn error:', err);
+        console.error('[NextAuth] ❌ signIn エラー:', err);
         return false;
       }
     },
@@ -37,15 +39,22 @@ export const authOptions: NextAuthOptions = {
     async jwt({ token, user }) {
       if (user) {
         token.accountId = user.id;
+        console.log('[NextAuth] jwt - accountId set:', user.id);
       }
       return token;
     },
 
     async session({ session, token }) {
       const accountId = token.accountId as string | undefined;
+      console.log('[NextAuth] session callback - accountId:', accountId);
       if (accountId) {
         session.user.accountId = accountId;
-        session.user.nickname  = await getNickname(accountId) ?? undefined;
+        try {
+          session.user.nickname = await getNickname(accountId) ?? undefined;
+          console.log('[NextAuth] session - nickname:', session.user.nickname ?? '(未設定)');
+        } catch (err) {
+          console.error('[NextAuth] ❌ getNickname エラー:', err);
+        }
       }
       return session;
     },

@@ -11,7 +11,7 @@
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/router';
-import { socket } from '../socket';
+import { socket, connectWithAuth } from '../socket';
 import Card from './Card';
 import TimerBar from './TimerBar';
 
@@ -92,7 +92,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
 
   // ===== Socket.IO =====
   useEffect(() => {
-    const onConnect     = () => socket.emit('joinRoom', { roomId, name });
+    const onConnect     = () => socket.emit('joinRoom', { roomId });
     const onGameState   = ({ players:pl, meta:m }: { players:Player[]; meta:Meta }) => {
       setMeta((prev) => { return m; });
       setPlayers(pl);
@@ -227,8 +227,13 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
     };
     socket.on('playerAction', onPlayerAction);
 
-    if (socket.connected) socket.emit('joinRoom', { roomId, name });
-    else socket.connect();
+    if (socket.connected) {
+      socket.emit('joinRoom', { roomId });
+    } else {
+      connectWithAuth().then((ok) => {
+        if (!ok) router.replace('/');
+      });
+    }
 
     return () => {
       socket.off('connect',onConnect); socket.off('gameState',onGameState);

@@ -81,6 +81,9 @@ function getOrCreateRoom(roomId, opts = {}) {
       password:       opts.password       ?? null,
       isUserCreated:  opts.isUserCreated  ?? false,
       isZoomTable:    opts.isZoomTable    ?? false,
+      _isTournament:  opts._isTournament  ?? false,
+      _tournamentId:  opts._tournamentId  ?? null,
+      _onHandStart:   null,   // tournamentManager が set する
       players:        [],
       pendingPlayers: [],
       deck:           [],
@@ -94,7 +97,12 @@ function getOrCreateRoom(roomId, opts = {}) {
       actionIndex:    -1,
       currentBet:     0,
       raiseCount:     0,
-      betSize:        SMALL_BET,
+      smallBlind:     opts.smallBlind    ?? SMALL_BLIND,
+      bigBlind:       opts.bigBlind      ?? BIG_BLIND,
+      smallBet:       opts.smallBet      ?? SMALL_BET,
+      bigBet:         opts.bigBet        ?? BIG_BET,
+      startingChips:  opts.startingChips ?? STARTING_CHIPS,
+      betSize:        opts.smallBet      ?? SMALL_BET,
       handCount:      0,
       discardPile:   [],  // 捨て札（デッキ切れ時にリシャッフル）
       _potAwarded:    false,
@@ -114,14 +122,18 @@ function getOrCreateRoom(roomId, opts = {}) {
  * プレイヤー参加
  * @returns {'active'|'pending'|'reconnected'|'full'}
  */
-function joinRoom(roomId, socketId, name) {
+function joinRoom(roomId, socketId, name, opts = {}) {
   const room = getOrCreateRoom(roomId);
 
   // 再接続
   const existing = room.players.find((p) => p.name === name);
-  if (existing) { existing.id = socketId; return 'reconnected'; }
+  if (existing) {
+    existing.id = socketId;
+    existing.disconnected = false;  // 切断フラグ解除
+    return 'reconnected';
+  }
   const existingPending = room.pendingPlayers.find((p) => p.name === name);
-  if (existingPending) { existingPending.id = socketId; return 'pending'; }
+  if (existingPending) { existingPending.id = socketId; existingPending.disconnected = false; return 'pending'; }
 
   // 6人制限
   if (room.players.length + room.pendingPlayers.length >= MAX_PLAYERS) {
@@ -130,7 +142,8 @@ function joinRoom(roomId, socketId, name) {
 
   const newPlayer = {
     id: socketId, name,
-    chips: STARTING_CHIPS,
+    accountId: opts.accountId ?? null,  // トーナメント用アカウントID
+    chips: opts.existingChips ?? room.startingChips,  // チップ持ち越し対応
     hand: [], bet: 0, folded: false,
     acted: false, drewThisRound: false, drawCount: null,
     sittingOut: false,
@@ -171,6 +184,10 @@ function startGame(roomId, onTimeout) {
   const activePlayers = room.players.filter((p) => !p.sittingOut);
   if (activePlayers.length < 2) return null;
 
+  // トーナメント: ハンド開始フック（ブラインドレベルアップ適用）
+  // カード配布前に呼ぶことで、新ブラインドが今ハンドから有効になる
+  if (room._onHandStart) room._onHandStart(roomId);
+
   // mix モード切替
   if (room.mode === 'mix') room.currentMode = getMixCurrentMode(room);
   else room.currentMode = room.mode;
@@ -197,9 +214,10 @@ function startGame(roomId, onTimeout) {
   }
 
   // 手札配布・リセット
+  // トーナメントテーブルはチップを持ち越す（リセット禁止）
   const size = handSize(room.currentMode);
   for (const p of room.players) {
-    p.chips         = STARTING_CHIPS;
+    if (!room._isTournament) p.chips = room.startingChips;
     p.hand          = p.sittingOut ? [] : room.deck.splice(0, size);
     p.bet           = 0;
     p.folded        = !!p.sittingOut;
@@ -222,8 +240,8 @@ function startGame(roomId, onTimeout) {
     sbIndex = _nextActiveFromSafe(room, room.dealerIndex);
     bbIndex = _nextActiveFromSafe(room, sbIndex);
   }
-  _postBlind(room, sbIndex, SMALL_BLIND);
-  _postBlind(room, bbIndex, BIG_BLIND);
+  _postBlind(room, sbIndex, room.smallBlind);
+  _postBlind(room, bbIndex, room.bigBlind);
 
   // ゲーム中に変わらない固定ポジションを記録
   room.fixedDealerIdx = room.dealerIndex;
@@ -236,11 +254,11 @@ function startGame(roomId, onTimeout) {
   // ヘッズアップ: BTN/SB が先行アクション（コール or レイズ）、最後に BB が option を持つ
   const bet0StartIndex = isHeadsUp ? sbIndex : _nextActiveFromSafe(room, bbIndex);
   room.phase      = 'bet0';
-  room.currentBet = BIG_BLIND;  // BB が既にポスト済み
+  room.currentBet = room.bigBlind;  // BB が既にポスト済み
   // ⚠️ 変更禁止: raiseCount は 1 スタート（BBポストを1bet目として扱う）。
   //   0 スタートにすると bet0 フェーズで6段階分アクション可能になり BET60 まで打てるバグになる。
   room.raiseCount = 1;  // BBポストを1bet目としてカウント（5bet-cap: 1〜5）
-  room.betSize    = SMALL_BET;
+  room.betSize    = room.smallBet;
 
   // 全員の acted を正しく初期化
   for (const p of room.players) {
@@ -331,7 +349,13 @@ function getTimerRemaining(room) {
 function updateSelectedIndices(roomId, socketId, indices) {
   const room = rooms.get(roomId);
   if (!room || !room.phase.startsWith('draw')) return;
-  room._selectedIndices[socketId] = indices;
+  // M-02: 配列長・要素範囲の検証
+  if (!Array.isArray(indices)) return;
+  const max = handSize(room.currentMode);
+  const safe = [...new Set(indices)]
+    .filter((i) => Number.isInteger(i) && i >= 0 && i < max)
+    .slice(0, max);  // 最大 handSize 個まで
+  room._selectedIndices[socketId] = safe;
 }
 
 // ==========================================================
@@ -509,7 +533,7 @@ function _nextPhase(room) {
     _startTimer(room);
   } else if (next.startsWith('bet')) {
     // draw2以降（bet2, bet3）はビッグベット
-    const betSize = isBigBetPhase(next) ? BIG_BET : SMALL_BET;
+    const betSize = isBigBetPhase(next) ? room.bigBet : room.smallBet;
     _resetBetRound(room, betSize);
     // ベットラウンド（bet1以降）: 通常/ヘッズアップ共にSB(dealer)から先行
     const dealerRef = room.fixedDealerIdx >= 0 ? room.fixedDealerIdx : room.dealerIndex;
@@ -555,6 +579,7 @@ function buildGameState(room, requesterId) {
     return {
       id: p.id, name: p.name, chips: p.chips, bet: p.bet,
       folded: p.folded, sittingOut: p.sittingOut,
+      disconnected: p.disconnected ?? false,
       hand: reveal ? p.hand : p.hand.map(() => '??'),
       isSelf, isMyTurn,
       drewThisRound: p.drewThisRound, drawCount: p.drawCount,
@@ -748,11 +773,27 @@ function resetTimeout(roomId, socketId) {
 
 function getRoom(roomId) { return rooms.get(roomId) || null; }
 
+/** トーナメント終了後のテーブルをメモリから削除する */
+function deleteRoom(roomId) { rooms.delete(roomId); }
+
+/**
+ * 指定ルーム内のプレイヤー名を変更する（BOT名変更用）
+ * @returns {boolean} 変更できたら true
+ */
+function renamePlayer(roomId, playerId, newName) {
+  const room = rooms.get(roomId);
+  if (!room) return false;
+  const player = [...room.players, ...room.pendingPlayers].find(p => p.id === playerId);
+  if (!player) return false;
+  player.name = newName;
+  return true;
+}
+
 module.exports = {
   getOrCreateRoom, joinRoom, leaveRoom, fastFoldPlayer,
   startGame, drawCards, betAction, updateSelectedIndices,
   buildGameState, removePlayer, canAutoStart, getAllRooms,
   incrementTimeout, resetTimeout,
-  getRoomMode, getRoom,
+  getRoomMode, getRoom, deleteRoom, renamePlayer,
   STARTING_CHIPS, SMALL_BLIND, BIG_BLIND, SMALL_BET, BIG_BET, MAX_PLAYERS,
 };

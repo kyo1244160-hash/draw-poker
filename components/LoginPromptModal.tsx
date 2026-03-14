@@ -25,7 +25,7 @@ export default function LoginPromptModal({ onClose }: Props) {
           Google アカウントでのログインが必要です。
         </p>
 
-        <button style={S.loginBtn} onClick={() => signIn('google')}>
+        <button style={S.loginBtn} onClick={() => signIn('google', { callbackUrl: '/' })}>
           <GoogleIcon />
           Google でログイン
         </button>

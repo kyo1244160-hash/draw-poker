@@ -5,7 +5,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/router';
 import dynamic from 'next/dynamic';
-import { socket } from '../socket';
+import { socket, connectWithAuth } from '../socket';
 
 const PokerTable = dynamic(() => import('./PokerTable'), { ssr: false });
 
@@ -29,7 +29,11 @@ const ZoomTable: React.FC<Props> = ({ poolId, name, mode }) => {
   const joinedRef = useRef(false);
 
   useEffect(() => {
-    if (!socket.connected) socket.connect();
+    if (!socket.connected) {
+      connectWithAuth().then((ok) => {
+        if (!ok) router.replace('/');
+      });
+    }
 
     // 初回のみ z:join を送信
     if (!joinedRef.current) {

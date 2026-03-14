@@ -11,7 +11,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import { useSession } from 'next-auth/react';
-import { socket } from '../socket';
+import { socket, connectWithAuth } from '../socket';
 import UserMenu from './UserMenu';
 import NicknameSetup from './NicknameSetup';
 import LoginPromptModal from './LoginPromptModal';
@@ -27,6 +27,33 @@ interface RoomInfo {
   isZoom:      boolean;
 }
 
+interface TournamentInfo {
+  id:                  string;
+  name:                string;
+  mode:                string;
+  scheduled_start_at:  string;
+  status:              string;
+  starting_chips:      number;
+  max_players:         number | null;
+  blind_schedule_name: string | null;
+  entry_count:         number;
+  is_test:             boolean;
+}
+
+// 管理者のみ表示するリンク（非管理者には何も表示しない）
+function AdminLink({ accountId }: { accountId: string }) {
+  const [isAdmin, setIsAdmin] = useState(false);
+  useEffect(() => {
+    fetch('/api/admin/users')
+      .then((r) => { if (r.ok) setIsAdmin(true); })
+      .catch(() => {});
+  }, [accountId]);
+  if (!isAdmin) return null;
+  return (
+    <a href="/admin" style={S2.adminLink}>⚙ 管理</a>
+  );
+}
+
 export default function Room() {
   const router = useRouter();
   const { data: session, status } = useSession();
@@ -36,6 +63,7 @@ export default function Room() {
   const [roomPlayers,   setRoomPlayers]   = useState<string[]>([]);
   const [password,      setPassword]      = useState('');
   const [error,         setError]         = useState('');
+  const [fullRoomId,    setFullRoomId]    = useState<string | null>(null);
   const [showCreate,    setShowCreate]    = useState(false);
   const [newLabel,      setNewLabel]      = useState('');
   const [newMode,       setNewMode]       = useState<'27'|'badugi'|'mix'>('27');
@@ -45,10 +73,24 @@ export default function Room() {
   // モーダル表示制御
   const [showLoginPrompt,   setShowLoginPrompt]   = useState(false);
   const [showNicknameSetup, setShowNicknameSetup] = useState(false);
+  const [socketError,       setSocketError]       = useState('');
+  const [tournaments, setTournaments] = useState<TournamentInfo[]>([]);
 
   // ===== Socket.IO =====
   useEffect(() => {
-    socket.connect();
+    const onConnect = () => {
+      setSocketError('');
+      socket.emit('getRoomList');
+    };
+    const onConnectError = (err: Error) => {
+      if (err.message === 'NICKNAME_REQUIRED') {
+        setShowNicknameSetup(true);
+      } else {
+        setSocketError(err.message);
+      }
+    };
+    socket.on('connect',       onConnect);
+    socket.on('connect_error', onConnectError);
     socket.on('roomList',    (list: RoomInfo[]) => setRooms(list));
     socket.on('lobbyUpdate', (players: string[]) => setRoomPlayers(players));
     socket.on('roomCreated', ({ roomId }: { roomId: string }) => {
@@ -57,14 +99,31 @@ export default function Room() {
       setNewLabel(''); setNewMode('27'); setNewPassword('');
       socket.emit('getRoomPlayers', roomId);
     });
-    socket.on('joinError', ({ message }: { message: string }) => {
+    socket.on('joinError', ({ message, fullRoomId: fid }: { message: string; fullRoomId?: string }) => {
       setError(message);
+      setFullRoomId(fid ?? null);
     });
-    socket.emit('getRoomList');
+
+    if (socket.connected) {
+      socket.emit('getRoomList');
+    } else {
+      connectWithAuth();
+    }
+
     return () => {
+      socket.off('connect',       onConnect);
+      socket.off('connect_error', onConnectError);
       socket.off('roomList'); socket.off('lobbyUpdate');
       socket.off('roomCreated'); socket.off('joinError');
     };
+  }, []);
+
+  // トーナメント一覧取得
+  useEffect(() => {
+    fetch('/api/tournaments')
+      .then((r) => r.ok ? r.json() : { tournaments: [] })
+      .then((data) => setTournaments(data.tournaments ?? []))
+      .catch(() => {});
   }, []);
 
   // ロビーアクセス時: 未ログインならモーダルを表示
@@ -76,7 +135,7 @@ export default function Room() {
 
   // ===== ハンドラ =====
   const handleSelect = (id: string) => {
-    setSelected(id); setError(''); setPassword('');
+    setSelected(id); setError(''); setPassword(''); setFullRoomId(null);
     socket.emit('getRoomPlayers', id);
     setShowJoinPanel(true);
   };
@@ -100,7 +159,7 @@ export default function Room() {
     if (room?.isZoom) {
       router.push(`/zoom/${encodeURIComponent(selected)}?name=${encodeURIComponent(nickname)}`);
     } else {
-      socket.emit('joinRoom', { roomId: selected, name: nickname, password: password.trim() || undefined });
+      socket.emit('joinRoom', { roomId: selected, password: password.trim() || undefined });
       router.push(`/room/${encodeURIComponent(selected)}?name=${encodeURIComponent(nickname)}`);
     }
   };
@@ -112,6 +171,8 @@ export default function Room() {
   };
 
   const selectedRoom = rooms.find((r) => r.id === selected);
+
+  const statusLabel = (s: string) => ({ registering: '受付中', running: '進行中', finished: '終了', cancelled: 'キャンセル' }[s] ?? s);
 
   const modeColor      = (mode: string) => mode === 'badugi' ? '#cc9966' : mode === 'mix' ? '#aa88dd' : '#88bbee';
   const modeBg         = (mode: string) => mode === 'badugi' ? 'rgba(204,119,68,0.2)' : mode === 'mix' ? 'rgba(170,136,221,0.2)' : 'rgba(68,136,204,0.2)';
@@ -137,7 +198,7 @@ export default function Room() {
               if (room?.isZoom) {
                 router.push(`/zoom/${encodeURIComponent(selected)}?name=${encodeURIComponent(nickname)}`);
               } else {
-                socket.emit('joinRoom', { roomId: selected, name: nickname, password: password.trim() || undefined });
+                socket.emit('joinRoom', { roomId: selected, password: password.trim() || undefined });
                 router.push(`/room/${encodeURIComponent(selected)}?name=${encodeURIComponent(nickname)}`);
               }
             }
@@ -160,8 +221,40 @@ export default function Room() {
         {/* ログイン状態 */}
         <div style={S.userMenuWrap}>
           <UserMenu onNicknameNeeded={() => setShowNicknameSetup(true)} />
+          {session?.user?.accountId && (
+            <AdminLink accountId={session.user.accountId} />
+          )}
         </div>
       </header>
+
+      {/* ===== トーナメント一覧 ===== */}
+      {tournaments.length > 0 && (
+        <section style={S.tournamentSection}>
+          <h2 style={S.panelTitle}><span style={S.titleLine}/>TOURNAMENTS<span style={S.titleLine}/></h2>
+          <div style={S.tournamentGrid}>
+            {tournaments.map((t) => (
+              <div key={t.id} style={{ ...S.tournamentCard, cursor: 'pointer' }} onClick={() => router.push(`/tournament/${t.id}`)}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                  <span style={{ ...S.modeBadge, background: 'rgba(201,168,76,0.15)', color: 'var(--gold)', border: '1px solid var(--gold-dim)' }}>
+                    {t.mode === '27' ? '2-7' : t.mode === 'badugi' ? 'Badugi' : 'Mix'}
+                  </span>
+                  <span style={statusBadge(t.status)}>{statusLabel(t.status)}</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={S.tournamentName}>{t.name}</div>
+                  {t.is_test && <span style={S.testBadge}>テスト</span>}
+                </div>
+                <div style={S.tournamentMeta}>
+                  <span>📅 {new Date(t.scheduled_start_at).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                  <span>🎰 {t.starting_chips.toLocaleString()} chips</span>
+                  {t.max_players && <span>👤 {t.entry_count} / {t.max_players}</span>}
+                  {t.blind_schedule_name && <span>⏱ {t.blind_schedule_name}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* ===== PC: 2カラム / スマホ: 1カラム ===== */}
       <div style={S.layout}>
@@ -203,7 +296,18 @@ export default function Room() {
                 <span style={S.roomCount}>👤 {r.count}</span>
               </button>
             ))}
-            {rooms.length === 0 && <p style={S.emptyMsg}>接続中...</p>}
+            {rooms.length === 0 && !socketError && <p style={S.emptyMsg}>接続中...</p>}
+            {rooms.length === 0 && socketError && (
+              <div>
+                <p style={{ ...S.emptyMsg, color: '#ee8888' }}>接続エラー: {socketError}</p>
+                <button
+                  style={{ marginTop: 8, fontSize: 13, color: 'var(--gold)', background: 'transparent',
+                    border: '1px solid var(--gold-dim)', borderRadius: 4, padding: '4px 12px', cursor: 'pointer' }}
+                  onClick={() => { setSocketError(''); connectWithAuth(); }}>
+                  再接続
+                </button>
+              </div>
+            )}
           </div>
         </section>
 
@@ -278,7 +382,36 @@ export default function Room() {
                     />
                   </>
                 )}
-                {error && <p style={S.errorMsg}>{error}</p>}
+                {error && (
+                  <div>
+                    <p style={S.errorMsg}>{error}</p>
+                    {/* 満員エラー時：同モードの空き部屋をクリッカブルに表示 */}
+                    {fullRoomId && (() => {
+                      const fullRoom = rooms.find(r => r.id === fullRoomId);
+                      const MAX = 6;
+                      const available = rooms.filter(r =>
+                        r.mode === fullRoom?.mode &&
+                        r.id !== fullRoomId &&
+                        !r.isZoom &&
+                        r.count < MAX
+                      );
+                      return available.length > 0 ? (
+                        <div style={{ display: 'flex', flexWrap: 'wrap' as const, gap: 6, marginTop: 8 }}>
+                          <span style={{ fontSize: 12, color: 'var(--cream-dim)', alignSelf: 'center' }}>空き部屋:</span>
+                          {available.slice(0, 3).map(r => (
+                            <button
+                              key={r.id}
+                              style={{ fontSize: 12, background: 'rgba(201,168,76,0.15)', border: '1px solid var(--gold-dim)', color: 'var(--gold)', borderRadius: 4, padding: '3px 10px', cursor: 'pointer' }}
+                              onClick={() => handleSelect(r.id)}
+                            >
+                              {r.label} ({r.count}/{MAX})
+                            </button>
+                          ))}
+                        </div>
+                      ) : null;
+                    })()}
+                  </div>
+                )}
                 <button onClick={handleJoin} style={S.joinBtn}>入室する →</button>
               </div>
             </>
@@ -323,6 +456,26 @@ export default function Room() {
   );
 }
 
+function statusBadge(s: string): React.CSSProperties {
+  const color = { registering: '#88bbee', running: '#88ee88', finished: '#aaa', cancelled: '#ee8888' }[s] ?? '#aaa';
+  return { fontFamily: 'var(--font-title)', fontSize: 10, letterSpacing: '0.06em', color, border: `1px solid ${color}`, borderRadius: 3, padding: '2px 6px' };
+}
+
+const S2: Record<string, React.CSSProperties> = {
+  adminLink: {
+    fontFamily:    'var(--font-title)',
+    fontSize:      11,
+    letterSpacing: '0.08em',
+    color:         'var(--gold-dim)',
+    textDecoration:'none',
+    border:        '1px solid var(--gold-dim)',
+    borderRadius:  4,
+    padding:       '4px 10px',
+    opacity:       0.7,
+    marginLeft:    8,
+  },
+};
+
 const S: Record<string, React.CSSProperties> = {
   page:            { minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '0 20px 40px', position: 'relative', zIndex: 1 },
   hero:            { textAlign: 'center', padding: '36px 0 24px', width: '100%', maxWidth: 1100 },
@@ -363,6 +516,12 @@ const S: Record<string, React.CSSProperties> = {
   errorMsg:        { color: '#ff7777', fontFamily: 'var(--font-body)', fontSize: 14, fontStyle: 'italic' },
   joinBtn:         { padding: '13px 24px', background: 'linear-gradient(135deg, var(--gold), var(--gold-dim))', border: 'none', borderRadius: 7, color: '#1a1200', fontSize: 15, fontWeight: '700', cursor: 'pointer', letterSpacing: '0.08em', boxShadow: '0 4px 14px rgba(201,168,76,0.38)', alignSelf: 'flex-start' },
   placeholder:     { display: 'flex', flexDirection: 'column' as const, alignItems: 'center', justifyContent: 'center', height: 200 },
+  tournamentSection: { width: '100%', maxWidth: 1100, marginBottom: 20, background: 'linear-gradient(160deg, rgba(22,92,56,0.6), rgba(10,51,32,0.8))', border: '1px solid var(--gold-dim)', borderRadius: 12, padding: '20px 28px', boxShadow: 'var(--shadow)' },
+  tournamentGrid:    { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12, marginTop: 14 },
+  tournamentCard:    { background: 'rgba(0,0,0,0.25)', border: '1px solid rgba(201,168,76,0.2)', borderRadius: 8, padding: '14px 16px' },
+  tournamentName:    { fontFamily: 'var(--font-title)', fontSize: 15, color: 'var(--cream)', letterSpacing: '0.04em', marginBottom: 8 },
+  testBadge:         { fontFamily: 'var(--font-title)', fontSize: 9, letterSpacing: '0.06em', color: '#e8a020', border: '1px solid #a06010', borderRadius: 3, padding: '2px 6px', whiteSpace: 'nowrap' as const },
+  tournamentMeta:    { display: 'flex', flexWrap: 'wrap' as const, gap: '4px 16px', fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--cream-dim)' },
   footer:          { marginTop: 40, textAlign: 'center' },
   suitRow:         { fontFamily: 'var(--font-body)', fontSize: 24, color: 'var(--gold-dim)', letterSpacing: 18 },
   loginPrompt:     { background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(201,168,76,0.2)', borderRadius: 8, padding: '12px 16px', display: 'flex', flexDirection: 'column' as const, gap: 8, alignItems: 'flex-start' },

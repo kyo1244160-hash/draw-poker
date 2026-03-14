@@ -37,3 +37,77 @@ export const getProfile: (accountId: string) => Promise<{
   nickname_updated_at: Date;
   change_count: number;
 } | null> = accountsDb.getProfile;
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const adminDb = require('../server/db/admin');
+
+export const isAdmin: (accountId: string) => Promise<boolean>
+  = adminDb.isAdmin;
+
+export const listUsers: (opts?: { limit?: number; offset?: number }) => Promise<{
+  id: string; email: string; google_name: string | null;
+  created_at: Date; nickname: string | null; change_count: number | null;
+  nickname_updated_at: Date | null; total_points: number | null;
+}[]> = adminDb.listUsers;
+
+export const listTournaments: (opts?: { limit?: number; offset?: number }) => Promise<{
+  id: string; name: string; mode: string; scheduled_start_at: Date;
+  status: string; starting_chips: number; max_players: number | null;
+  blind_schedule_name: string | null; entry_count: number;
+  is_test: boolean; created_by: string;
+}[]> = adminDb.listTournaments;
+
+export const createTournament: (params: {
+  id: string; name: string; mode: string; scheduledStartAt: Date;
+  startingChips: number; maxPlayers?: number; blindScheduleId?: string;
+  isTest?: boolean; createdBy: string;
+}) => Promise<Record<string, unknown>> = adminDb.createTournament;
+
+export const updateTournamentStatus: (
+  tournamentId: string, status: string
+) => Promise<{ id: string; status: string } | null> = adminDb.updateTournamentStatus;
+
+export const listBlindSchedules: () => Promise<{
+  id: string; name: string; description: string | null; levels: unknown;
+}[]> = adminDb.listBlindSchedules;
+
+export const forceChangeNickname: (
+  accountId: string, nickname: string
+) => Promise<{ account_id: string; nickname: string } | null> = adminDb.forceChangeNickname;
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const pointsDb = require('../server/db/points');
+
+export const POINT_TABLE: number[] = pointsDb.POINT_TABLE;
+
+export const calcPoints: (rank: number) => number
+  = pointsDb.calcPoints;
+
+export const recordTournamentResults: (
+  tournamentId: string,
+  results: {
+    accountId: string;
+    finalRank: number;
+    finalChips: number;
+    handsPlayed?: number;
+  }[]
+) => Promise<void> = pointsDb.recordTournamentResults;
+
+export const getTournamentResults: (tournamentId: string) => Promise<{
+  final_rank: number;
+  final_chips: number;
+  hands_played: number;
+  created_at: Date;
+  nickname: string | null;
+  google_name: string | null;
+  account_id: string;
+}[]> = pointsDb.getTournamentResults;
+
+export const getPointsRanking: (opts?: { limit?: number }) => Promise<{
+  account_id: string;
+  total_points: number;
+  updated_at: Date;
+  nickname: string | null;
+  google_name: string | null;
+  tournament_count: number;
+}[]> = pointsDb.getPointsRanking;

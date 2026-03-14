@@ -24,6 +24,12 @@
  *   error            { message }                エラー
  */
 
+// .env.local を明示的に読み込む（node server/index.js 起動時は Next.js が読まないため）
+require('dotenv').config({ path: require('path').resolve(__dirname, '../.env.local') });
+
+// NODE_ENV が未設定の場合は production にフォールバック
+if (!process.env.NODE_ENV) process.env.NODE_ENV = 'production';
+
 const express    = require('express');
 const next       = require('next');
 const http       = require('http');
@@ -32,6 +38,8 @@ const { parse }  = require('url');
 const cfg        = require('./config');
 
 const { checkText } = require('./profanityFilter');
+const { decode }    = require('next-auth/jwt');
+const { getNickname } = require('./db/accounts');
 const {
   getOrCreateRoom, joinRoom: joinPokerRoom,
   leaveRoom, startGame, drawCards, betAction, updateSelectedIndices,
@@ -41,6 +49,8 @@ const {
 } = require('./poker/gameManager');
 
 const { registerZoomHandlers, getAllPools, getWaitingCount, getTotalCount, handleZoomShowdown } = require('./zoom/zoomManager');
+const tournamentManager    = require('./tournament/tournamentManager');
+const tournamentBotManager = require('./tournament/tournamentBotManager');
 
 // ===== Next.js =====
 const dev    = process.env.NODE_ENV !== 'production';
@@ -113,10 +123,88 @@ function getLobbyList() {
 // ==========================================================
 // ■ サーバー起動
 // ==========================================================
+console.log('🔧 サーバー起動中...');
 app.prepare().then(() => {
+  console.log('✓ Next.js 準備完了');
   const expressApp = express();
   const server     = http.createServer(expressApp);
-  const io         = new Server(server, { path: '/socket.io', cors: { origin: '*' } });
+  const io = new Server(server, {
+    path: '/socket.io',
+    cors: { origin: process.env.ALLOWED_ORIGIN ?? 'http://localhost:3000', credentials: true },
+  });
+
+  // ===== Socket.IO 認証ミドルウェア =====
+  const BOT_SECRET = process.env.BOT_SECRET ?? 'pastis-internal-bot';
+  io.use(async (socket, next) => {
+    const token = socket.handshake.auth?.token;
+
+    // ボット（サーバー内部）はBOT_SECRETで認証をバイパス
+    if (token === `bot:${BOT_SECRET}`) {
+      const botName = socket.handshake.auth?.botName ?? 'Bot';
+      socket.data.user = { accountId: `bot::${botName}`, nickname: botName, isBot: true };
+      return next();
+    }
+
+    // トークンなし → ゲストとして接続を許可（ルーム一覧表示のみ）
+    if (!token) {
+      socket.data.user = null;
+      return next();
+    }
+    try {
+      const decoded = await decode({ token, secret: process.env.NEXTAUTH_SECRET });
+      if (!decoded?.accountId) return next(new Error('AUTH_INVALID'));
+      const nickname = await getNickname(decoded.accountId);
+      if (!nickname) return next(new Error('NICKNAME_REQUIRED'));
+      // 管理者かどうかをここで確認してキャッシュ
+      const { isAdmin } = require('./db/admin');
+      const admin = await isAdmin(decoded.accountId).catch(() => false);
+      socket.data.user = { accountId: decoded.accountId, nickname, isAdmin: !!admin };
+      next();
+    } catch (err) {
+      console.error('[socket-auth]', err.message);
+      // 認証エラーもゲストとして接続継続
+      socket.data.user = null;
+      next();
+    }
+  });
+
+  // ===== 二重接続防止ミドルウェア（管理者は複数接続OK）=====
+  // accountId → socketId のMap
+  const _connectedUsers = new Map();
+  io.use((socket, next) => {
+    const user = socket.data.user;
+    // ゲスト・BOTはスキップ
+    if (!user || user.isBot) return next();
+    // 管理者は複数接続OK
+    if (user.isAdmin) return next();
+
+    const existing = _connectedUsers.get(user.accountId);
+    if (existing && existing !== socket.id) {
+      // 既存の接続を切断してから新しい接続を許可
+      const existingSocket = io.sockets.sockets.get(existing);
+      if (existingSocket) {
+        existingSocket.emit('kicked', { reason: '別の端末からログインされました' });
+        existingSocket.disconnect(true);
+        console.log(`[duplicate-kick] ${user.nickname} の旧接続 ${existing} を切断`);
+      }
+    }
+    _connectedUsers.set(user.accountId, socket.id);
+    next();
+  });
+
+  // ===== レートリミット（20イベント/秒） =====
+  const _rateCounts = new Map();
+  io.use((socket, next) => {
+    socket.onAny(() => {
+      const now = Date.now();
+      const rec = _rateCounts.get(socket.id) ?? { count: 0, resetAt: now + 1000 };
+      if (now > rec.resetAt) { rec.count = 0; rec.resetAt = now + 1000; }
+      rec.count++;
+      _rateCounts.set(socket.id, rec);
+      if (rec.count > 20) { socket.disconnect(true); }
+    });
+    next();
+  });
 
   // タイマーブロードキャスト（1秒ごと）
   setInterval(() => {
@@ -127,12 +215,34 @@ app.prepare().then(() => {
     }
   }, 1000);
 
+  // トーナメントマネージャー初期化（タイムアウトハンドラを注入）
+  // _makeTimeoutHandler(io, roomId) をtournamentManager用にラップ
+  tournamentManager.init(io, (roomId) => _makeTimeoutHandler(io, roomId));
+
   io.on('connection', (socket) => {
     console.log(`[connect] ${socket.id}`);
     socket.emit('roomList', getLobbyList());
     let currentRoom = { name: '', roomId: '' };
 
     socket.on('getRoomList',    () => socket.emit('roomList', getLobbyList()));
+
+    // ----- トーナメント：自分のテーブルを問い合わせ -----
+    // drawページを直接開いた場合（t:tournamentStartingを受け取れなかった場合）に使う
+    socket.on('t:getMyTable', ({ tournamentId }) => {
+      const user = socket.data.user;
+      if (!user?.accountId) return;
+      const tableId = tournamentManager.getTableForPlayer(tournamentId, user.accountId);
+      if (tableId) {
+        socket.emit('t:tournamentStarting', { tournamentId, tableId });
+        console.log(`[t:getMyTable] ${user.nickname} → ${tableId}`);
+      } else {
+        // テーブルが見つからない場合はトーナメント自体を確認
+        const t = tournamentManager.getTournament(tournamentId);
+        if (!t) {
+          socket.emit('t:tournamentNotFound', { tournamentId });
+        }
+      }
+    });
 
     socket.on('getRoomPlayers', (roomId) => {
       const room  = getOrCreateRoom(roomId);
@@ -148,8 +258,11 @@ app.prepare().then(() => {
     // socket.on('createRoom', ...)
 
     // ----- 入室 -----
-    socket.on('joinRoom', ({ roomId, name, password }) => {
-      if (!roomId || !name) return;
+    socket.on('joinRoom', ({ roomId, password }) => {
+      // 認証ミドルウェアで検証済みのニックネームを使用（クライアント送信値は無視）
+      const name = socket.data.user?.nickname;
+      if (!roomId || typeof roomId !== 'string' || roomId.length > 64) return;
+      if (!name) return;
       const room = getOrCreateRoom(roomId);
 
       // パスワードチェック
@@ -158,20 +271,46 @@ app.prepare().then(() => {
         return;
       }
 
-      // プレイヤー名の公序良俗チェック
-      const nameCheck = checkText(name);
-      if (!nameCheck.ok) {
-        socket.emit('joinError', { message: `名前エラー: ${nameCheck.reason}` });
-        return;
-      }
-
       const result = joinPokerRoom(roomId, socket.id, name);
 
       // 6人制限
       if (result === 'full') {
-        socket.emit('joinError', {
-          message: `この部屋は満員です（最大${room.maxPlayers ?? 6}人）。他の部屋をお試しください。`,
-        });
+        // 同じモードで空きのある部屋を案内する
+        const sameMode = getLobbyList()
+          .filter(r => r.mode === room.mode && r.id !== roomId && !r.isZoom)
+          .sort((a, b) => b.count - a.count);
+
+        const MAX = room.maxPlayers ?? 6;
+        const available = sameMode.filter(r => r.count < MAX);
+
+        let message = `この部屋は満員です（最大${MAX}人）。`;
+        if (available.length > 0) {
+          const names = available.slice(0, 3).map(r => `${r.label}（${r.count}/${MAX}人）`).join('、');
+          message += ` 空きのある部屋: ${names}`;
+        } else if (sameMode.length > 0) {
+          message += ' 同じモードの他の部屋も現在満員です。';
+        } else {
+          message += ' 別の部屋をお試しください。';
+        }
+
+        socket.emit('joinError', { message, fullRoomId: roomId });
+        return;
+      }
+
+      // ゲーム進行中に pending で入室してしまった場合はキャンセルして案内
+      // （ロビー表示とjoinRoom処理のタイミングがずれると発生する競合）
+      if (result === 'pending' && !tournamentManager.isTournamentTable(roomId)) {
+        leaveRoom(socket.id);
+        const sameMode = getLobbyList()
+          .filter(r => r.mode === room.mode && r.id !== roomId && !r.isZoom);
+        const MAX = room.maxPlayers ?? 6;
+        const available = sameMode.filter(r => r.count < MAX);
+        let message = 'この部屋は現在ゲーム進行中のため入室できません。';
+        if (available.length > 0) {
+          const names = available.slice(0, 3).map(r => `${r.label}（${r.count}/${MAX}人）`).join('、');
+          message += ` 空きのある部屋: ${names}`;
+        }
+        socket.emit('joinError', { message, fullRoomId: roomId });
         return;
       }
 
@@ -200,13 +339,15 @@ app.prepare().then(() => {
     // ----- ドロー中の選択インデックス更新 -----
     // クライアントがカードを選択するたびに送信 → タイムアウト時に自動交換で使用
     socket.on('updateSelected', ({ roomId, indices }) => {
-      if (!roomId || !Array.isArray(indices)) return;
+      if (!roomId || typeof roomId !== 'string' || roomId.length > 64) return;
+      if (!Array.isArray(indices) || indices.length > 5) return;
       updateSelectedIndices(roomId, socket.id, indices);
     });
 
     // ----- カードを交換 -----
     socket.on('drawCards', ({ roomId, indices }) => {
-      if (!roomId || !Array.isArray(indices)) return;
+      if (!roomId || typeof roomId !== 'string' || roomId.length > 64) return;
+      if (!Array.isArray(indices) || indices.length > 5) return;
       const room = drawCards(roomId, socket.id, indices);
       if (!room) { socket.emit('error', { message: 'ドローできません（あなたのターンではありません）' }); return; }
       resetTimeout(roomId, socket.id);  // アクション成功 → タイムアウトカウントリセット
@@ -216,8 +357,10 @@ app.prepare().then(() => {
     });
 
     // ----- ベットアクション -----
+    const VALID_ACTIONS = new Set(['fold','check','call','bet','raise']);
     socket.on('betAction', ({ roomId, action }) => {
-      if (!roomId || !action) return;
+      if (!roomId || typeof roomId !== 'string' || roomId.length > 64) return;
+      if (!action || !VALID_ACTIONS.has(action)) return;
       // アクション前のプレイヤー名を記録
       const roomBefore = getRoom(roomId);
       const actingPlayer = roomBefore
@@ -239,6 +382,11 @@ app.prepare().then(() => {
     // ----- 退室予約 -----
     socket.on('reserveLeave', ({ roomId, type }) => {
       if (!roomId || !['afterHand', 'nextBB', 'cancel'].includes(type)) return;
+      // トーナメントテーブルでは退室予約を受け付けない
+      if (tournamentManager.isTournamentTable(roomId)) {
+        socket.emit('error', { message: 'トーナメント中は退室予約できません' });
+        return;
+      }
       if (type === 'cancel') {
         leaveReservations.delete(socket.id);
       } else {
@@ -251,11 +399,63 @@ app.prepare().then(() => {
     // ----- Zoom（FastFold）ハンドラ -----
     registerZoomHandlers(io, socket);
 
+    // ----- 観戦（トーナメントテーブル専用）-----
+    socket.on('spectate', ({ tableId }) => {
+      if (!tableId || typeof tableId !== 'string' || tableId.length > 64) return;
+      if (!tournamentManager.isTournamentTable(tableId)) {
+        socket.emit('error', { message: 'この部屋は観戦できません' });
+        return;
+      }
+      // 既存の観戦を解除
+      if (currentRoom.roomId && currentRoom.roomId !== tableId) {
+        socket.leave(currentRoom.roomId);
+        _spectators.get(currentRoom.roomId)?.delete(socket.id);
+      }
+      socket.join(tableId);
+      currentRoom = { name: socket.data.user?.nickname ?? '', roomId: tableId };
+      if (!_spectators.has(tableId)) _spectators.set(tableId, new Set());
+      _spectators.get(tableId).add(socket.id);
+      console.log(`[spectate] ${socket.id} → ${tableId}`);
+
+      // 現在の状態を即配信（手札は伏せる）
+      const room = getOrCreateRoom(tableId);
+      const state   = buildGameState(room, null);  // null = 自分なし = 全部 '??'
+      const meta    = state.find((x) => x._meta);
+      const players = state.filter((x) => !x._meta);
+      socket.emit('gameState', { players, meta, isSpectator: true });
+    });
+
     socket.on('disconnect', () => {
       console.log(`[disconnect] ${socket.id}`);
       leaveReservations.delete(socket.id);
-      if (currentRoom.roomId) _handleLeave(io, socket, currentRoom.roomId);
+      _rateCounts.delete(socket.id);
+      // 二重接続管理マップから削除（自分が最新の接続の場合のみ）
+      const user = socket.data.user;
+      if (user?.accountId && _connectedUsers.get(user.accountId) === socket.id) {
+        _connectedUsers.delete(user.accountId);
+      }
+      // 観戦者リストからも除去
+      if (currentRoom.roomId) _spectators.get(currentRoom.roomId)?.delete(socket.id);
+      if (!currentRoom.roomId) return;
+      const roomId = currentRoom.roomId;
+
+      if (tournamentManager.isTournamentTable(roomId)) {
+        // トーナメントテーブル: 即退室せず3分猶予
+        _startTournamentDisconnectGrace(io, socket.id, roomId);
+      } else {
+        _handleLeave(io, socket, roomId);
+      }
     });
+  });
+
+  // adminMonitor は express.json() が必要なので、そのルートだけに適用
+  const adminMonitor = require('./adminMonitor');
+  adminMonitor.setIo(io);
+  expressApp.use('/api/admin/monitor', express.json(), adminMonitor.router);
+
+  // ヘルスチェック（render.yaml の healthCheckPath）
+  expressApp.get('/api/health', (_req, res) => {
+    res.json({ ok: true, uptime: Math.round(process.uptime()), ts: Date.now() });
   });
 
   expressApp.use((req, res, nxt) => {
@@ -264,7 +464,14 @@ app.prepare().then(() => {
   });
 
   const PORT = process.env.PORT ?? 3000;
-  server.listen(PORT, () => console.log(`🃏 ${cfg.SITE_NAME} → http://localhost:${PORT}`));
+  server.listen(PORT, () => {
+    console.log(`🃏 ${cfg.SITE_NAME} → http://localhost:${PORT}`);
+    // サーバー起動後にトーナメント自動開始スケジューラを起動
+    _startTournamentScheduler(io);
+  });
+}).catch((err) => {
+  console.error('❌ サーバー起動エラー:', err);
+  process.exit(1);
 });
 
 // ==========================================================
@@ -337,7 +544,14 @@ function _makeTimeoutHandler(io, roomId) {
           return;
         }
         console.log(`[kick-timeout] ${playerId} in ${rid} (3 consecutive timeouts)`);
-        leaveRoom(playerId);
+
+        if (tournamentManager.isTournamentTable(rid)) {
+          // トーナメント: 脱落扱いで強制退場
+          tournamentManager.handleForcedLeave(rid, playerId, 'timeout-kick');
+        } else {
+          leaveRoom(playerId);
+        }
+
         const targetSocket = io.sockets.sockets.get(playerId);
         if (targetSocket) {
           targetSocket.emit('kicked', { reason: '連続タイムアウトにより退室されました' });
@@ -356,6 +570,53 @@ function _makeTimeoutHandler(io, roomId) {
 // ==========================================================
 // socketId → 'afterHand' | 'nextBB'
 const leaveReservations = new Map();
+
+// ==========================================================
+// ■ 観戦者管理（トーナメントテーブル専用）
+// ==========================================================
+// tableId → Set<socketId>
+const _spectators = new Map();
+
+// ==========================================================
+// ■ トーナメント切断猶予管理（3分）
+// ==========================================================
+// socketId → { roomId: string, timer: NodeJS.Timeout }
+const _tournamentGraceTimers = new Map();
+const TOURNAMENT_DISCONNECT_GRACE_MS = 3 * 60 * 1000; // 3分
+
+function _startTournamentDisconnectGrace(io, socketId, roomId) {
+  // 既存タイマーがあればキャンセル（再接続→再切断時）
+  _cancelTournamentDisconnectGrace(socketId);
+
+  // プレイヤーを disconnected としてマーク（UI表示用）
+  const room = getOrCreateRoom(roomId);
+  const player = room?.players.find((p) => p.id === socketId);
+  if (player) player.disconnected = true;
+  _broadcast(io, roomId);
+
+  console.log(`[t:grace-start] ${socketId} in ${roomId} – 3min grace`);
+
+  const timer = setTimeout(() => {
+    _tournamentGraceTimers.delete(socketId);
+    console.log(`[t:grace-expire] ${socketId} in ${roomId} – forced leave`);
+    tournamentManager.handleForcedLeave(roomId, socketId, 'disconnect-timeout');
+    const targetSocket = io.sockets.sockets.get(socketId);
+    if (targetSocket) targetSocket.leave(roomId);
+    io.emit('roomList', getLobbyList());
+    _broadcastLobbyUpdate(io, roomId);
+    _broadcast(io, roomId);
+  }, TOURNAMENT_DISCONNECT_GRACE_MS);
+
+  _tournamentGraceTimers.set(socketId, { roomId, timer });
+}
+
+function _cancelTournamentDisconnectGrace(socketId) {
+  const entry = _tournamentGraceTimers.get(socketId);
+  if (!entry) return;
+  clearTimeout(entry.timer);
+  _tournamentGraceTimers.delete(socketId);
+  console.log(`[t:grace-cancel] ${socketId} reconnected`);
+}
 
 function _doReservedLeave(io, socketId, roomId) {
   leaveReservations.delete(socketId);
@@ -468,6 +729,8 @@ function _broadcastLobbyUpdate(io, roomId) {
 
 function _broadcast(io, roomId) {
   const room = getOrCreateRoom(roomId);
+
+  // プレイヤーへ配信（手札あり）
   for (const player of [...room.players, ...room.pendingPlayers]) {
     const s = io.sockets.sockets.get(player.id);
     if (!s) continue;
@@ -476,4 +739,124 @@ function _broadcast(io, roomId) {
     const players = state.filter((x) => !x._meta);
     s.emit('gameState', { players, meta });
   }
+
+  // 観戦者へ配信（手札は伏せる）
+  const spectators = _spectators.get(roomId);
+  if (spectators && spectators.size > 0) {
+    const state   = buildGameState(room, null);
+    const meta    = state.find((x) => x._meta);
+    const players = state.filter((x) => !x._meta);
+    for (const sid of spectators) {
+      const s = io.sockets.sockets.get(sid);
+      if (s) s.emit('gameState', { players, meta, isSpectator: true });
+    }
+  }
+
+  // トーナメント BOT: ターンが来ていれば自動アクション
+  if (tournamentManager.isTournamentTable(roomId)) {
+    tournamentBotManager.triggerBotActions(roomId, (tblId) => {
+      _broadcast(io, tblId);
+      const r = getOrCreateRoom(tblId);
+      if (r?.phase === 'showdown') {
+        io.to(tblId).emit('showdown');
+        _scheduleAutoStart(io, tblId);
+      }
+    });
+  }
+}
+
+// ==========================================================
+// ■ トーナメント自動開始スケジューラ
+// ==========================================================
+function _startTournamentScheduler(io) {
+  const sql            = require('./db/client');
+  const { getTournament: getTournamentDB, getEntries } = require('./db/tournament');
+  const { updateTournamentStatus } = require('./db/admin');
+  const { startTournament }        = require('./tournament/tournamentManager');
+
+  const _scheduled = new Set();
+
+  async function _launchTournament(tournamentId) {
+    if (_scheduled.has(tournamentId)) return;
+    _scheduled.add(tournamentId);
+
+    if (tournamentManager.getTournament(tournamentId)) {
+      console.log(`[scheduler] ${tournamentId}: already running in memory`);
+      return;
+    }
+
+    try {
+      const dbTournament = await getTournamentDB(tournamentId);
+      if (!dbTournament || dbTournament.status !== 'registering') return;
+
+      const entries = await getEntries(tournamentId);
+      if (entries.length < 2) {
+        console.log(`[scheduler] ${tournamentId}: only ${entries.length} player(s), skip`);
+        await updateTournamentStatus(tournamentId, 'cancelled');
+        return;
+      }
+
+      await updateTournamentStatus(tournamentId, 'running');
+
+      const players = entries.map(e => ({
+        accountId: e.account_id,
+        nickname:  e.nickname ?? e.google_name ?? e.account_id.slice(0, 8),
+      }));
+
+      const tournament = startTournament({
+        id:            tournamentId,
+        name:          dbTournament.name,
+        mode:          dbTournament.mode,
+        startingChips: dbTournament.starting_chips,
+        scheduleId:    dbTournament.blind_schedule_id ?? 'default',
+        players,
+        scheduleData:  dbTournament.blind_levels ?? null,
+      });
+
+      if (tournament) {
+        console.log(`[scheduler] ${tournamentId}: auto-started (${players.length} players, ${tournament.tableIds.length} tables)`);
+        for (const tableId of tournament.tableIds) {
+          io.emit('t:tournamentStarting', { tournamentId, tableId });
+        }
+      }
+    } catch (err) {
+      console.error(`[scheduler] ${tournamentId}: error`, err.message);
+      _scheduled.delete(tournamentId);
+    }
+  }
+
+  async function _scan() {
+    try {
+      const rows = await sql`
+        SELECT id, scheduled_start_at
+        FROM tournaments
+        WHERE status = 'registering'
+        ORDER BY scheduled_start_at ASC
+        LIMIT 50
+      `;
+
+      const now = Date.now();
+      for (const row of rows) {
+        const startAt = new Date(row.scheduled_start_at).getTime();
+        const diff    = startAt - now;
+
+        if (diff <= 0) {
+          _launchTournament(row.id);
+        } else if (!_scheduled.has(row.id)) {
+          console.log(`[scheduler] ${row.id}: scheduled in ${Math.round(diff / 1000)}s`);
+          _scheduled.add(row.id);
+          setTimeout(() => {
+            _scheduled.delete(row.id);
+            _launchTournament(row.id);
+          }, diff);
+        }
+      }
+    } catch (err) {
+      console.error('[scheduler] scan error:', err.message);
+    }
+  }
+
+  _scan();
+  setInterval(_scan, 60 * 1000);
+  console.log('[scheduler] tournament auto-start scheduler running');
 }

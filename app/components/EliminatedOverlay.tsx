@@ -1,0 +1,74 @@
+'use client';
+// app/components/EliminatedOverlay.tsx
+// 脱落時のオーバーレイ
+
+interface Props {
+  rank: number;
+  totalPlayers: number;
+  onClose: () => void;
+}
+
+const POINT_TABLE: Record<number, number> = {
+  1: 100, 2: 60, 3: 40, 4: 25, 5: 15,
+};
+
+function ordinal(n: number) {
+  return `${n}位`;
+}
+
+export default function EliminatedOverlay({ rank, totalPlayers, onClose }: Props) {
+  const points = POINT_TABLE[rank] ?? 0;
+  const isTop3 = rank <= 3;
+  const emoji  = rank === 1 ? '🏆' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : '💀';
+
+  return (
+    <div className="fixed inset-0 flex items-center justify-center bg-black/80 z-50 backdrop-blur-sm">
+      <div className={[
+        'bg-gray-900 rounded-2xl p-8 border-2 text-center max-w-sm w-full mx-4 shadow-2xl',
+        isTop3 ? 'border-yellow-500' : 'border-gray-600',
+      ].join(' ')}>
+        {/* アイコン */}
+        <div className="text-6xl mb-4">{emoji}</div>
+
+        {/* 順位 */}
+        <h2 className={[
+          'text-3xl font-bold mb-1',
+          isTop3 ? 'text-yellow-400' : 'text-white',
+        ].join(' ')}>
+          {ordinal(rank)}
+        </h2>
+        <p className="text-gray-400 text-sm mb-4">
+          {totalPlayers}人中
+        </p>
+
+        {/* ポイント */}
+        <div className={[
+          'rounded-xl px-6 py-3 mb-6 inline-block',
+          points > 0 ? 'bg-yellow-900/60 border border-yellow-600' : 'bg-gray-800',
+        ].join(' ')}>
+          <p className="text-xs text-gray-400 mb-0.5">獲得ポイント</p>
+          <p className={`text-2xl font-bold ${points > 0 ? 'text-yellow-400' : 'text-gray-500'}`}>
+            {points > 0 ? `+${points} pt` : '0 pt'}
+          </p>
+        </div>
+
+        {/* メッセージ */}
+        <p className="text-gray-400 text-sm mb-6">
+          {rank === 1
+            ? '優勝おめでとうございます！'
+            : isTop3
+            ? 'お疲れさまでした！素晴らしい戦いでした。'
+            : 'お疲れさまでした！また挑戦してください。'}
+        </p>
+
+        {/* ボタン */}
+        <button
+          onClick={onClose}
+          className="w-full py-3 bg-blue-700 hover:bg-blue-600 text-white font-semibold rounded-lg transition-colors"
+        >
+          結果を見る
+        </button>
+      </div>
+    </div>
+  );
+}
