@@ -72,7 +72,7 @@ const rooms = new Map();
 
 function getOrCreateRoom(roomId, opts = {}) {
   if (!rooms.has(roomId)) {
-    const baseMode = getRoomMode(roomId);
+    const baseMode = opts.mode ?? getRoomMode(roomId);
     rooms.set(roomId, {
       id:             roomId,
       label:          opts.label          ?? roomId,
@@ -218,12 +218,13 @@ function startGame(roomId, onTimeout) {
   const size = handSize(room.currentMode);
   for (const p of room.players) {
     if (!room._isTournament) p.chips = room.startingChips;
-    p.hand          = p.sittingOut ? [] : room.deck.splice(0, size);
-    p.bet           = 0;
-    p.folded        = !!p.sittingOut;
-    p.acted         = !!p.sittingOut;
-    p.drewThisRound = false;
-    p.drawCount     = null;
+    p.hand             = p.sittingOut ? [] : room.deck.splice(0, size);
+    p.bet              = 0;
+    p.folded           = !!p.sittingOut;
+    p.acted            = !!p.sittingOut;
+    p.drewThisRound    = false;
+    p.drawCount        = null;
+    p.totalContribution = 0;  // サイドポット計算用: このハンドの総投資額
   }
 
   // SB / BB ポスト
@@ -284,7 +285,7 @@ function _postBlind(room, idx, amount) {
   const p = room.players[idx];
   if (!p) return;
   const actual = Math.min(amount, p.chips);
-  p.chips -= actual; p.bet += actual; room.pot += actual;
+  p.chips -= actual; p.bet += actual; room.pot += actual; p.totalContribution = (p.totalContribution??0) + actual;
 }
 
 /**
@@ -312,7 +313,12 @@ function _resetDrawRound(room) {
 function _resetBetRound(room, betSize) {
   room.currentBet = 0; room.raiseCount = 0; room.betSize = betSize;
   for (const p of room.players) {
-    if (!p.sittingOut && !p.folded) { p.bet = 0; p.acted = false; }
+    if (!p.sittingOut && !p.folded) {
+      // betはpotに移したのでtotalContributionには既に加算済み
+      p.bet = 0;
+      // チップ0のプレイヤー（オールイン済み）はすでにアクション不要
+      p.acted = (p.chips <= 0);
+    }
   }
 }
 
@@ -442,6 +448,8 @@ function betAction(roomId, socketId, action) {
   if (myIndex !== room.actionIndex) return null;
   const player = room.players[myIndex];
   if (!player || player.folded) return null;
+  // chips=0プレイヤーはshowdown後にcheckEliminationsで脱落するため
+  // betActionでのスキップは行わない
 
   const toCall = room.currentBet - player.bet;
 
@@ -455,30 +463,40 @@ function betAction(roomId, socketId, action) {
   } else if (action === 'call') {
     const actual = Math.min(toCall, player.chips);
     player.chips -= actual; player.bet += actual; room.pot += actual;
+    player.totalContribution = (player.totalContribution??0) + actual;
     player.acted = true;
 
   } else if (action === 'bet' || action === 'raise') {
+    // chips=0のプレイヤー（すでにオールイン済み）はbet/raiseをcallとして処理
+    if (player.chips <= 0) {
+      player.acted = true;
     // ⚠️ 変更禁止: キャップ判定は >= MAX_RAISES(5)。
     //   > MAX_RAISES にすると raiseCount=5 でもレイズ可能になり BET60 まで打てるバグになる。
     //   canRaise は < MAX_RAISES(5) で raiseCount=4(4/5) でもレイズ可、raiseCount=5(5/5) でレイズ不可。
-    if (room.raiseCount >= MAX_RAISES) {
+    } else if (room.raiseCount >= MAX_RAISES) {
       const actual = Math.min(toCall, player.chips);
       player.chips -= actual; player.bet += actual; room.pot += actual;
+      player.totalContribution = (player.totalContribution??0) + actual;
       player.acted = true;
     } else {
       const betTotal = room.currentBet + room.betSize;
       const needed   = betTotal - player.bet;
       const actual   = Math.min(needed, player.chips);
       player.chips -= actual; player.bet += actual; room.pot += actual;
-      room.currentBet = player.bet;
-      room.raiseCount++;
-      player.acted = true;
-      // 他プレイヤーの acted をリセット
-      for (let i = 0; i < room.players.length; i++) {
-        if (i !== myIndex && !room.players[i].folded && !room.players[i].sittingOut) {
-          room.players[i].acted = false;
+      player.totalContribution = (player.totalContribution??0) + actual;
+      // currentBetは上がることしかない（ショートオールインで下げない）
+      room.currentBet = Math.max(room.currentBet, player.bet);
+      // フルレイズ（actual === needed）の場合のみraiseCount増加 & 他プレイヤーのacted リセット
+      // ショートオールイン（actual < needed）はレイズ権を与えず、acted済みプレイヤーも再アクション不要
+      if (actual >= needed) {
+        room.raiseCount++;
+        for (let i = 0; i < room.players.length; i++) {
+          if (i !== myIndex && !room.players[i].folded && !room.players[i].sittingOut) {
+            room.players[i].acted = false;
+          }
         }
       }
+      player.acted = true;
     }
   } else { return null; }
 
@@ -491,26 +509,53 @@ function _advanceBetAction(room) {
   const active = room.players.filter((p) => !p.folded && !p.sittingOut);
   if (active.length <= 1) { _clearTimer(room); room.phase = 'showdown'; return; }
 
-  const allActed  = active.every((p) => p.acted);
-  const betsEqual = active.every((p) => p.bet === active[0].bet);
-  if (allActed && betsEqual) { _nextPhase(room); return; }
+  // 全員がアクション済みならフェーズ進行
+  // ショートオールイン後はbetが揃わなくても全員acted=trueで進む
+  const allActed = active.every((p) => p.acted);
+  if (allActed) { _nextPhase(room); return; }
 
+  // アクションが必要なプレイヤーを探す
   let next = (room.actionIndex + 1) % room.players.length;
+  let found = false;
   for (let t = 0; t < room.players.length; t++) {
     const p = room.players[next];
-    if (p && !p.folded && !p.sittingOut && !p.acted) break;
+    if (p && !p.folded && !p.sittingOut && !p.acted) { found = true; break; }
     next = (next + 1) % room.players.length;
   }
+  // アクション不要（全員acted or folded）なのにここに来た場合は安全にフェーズ進行
+  if (!found) { _nextPhase(room); return; }
   room.actionIndex = next;
 
   // ターンが回ってきたプレイヤーが fastFoldPending なら即フォールドして次へ
-  const nextPlayer = room.players[room.actionIndex];
+  let nextPlayer = room.players[room.actionIndex];
   if (nextPlayer?.fastFoldPending && !nextPlayer.folded) {
     nextPlayer.fastFoldPending = false;
     nextPlayer.folded = true;
     nextPlayer.acted  = true;
     _advanceBetAction(room);
     return;
+  }
+
+  // chips=0（オールイン済み）のプレイヤーにターンが来た場合はスキップしてactedにする
+  // 再帰ではなくループで処理（スタックオーバーフロー防止）
+  let safetyCount = 0;
+  while (nextPlayer && nextPlayer.chips <= 0 && !nextPlayer.folded && safetyCount < 20) {
+    nextPlayer.acted = true;
+    safetyCount++;
+    // 全員acted済みか再確認
+    const stillActive = room.players.filter(p => !p.folded && !p.sittingOut);
+    if (stillActive.every(p => p.acted)) { _nextPhase(room); return; }
+    // 次のアクション待ちプレイヤーを探す
+    let nextIdx = (room.actionIndex + 1) % room.players.length;
+    let foundNext = false;
+    for (let t = 0; t < room.players.length; t++) {
+      const p = room.players[nextIdx];
+      if (p && !p.folded && !p.sittingOut && !p.acted) { foundNext = true; break; }
+      nextIdx = (nextIdx + 1) % room.players.length;
+    }
+    if (!foundNext) { _nextPhase(room); return; }
+    room.actionIndex = nextIdx;
+    nextPlayer = room.players[room.actionIndex];
   }
 
   _startTimer(room);
@@ -548,14 +593,60 @@ function _nextPhase(room) {
 // ■ ゲーム状態ビルド
 // ==========================================================
 
+// =====================================================
+// サイドポット計算・分配
+// allInプレイヤーが混在する場合にメインポット/サイドポットを正しく分配する
+// =====================================================
+function _awardPots(room, activePlayers) {
+  const allPlayers = room.players.filter(p => !p.sittingOut);
+  // 全プレイヤーの貢献額でサイドポットを計算
+  const contribs = allPlayers
+    .map(p => ({ player: p, contrib: p.totalContribution ?? 0 }))
+    .sort((a, b) => a.contrib - b.contrib);
+
+  let totalAwarded = 0;
+  let prevLevel = 0;
+
+  for (let i = 0; i < contribs.length; i++) {
+    const level = contribs[i].contrib;
+    if (level <= prevLevel) continue;
+
+    // このレベルのポット額 = (level - prevLevel) × まだ生きているプレイヤー数
+    const potSize = (level - prevLevel) * contribs.slice(i).length;
+    // 既に計算した分を超えないよう cap
+    const cappedPot = Math.min(potSize, room.pot - totalAwarded);
+    if (cappedPot <= 0) break;
+
+    // このポットに参加できるプレイヤー（貢献額 >= level かつ折り畳んでいない）
+    const eligible = activePlayers.filter(p => (p.totalContribution ?? 0) >= level);
+    if (eligible.length === 0) {
+      // 全員フォールド → 最後に生きていたプレイヤーへ（通常ここには来ない）
+      if (activePlayers.length > 0) activePlayers[0].chips += cappedPot;
+    } else {
+      // ハンド評価で勝者決定
+      const winnerId = findWinner(eligible, room.currentMode);
+      const winner = eligible.find(p => p.id === winnerId);
+      if (winner) winner.chips += cappedPot;
+    }
+    totalAwarded += cappedPot;
+    prevLevel = level;
+  }
+
+  // 端数（計算誤差）があればトップのactiveプレイヤーに渡す
+  const remainder = room.pot - totalAwarded;
+  if (remainder > 0 && activePlayers.length > 0) {
+    activePlayers[0].chips += remainder;
+  }
+  room.pot = 0;
+}
+
 function buildGameState(room, requesterId) {
   const isShowdown    = room.phase === 'showdown';
   const activePlayers = room.players.filter((p) => !p.folded && !p.sittingOut);
   const winnerId      = isShowdown ? findWinner(activePlayers, room.currentMode) : null;
 
-  if (isShowdown && winnerId && !room._potAwarded) {
-    const winner = room.players.find((p) => p.id === winnerId);
-    if (winner) winner.chips += room.pot;
+  if (isShowdown && !room._potAwarded) {
+    _awardPots(room, activePlayers);
     room._potAwarded = true;
   }
 
@@ -571,7 +662,10 @@ function buildGameState(room, requesterId) {
 
   const playerStates = room.players.map((p) => {
     const isSelf   = p.id === requesterId;
-    const reveal   = isShowdown || isSelf;
+    // ショーダウン時: 複数人が残った場合のみカードを公開（全員フォールドは1人勝ちでマック不要）
+    // activePlayers(フォールドしていないプレイヤー)が2人以上いる場合のみショーダウン公開
+    const isContested = activePlayers.length >= 2;
+    const reveal   = isSelf || (isShowdown && !p.folded && isContested);
     const isMyTurn = !isShowdown && currentPlayer != null && p.id === currentPlayer.id;
     const toCall   = isBetPhase ? Math.max(0, room.currentBet - p.bet) : 0;
     const myIdx    = room.players.indexOf(p);
@@ -590,16 +684,77 @@ function buildGameState(room, requesterId) {
       isSB:      myIdx === sbIdx && sbIdx >= 0,
       isBB:      myIdx === bbIdx && bbIdx >= 0,
       ...(isSelf ? {
-        toCall,
-        canCheck: isBetPhase && toCall === 0,
+        toCall:   p.chips <= 0 ? 0 : toCall,  // chips=0はコール不要（オールイン済み）
+        canCheck: isBetPhase && (toCall === 0 || p.chips <= 0),
+        isAllIn:  p.chips <= 0 && !p.folded,  // chips=0のオールイン状態
     // ⚠️ 変更禁止: raiseCount < MAX_RAISES(5) のときのみレイズ可。
     //   raiseCount=4(4/5) → レイズ可、raiseCount=5(5/5) → レイズ不可（キャップ）
-    canRaise: isBetPhase && room.raiseCount < MAX_RAISES,
+    // 相手が全員フォールドorオールイン（chips<=0）の場合もレイズ不可
+    canRaise: isBetPhase && room.raiseCount < MAX_RAISES && p.chips > 0
+      && room.players.some(op => op.id !== p.id && !op.folded && !op.sittingOut && op.chips > 0),
         betSize:  room.betSize,
       } : {}),
       ...(isMyTurn ? { timerRemaining } : {}),
     };
   });
+
+  // サイドポット計算（表示用）
+  // chips=0のプレイヤー（真のオールイン）が存在する場合のみ分割表示
+  // フォールドしたプレイヤーのブラインド残が原因の誤検知を防ぐ
+  const _potsForDisplay = (() => {
+    if (room.pot <= 0) return [];
+    const allP = room.players.filter(p => !p.sittingOut);
+    // 真のオールイン（chips=0かつフォールドしていない）が1人以上いる場合のみ分割計算
+    const hasRealAllIn = allP.some(p => p.chips <= 0 && !p.folded);
+    if (!hasRealAllIn) return [{ amount: room.pot, label: 'ポット' }];
+
+    const contribs = allP
+      .map(p => p.totalContribution ?? 0)
+      .filter(c => c > 0);
+    if (contribs.length === 0) return [{ amount: room.pot, label: 'ポット' }];
+    const levels = [...new Set(contribs)].sort((a, b) => a - b);
+    const result = [];
+    let prevLevel = 0;
+    let totalCalc = 0;
+    for (let li = 0; li < levels.length; li++) {
+      const level = levels[li];
+      const playersAtLevel = allP.filter(p => (p.totalContribution ?? 0) >= level).length;
+      const potSize = (level - prevLevel) * playersAtLevel;
+      const capped = Math.min(potSize, room.pot - totalCalc);
+      if (capped <= 0) break;
+      const sideLabel = li === 0 ? 'メインポット'
+        : li === 1 ? 'サイドポットA'
+        : li === 2 ? 'サイドポットB'
+        : li === 3 ? 'サイドポットC'
+        : `サイドポット${li}`;
+      result.push({ amount: capped, label: sideLabel });
+      totalCalc += capped;
+      prevLevel = level;
+    }
+    const rem = room.pot - totalCalc;
+    if (rem > 0) {
+      if (result.length > 0) result[result.length - 1].amount += rem;
+      else result.push({ amount: rem, label: 'ポット' });
+    }
+    // 実際に分割されている場合のみ複数返す（全額が1ポットなら単純表示）
+    return result.length > 1 ? result : [{ amount: room.pot, label: 'ポット' }];
+  })();
+
+  // pending待機中のリクエスター自身もstateに追加（isSelf=true, isPendingPlayer=true）
+  const pendingSelf = requesterId
+    ? room.pendingPlayers.find(p => p.id === requesterId)
+    : null;
+  if (pendingSelf) {
+    playerStates.push({
+      id: pendingSelf.id, name: pendingSelf.name, chips: pendingSelf.chips,
+      bet: 0, folded: false, sittingOut: false, disconnected: false,
+      hand: [], isSelf: true, isMyTurn: false,
+      drewThisRound: false, drawCount: null,
+      isWinner: false, isDealer: false, isSB: false, isBB: false,
+      isPendingPlayer: true,
+      toCall: 0, canCheck: false, canRaise: false, betSize: room.betSize,
+    });
+  }
 
   const meta = {
     _meta: true,
@@ -607,6 +762,7 @@ function buildGameState(room, requesterId) {
     mode:           room.mode,
     currentMode:    room.currentMode,
     pot:            room.pot,
+    pots:           _potsForDisplay,
     currentBet:     room.currentBet,
     betSize:        room.betSize,
     // raiseCount: bet0は1スタート（BBポスト=1）、bet1〜は0スタート。maxRaises=5。
@@ -794,11 +950,26 @@ function renamePlayer(roomId, playerId, newName) {
   return true;
 }
 
+/**
+ * ポット未配布のショーダウン済みルームを強制精算する。
+ * BOTのみのテーブルでは _broadcast が buildGameState を呼ばないため
+ * _awardPots が実行されず chips が更新されないケースへの対処。
+ * balanceTables / checkEliminations の前に呼ぶことでチップを正しく確定させる。
+ */
+function ensurePotsAwarded(roomId) {
+  const room = rooms.get(roomId);
+  if (!room || room.phase !== 'showdown' || room._potAwarded) return;
+  const activePlayers = room.players.filter((p) => !p.folded && !p.sittingOut);
+  _awardPots(room, activePlayers);
+  room._potAwarded = true;
+}
+
 module.exports = {
   getOrCreateRoom, joinRoom, leaveRoom, fastFoldPlayer,
   startGame, drawCards, betAction, updateSelectedIndices,
   buildGameState, removePlayer, canAutoStart, getAllRooms,
   incrementTimeout, resetTimeout,
   getRoomMode, getRoom, deleteRoom, renamePlayer,
+  ensurePotsAwarded,
   STARTING_CHIPS, SMALL_BLIND, BIG_BLIND, SMALL_BET, BIG_BET, MAX_PLAYERS,
 };

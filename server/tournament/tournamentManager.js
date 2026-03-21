@@ -64,6 +64,8 @@ function _createTable(tournament, playerInfos) {
   const lv = tournament.levels[tournament.currentLevelIdx];
 
   // gameManager にトーナメント用パラメータを渡して部屋を作成
+  // mode を明示的に渡さないと getRoomMode がroomId文字列から推測するため
+  // badugi/mix トーナメントのテーブルが必ず '27' になるバグがある
   const room = getOrCreateRoom(tableId, {
     isUserCreated:  false,
     isZoomTable:    false,
@@ -73,6 +75,7 @@ function _createTable(tournament, playerInfos) {
     smallBet:       lv.smallBet,
     bigBet:         lv.bigBet,
     startingChips:  tournament.startingChips,
+    mode:           tournament.mode,  // badugi/mix/27 を正しく設定
     // トーナメントフラグ
     _tournamentId:  tournament.id,
     _isTournament:  true,
@@ -119,7 +122,7 @@ function _assignTables(tournament, players) {
  * @param {object}   opts.scheduleData   - levels array from DB (optional, overrides scheduleId lookup)
  */
 function startTournament(opts) {
-  const { id, name, mode, startingChips, scheduleId, players, scheduleData } = opts;
+  const { id, name, mode, startingChips, scheduleId, players, scheduleData, lateRegMinutes } = opts;
 
   if (tournaments.has(id)) {
     console.warn(`[TM] Tournament ${id} already running`);
@@ -128,10 +131,11 @@ function startTournament(opts) {
 
   // ブラインドスケジュールをメモリにコピー
   let levels;
+  let schedule = null;
   if (scheduleData && Array.isArray(scheduleData)) {
     levels = scheduleData;
   } else {
-    const schedule = getSchedule(scheduleId);
+    schedule = getSchedule(scheduleId);
     levels = schedule.levels;
   }
 
@@ -144,12 +148,22 @@ function startTournament(opts) {
     levels,
     currentLevelIdx: 0,
     levelStartedAt:  Date.now(),
-    pendingLevelUp:  false,
-    tableIds:        [],
+    pendingLevelUp:   false,
+    tableIds:         [],
     eliminationOrder: [],
-    totalPlayers:    players.length,
-    status:          'running',
-    _levelTimer:     null,
+    totalPlayers:     players.length,
+    status:           'running',
+    _levelTimer:      null,
+    // レイトレジスト
+    // scheduleDataを使う場合はscheduleがnullになるので、scheduleIdからも取得を試みる
+    lateLevelCutoff:  schedule?.lateLevelCutoff ?? getSchedule(scheduleId)?.lateLevelCutoff ?? 0,
+    lateRegOpen:      true,   // 開始時はtrue、cutoffレベルを過ぎたらfalse
+    lateRegMinutes:   lateRegMinutes ?? 0,  // 0=レベルベース管理, >0=時間ベース管理
+    lateRegEndAt:     lateRegMinutes > 0 ? Date.now() + lateRegMinutes * 60 * 1000 : null,
+    // ファイナルテーブル
+    finalTableReached: false,
+    // ブレイク中フラグ
+    isOnBreak:        false,
   };
 
   tournaments.set(id, tournament);
@@ -171,6 +185,22 @@ function startTournament(opts) {
   // ブラインドレベルアップタイマー開始
   _startLevelTimer(tournament);
 
+  // 時間ベースのレイトレジスト終了タイマー（lateRegMinutes > 0 の場合）
+  if (tournament.lateRegMinutes > 0) {
+    setTimeout(() => {
+      const t = tournaments.get(id);
+      if (!t || !t.lateRegOpen) return;
+      t.lateRegOpen = false;
+      console.log(`[TM] ${id}: late registration CLOSED (time-based, ${tournament.lateRegMinutes}min)`);
+      if (_io) {
+        for (const tableId of t.tableIds) {
+          _io.to(tableId).emit('t:lateRegClosed', { tournamentId: id });
+        }
+      }
+      _broadcastBlindUpdate(t);
+    }, tournament.lateRegMinutes * 60 * 1000);
+  }
+
   console.log(`[TM] Tournament ${id} started: ${players.length} players, ${tournament.tableIds.length} tables`);
 
   // クライアントへ開始通知
@@ -188,11 +218,35 @@ function _startLevelTimer(tournament) {
   if (!lv || lv.durationMinutes === 0) return; // 最終レベル
 
   const ms = lv.durationMinutes * 60 * 1000;
-  tournament.levelStartedAt = Date.now();
+
+  // pendingLevelUp中に経過した時間分だけ遡ってlevelStartedAtをセット
+  // （例: 30秒pendingだったら、新レベルは既に30秒消費済みとして開始）
+  const pendingElapsed = tournament.pendingLevelUpAt
+    ? Math.max(0, Date.now() - tournament.pendingLevelUpAt)
+    : 0;
+  tournament.levelStartedAt = Date.now() - pendingElapsed;
+  tournament.pendingLevelUpAt = null; // リセット
+
+  const remaining = Math.max(0, ms - pendingElapsed);
+  if (remaining <= 0) {
+    // すでに次レベルの時間を超過している → breakなら即解除してから即pending
+    if (lv.isBreak) tournament.isOnBreak = false;
+    setTimeout(() => _pendingLevelUp(tournament.id), 0);
+    return;
+  }
 
   tournament._levelTimer = setTimeout(() => {
+    const t = tournaments.get(tournament.id);
+    if (!t || t.status !== 'running') return;
+    // ブレイク終了時: isOnBreak を解除してクライアントに通知
+    if (lv.isBreak) {
+      t.isOnBreak = false;
+      console.log(`[TM] ${tournament.id}: break ended`);
+      // ブレイク終了後のブラインド情報をbroadcast（次レベル予告を表示）
+      _broadcastBlindUpdate(t);
+    }
     _pendingLevelUp(tournament.id);
-  }, ms);
+  }, remaining);
 }
 
 /**
@@ -204,7 +258,10 @@ function _pendingLevelUp(tournamentId) {
   if (!t || t.status !== 'running') return;
 
   t.pendingLevelUp = true;
+  t.pendingLevelUpAt = Date.now(); // ← pending開始時刻を記録
   console.log(`[TM] ${tournamentId}: blind level-up pending`);
+  // タイマー0をクライアントに即通知（表示が止まって見えるのを防ぐ）
+  _broadcastBlindUpdate(t);
 }
 
 /**
@@ -219,7 +276,30 @@ function applyPendingLevelUp(tournamentId) {
   t.currentLevelIdx = Math.min(t.currentLevelIdx + 1, t.levels.length - 1);
 
   const lv = t.levels[t.currentLevelIdx];
+
+  if (lv.isBreak) {
+    // ブレイクレベル: ブラインドは変更せず休憩フラグをセットしてタイマー起動
+    console.log(`[TM] ${tournamentId}: entering break: ${lv.breakLabel}`);
+    t.isOnBreak = true;
+    t._notifyBlindUpdate = 'break';  // ブレイク突入通知
+    _startLevelTimer(t); // ブレイクタイマー開始（終了時にisOnBreak=falseとbroadcast）
+    _broadcastBlindUpdate(t); // クライアントにブレイク状態を通知
+    return true;
+  }
+
   console.log(`[TM] ${tournamentId}: blind level up → Lv${lv.level} sb=${lv.sb} bb=${lv.bb}`);
+  t._notifyBlindUpdate = 'blindUp';  // ブラインドアップ通知
+
+  // レイトレジスト終了チェック（時間ベース管理の場合はタイマーに任せるのでスキップ）
+  if (t.lateRegOpen && t.lateRegMinutes === 0 && lv.level !== null && lv.level > t.lateLevelCutoff) {
+    t.lateRegOpen = false;
+    console.log(`[TM] ${tournamentId}: late registration CLOSED at Lv${lv.level}`);
+    if (_io) {
+      for (const tableId of t.tableIds) {
+        _io.to(tableId).emit('t:lateRegClosed', { tournamentId: t.id });
+      }
+    }
+  }
 
   // 全テーブルのブラインドを更新
   for (const tableId of t.tableIds) {
@@ -254,10 +334,13 @@ function checkEliminations(tableId) {
   const room = getRoom(tableId);
   if (!room) return;
 
-  const eliminated = room.players.filter(p => p.chips <= 0 && !p.folded);
+  const eliminated = room.players.filter(p => p.chips <= 0);
   for (const p of eliminated) {
     _eliminatePlayer(t, tableId, p);
   }
+
+  // ステータス通知（ファイナルテーブル検出含む）
+  _broadcastTournamentStatus(t);
 
   // 全体で1人になったらトーナメント終了
   const remaining = _countRemaining(t);
@@ -267,15 +350,35 @@ function checkEliminations(tableId) {
 }
 
 function _eliminatePlayer(tournament, tableId, player) {
-  const rank = tournament.totalPlayers - tournament.eliminationOrder.length;
+  // rankは「現在の生存者数 + 脱落済み数 + 1（今脱落するプレイヤー自身）」
+  // totalPlayersはBOT追加で増減するため使わず、実際の残人数から計算
+  const currentRemaining = (() => {
+    const { getOrCreateRoom: gr } = require('../poker/gameManager');
+    let cnt = 0;
+    for (const tid of tournament.tableIds) {
+      const r = gr(tid);
+      if (r) cnt += r.players.length;
+    }
+    return cnt;
+  })();
+  const rank = currentRemaining;  // 今いる人数 = この人の順位
   tournament.eliminationOrder.push(player.accountId ?? player.id);
 
   console.log(`[TM] ${tournament.id}: ${player.name} eliminated, rank=${rank}`);
 
-  // テーブルから退場
-  leaveRoom(tableId, player.id);
+  // テーブルから退場（leaveRoomはsocketId単一引数）
+  leaveRoom(player.id);
 
-  // 脱落通知
+  // 同テーブルの全員にバスト通知（showdown表示が先に届くよう1秒遅延）
+  if (_io) {
+    const tid = tableId;
+    const payload = { playerName: player.name, rank, totalPlayers: tournament.totalPlayers };
+    setTimeout(() => {
+      if (_io) _io.to(tid).emit('t:playerEliminated', payload);
+    }, 1000);
+  }
+
+  // 本人に脱落通知
   if (_io) {
     const sock = _io.sockets.sockets.get(player.id);
     if (sock) {
@@ -288,10 +391,12 @@ function _eliminatePlayer(tournament, tableId, player) {
 }
 
 function _countRemaining(tournament) {
+  // pendingPlayers（ゲーム中テーブルに移動してきたプレイヤー）も含めてカウント。
+  // これを漏らすと「1人しかいない」と誤判定して _finishTournament が呼ばれてしまう。
   let count = 0;
   for (const tableId of tournament.tableIds) {
     const room = getOrCreateRoom(tableId);
-    if (room) count += room.players.length;
+    if (room) count += room.players.length + room.pendingPlayers.length;
   }
   return count;
 }
@@ -320,15 +425,44 @@ function _finishTournament(tournament) {
 
   console.log(`[TM] ${tournament.id}: finished`);
 
-  // 全テーブルに終了通知
-  if (_io) {
-    for (const tableId of tournament.tableIds) {
-      _io.to(tableId).emit('t:tournamentFinished', { rankings });
+  // DBのステータスをfinishedに更新 + 結果を保存
+  (async () => {
+    try {
+      const { updateTournamentStatus } = require('../db/admin');
+      await updateTournamentStatus(tournament.id, 'finished');
+      const { recordTournamentResults } = require('../db/points');
+      const { isTournamentBotId } = require('./tournamentBotManager');
+      // BOT（tbot::プレフィックス）はDBのFK制約に引っかかるため除外
+      const dbResults = rankings
+        .filter(r => r.accountId && !isTournamentBotId(r.accountId))
+        .map(r => ({
+          accountId: r.accountId,
+          finalRank: r.rank,
+          finalChips: r.chips ?? 0,
+        }));
+      if (dbResults.length > 0) {
+        await recordTournamentResults(tournament.id, dbResults);
+      }
+    } catch (e) {
+      console.error('[TM] finish DB error:', e.message);
     }
-  }
+  })();
 
-  // テーブルをメモリから削除
-  _cleanupTables(tournament);
+  // 全テーブルに終了通知（5秒遅延: 最終ハンドのshowdown表示時間を確保）
+  if (_io) {
+    const tableIds = [...tournament.tableIds];
+    setTimeout(() => {
+      if (!_io) return;
+      for (const tableId of tableIds) {
+        _io.to(tableId).emit('t:tournamentFinished', { rankings });
+      }
+      // 通知送信後にテーブルをメモリから削除（通知前に削除するとgameStateが届かなくなる）
+      _cleanupTables(tournament);
+    }, 5000);
+  } else {
+    // IOなし（テスト等）は即削除
+    _cleanupTables(tournament);
+  }
 }
 
 function _cleanupTables(tournament) {
@@ -344,14 +478,32 @@ function _cleanupTables(tournament) {
 function _broadcastTournamentStatus(tournament) {
   if (!_io) return;
   const remaining = _countRemaining(tournament);
+  const total = remaining + tournament.eliminationOrder.length;
+  if (total > tournament.totalPlayers) tournament.totalPlayers = total;
   const totalChips = tournament.totalPlayers * tournament.startingChips;
   const averageStack = remaining > 0 ? Math.floor(totalChips / remaining) : 0;
+
+  // ファイナルテーブル突入検出: テーブルが1つになった瞬間
+  const isFinalTable = tournament.tableIds.length === 1 && remaining > 1 && !tournament.lateRegOpen;
+  if (isFinalTable && !tournament.finalTableReached) {
+    tournament.finalTableReached = true;
+    console.log(`[TM] ${tournament.id}: FINAL TABLE! ${remaining} players remain`);
+    if (_io) {
+      for (const tableId of tournament.tableIds) {
+        _io.to(tableId).emit('t:finalTable', {
+          tournamentId: tournament.id,
+          remainingPlayers: remaining,
+        });
+      }
+    }
+  }
 
   const payload = {
     tournamentId:     tournament.id,
     totalPlayers:     tournament.totalPlayers,
     remainingPlayers: remaining,
     averageStack,
+    isFinalTable,
   };
 
   for (const tableId of tournament.tableIds) {
@@ -362,11 +514,16 @@ function _broadcastTournamentStatus(tournament) {
 function _broadcastBlindUpdate(tournament) {
   if (!_io) return;
   const lv      = tournament.levels[tournament.currentLevelIdx];
-  const nextLv  = tournament.levels[tournament.currentLevelIdx + 1] ?? null;
   const elapsed = Date.now() - tournament.levelStartedAt;
   const remaining = lv.durationMinutes > 0
     ? Math.max(0, Math.floor((lv.durationMinutes * 60 * 1000 - elapsed) / 1000))
     : 0;
+
+  // 次の非ブレイクレベルを探す（ブレイク中でも次のブラインド額を予告）
+  let nextLv = null;
+  for (let i = tournament.currentLevelIdx + 1; i < tournament.levels.length; i++) {
+    if (!tournament.levels[i].isBreak) { nextLv = tournament.levels[i]; break; }
+  }
 
   const payload = {
     level:              lv.level,
@@ -375,10 +532,20 @@ function _broadcastBlindUpdate(tournament) {
     smallBet:           lv.smallBet,
     bigBet:             lv.bigBet,
     secondsToNextLevel: lv.durationMinutes === 0 ? 0 : remaining,
-    isLastLevel:        lv.durationMinutes === 0,
+    isLastLevel:        lv.durationMinutes === 0 && !lv.isBreak,
     nextSb:             nextLv?.sb   ?? null,
     nextBb:             nextLv?.bb   ?? null,
+    isBreak:            !!lv.isBreak,
+    breakLabel:         lv.isBreak ? (lv.breakLabel ?? 'Break') : null,
+    lateRegOpen:        tournament.lateRegOpen ?? false,
+    lateRegLevelCutoff: tournament.lateLevelCutoff ?? 0,
+    lateRegSecondsRemaining: (tournament.lateRegEndAt && tournament.lateRegOpen)
+      ? Math.max(0, Math.round((tournament.lateRegEndAt - Date.now()) / 1000))
+      : null,
+    notify:             tournament._notifyBlindUpdate ?? null,  // 'blindUp' | 'break' | null
+    pendingLevelUp:     tournament.pendingLevelUp ?? false,     // 次のハンドでブラインドアップ予定
   };
+  tournament._notifyBlindUpdate = null;  // 一度送ったらリセット
 
   for (const tableId of tournament.tableIds) {
     _io.to(tableId).emit('t:blindUpdate', payload);
@@ -433,7 +600,9 @@ function getTableForPlayer(tournamentId, accountId) {
     // player.id は最初 accountId で登録され、joinRoom後にsocket.idに更新される
     // player.accountId は _createTable で opts.accountId を渡していないため null
     // → p.id（初期値=accountId）または p.accountId または p.name で検索
-    const found = room.players.find(p =>
+    // pendingPlayers も含めて検索（テーブル移動後の再接続対応）
+    const allPlayers = [...room.players, ...room.pendingPlayers];
+    const found = allPlayers.find(p =>
       p.id === accountId ||
       p.accountId === accountId ||
       p.name === accountId
@@ -457,6 +626,12 @@ function getCurrentBlindPayload(tournamentId) {
     ? Math.max(0, Math.floor((lv.durationMinutes * 60 * 1000 - elapsed) / 1000))
     : 0;
 
+  // 次の非ブレイクレベルを探す
+  let nextLvP = null;
+  for (let i = t.currentLevelIdx + 1; i < t.levels.length; i++) {
+    if (!t.levels[i].isBreak) { nextLvP = t.levels[i]; break; }
+  }
+
   return {
     level:              lv.level,
     sb:                 lv.sb,
@@ -464,9 +639,16 @@ function getCurrentBlindPayload(tournamentId) {
     smallBet:           lv.smallBet,
     bigBet:             lv.bigBet,
     secondsToNextLevel: lv.durationMinutes === 0 ? 0 : remaining,
-    isLastLevel:        lv.durationMinutes === 0,
-    nextSb:             nextLv?.sb ?? null,
-    nextBb:             nextLv?.bb ?? null,
+    isLastLevel:        lv.durationMinutes === 0 && !lv.isBreak,
+    nextSb:             nextLvP?.sb ?? null,
+    nextBb:             nextLvP?.bb ?? null,
+    isBreak:            !!lv.isBreak,
+    breakLabel:         lv.isBreak ? (lv.breakLabel ?? 'Break') : null,
+    lateRegOpen:        t.lateRegOpen ?? false,
+    lateRegLevelCutoff: t.lateLevelCutoff ?? 0,
+    lateRegSecondsRemaining: (t.lateRegEndAt && t.lateRegOpen)
+      ? Math.max(0, Math.round((t.lateRegEndAt - Date.now()) / 1000))
+      : null,
   };
 }
 
@@ -500,11 +682,278 @@ function handleForcedLeave(tableId, playerId, reason) {
   }
 }
 
+// ===== テーブルバランシング =====
+/**
+ * 複数テーブルのプレイヤー人数を均等化する
+ * - テーブルが1人以下 → そのテーブルを解体して他テーブルへ移動
+ * - テーブル間の差が2以上 → 多い方から少ない方へ1人移動
+ * ハンド終了後（checkEliminations後）に呼ぶ
+ */
+function balanceTables(tournamentId) {
+  const t = tournaments.get(tournamentId);
+  if (!t || t.status !== 'running') return;
+  if (t.tableIds.length <= 1) return;
+
+  const { getOrCreateRoom: getRoom, leaveRoom: lr, joinRoom: jr } = require('../poker/gameManager');
+  const { isTournamentBotId, moveBot } = require('./tournamentBotManager');
+
+  const MAX_PER_TABLE = 6;
+
+  // --- ヘルパー: 1テーブルを解体して全プレイヤーを他テーブルへ移動 ---
+  const _dissolveTable = (tid) => {
+    const room = getRoom(tid);
+    if (!room) { t.tableIds = t.tableIds.filter(id => id !== tid); return; }
+
+    for (const p of [...room.players]) {
+      // 移動先: 現テーブル以外で最も人数が少ないテーブル（毎回再計算）
+      const dest = t.tableIds
+        .filter(id => id !== tid)
+        .map(id => {
+          const r = getRoom(id);
+          return { id, cnt: (r?.players.length ?? 0) + (r?.pendingPlayers.length ?? 0) };
+        })
+        .sort((a, b) => a.cnt - b.cnt)[0];
+      if (!dest) continue;
+
+      console.log(`[TM] balance: dissolve-move ${p.name} ${tid.slice(-8)} → ${dest.id.slice(-8)}`);
+      const chips = p.chips;
+      const name  = p.name;
+      const accId = p.accountId ?? p.id;
+      if (_io) _io.to(tid).emit('t:playerLeft', { playerName: name });
+      lr(p.id);
+      jr(dest.id, p.id, name, { existingChips: chips, accountId: accId });
+      if (isTournamentBotId(p.id)) moveBot(p.id, tid, dest.id);
+      if (_io) {
+        const sock = _io.sockets.sockets.get(p.id);
+        if (sock) {
+          sock.emit('t:tableTransfer', { fromTableId: tid, toTableId: dest.id });
+          sock.leave(tid);
+          sock.join(dest.id);
+          // pendingPlayersに入った場合（dest.id進行中テーブル）は待機通知を送る
+          const destRoom = getRoom(dest.id);
+          const isPending = destRoom?.pendingPlayers?.some(pp => pp.id === p.id);
+          if (isPending) {
+            sock.emit('t:pendingTableTransfer', {
+              tableId: dest.id,
+              message: '次のハンドから参加します',
+            });
+          }
+        }
+        _io.to(dest.id).emit('t:playerArrived', { playerName: name });
+      }
+    }
+    t.tableIds = t.tableIds.filter(id => id !== tid);
+    roomToTournament.delete(tid);
+    console.log(`[TM] balance: dissolved ${tid.slice(-8)}, tables left: ${t.tableIds.length}`);
+  };
+
+  // --- フェーズ1: テーブル数の最適化（過剰なテーブルを解消）---
+  // 必要テーブル数 = ceil(totalRemaining / MAX_PER_TABLE)
+  // 現在のテーブル数がそれより多ければ最小テーブルを解体して統合
+  for (let pass = 0; pass < 20; pass++) {
+    if (t.tableIds.length <= 1) break;
+    const totalRemaining = _countRemaining(t);
+    const neededTables = Math.max(1, Math.ceil(totalRemaining / MAX_PER_TABLE));
+    if (t.tableIds.length <= neededTables) break;  // 最適なテーブル数に達した
+    // 最も人数が少ないテーブルを解体（最終的に1テーブルにする）
+    const smallest = t.tableIds
+      .map(tid => {
+        const r = getRoom(tid);
+        return { tid, cnt: (r?.players.length ?? 0) + (r?.pendingPlayers.length ?? 0) };
+      })
+      .sort((a, b) => a.cnt - b.cnt)[0];
+    if (!smallest) break;
+    _dissolveTable(smallest.tid);
+  }
+
+  // 統合直後に残ったテーブルが waiting なら autoStart
+  if (t.tableIds.length === 1 && _io && _tryAutoStartFn) {
+    const singleTid = t.tableIds[0];
+    const { canAutoStart } = require('../poker/gameManager');
+    if (canAutoStart(singleTid)) {
+      console.log(`[TM] balance: kickstart final table ${singleTid.slice(-8)}`);
+      setTimeout(() => _tryAutoStartFn(_io, singleTid), 500);
+    }
+  }
+
+  if (t.tableIds.length <= 1) return;
+
+  // フェーズ1終了後の「必要テーブル数」を再計算
+  // これより少ないテーブルには統合しない（過剰な統合防止）
+  const neededTablesAfterPhase1 = Math.max(1, Math.ceil(_countRemaining(t) / MAX_PER_TABLE));
+
+  // --- フェーズ2: 1人以下のテーブルを解体 ---
+  // ただし現在のテーブル数 > neededTables の場合のみ解体（必要数を下回らない）
+  // counts はループ内で毎回再計算（stale-counts バグ防止）
+  for (let pass = 0; pass < 20; pass++) {
+    if (t.tableIds.length <= 1) break;
+    if (t.tableIds.length <= neededTablesAfterPhase1) break;  // 必要数に達したら停止
+    const counts = t.tableIds.map(tid => {
+      const r = getRoom(tid);
+      return { tid, count: (r?.players.length ?? 0) + (r?.pendingPlayers.length ?? 0) };
+    });
+    const toDissolve = counts.find(x => x.count <= 1);
+    if (!toDissolve) break;
+    _dissolveTable(toDissolve.tid);
+  }
+
+  if (t.tableIds.length <= 1) return;
+
+  // --- フェーズ2.5: 2人テーブルを解消（他テーブルに余裕があれば統合） ---
+  // テーブルが2以上あり、かつ現在のテーブル数 > neededTables の場合のみ統合
+  for (let pass = 0; pass < 10; pass++) {
+    if (t.tableIds.length <= 1) break;
+    if (t.tableIds.length <= neededTablesAfterPhase1) break;  // 必要数に達したら停止
+    const allCounts = t.tableIds.map(tid => {
+      const r = getRoom(tid);
+      return { tid, count: (r?.players.length ?? 0) + (r?.pendingPlayers.length ?? 0) };
+    });
+    const twoPersonTable = allCounts.find(x => x.count <= 2);
+    if (!twoPersonTable) break;
+    // 統合先テーブルに余裕があるか確認（MAX_PER_TABLE未満）
+    const hasDest = allCounts.some(x => x.tid !== twoPersonTable.tid && x.count + twoPersonTable.count <= MAX_PER_TABLE);
+    if (!hasDest) {
+      // 統合できない場合: 最大テーブルから最小テーブルへ逆方向移動して均等化
+      // 例: 6+2 → 5+3、6+2+2 → 5+2+3 のように大きいテーブルから1人移動
+      const sortedBig = allCounts.filter(x => x.tid !== twoPersonTable.tid).sort((a,b) => b.count - a.count);
+      const srcTable = sortedBig[0]; // 最も人数が多いテーブルを移動元に
+      if (srcTable && srcTable.count > twoPersonTable.count + 1) {
+        const roomSrc = getRoom(srcTable.tid);
+        if (roomSrc?.phase === 'waiting' || roomSrc?.phase === 'showdown') {
+          const candidate = roomSrc.players.find(p => p.folded || p.sittingOut) ?? roomSrc.players[0];
+          if (candidate) {
+            const chips = candidate.chips;
+            const name  = candidate.name;
+            const accId = candidate.accountId ?? candidate.id;
+            if (_io) _io.to(srcTable.tid).emit('t:playerLeft', { playerName: name });
+            const { leaveRoom: lr, joinRoom: jr } = require('../poker/gameManager');
+            lr(candidate.id);
+            jr(twoPersonTable.tid, candidate.id, name, { existingChips: chips, accountId: accId });
+            const { isTournamentBotId, moveBot: moveBotFn } = require('./tournamentBotManager');
+            if (isTournamentBotId(candidate.id)) moveBotFn(candidate.id, srcTable.tid, twoPersonTable.tid);
+            if (_io) {
+              const sock = _io.sockets.sockets.get(candidate.id);
+              if (sock) { sock.emit('t:tableTransfer', { fromTableId: srcTable.tid, toTableId: twoPersonTable.tid }); sock.leave(srcTable.tid); sock.join(twoPersonTable.tid); }
+              _io.to(twoPersonTable.tid).emit('t:playerArrived', { playerName: name });
+            }
+            console.log(`[TM] balance: dissolve-move ${name} ${srcTable.tid.slice(-8)} → ${twoPersonTable.tid.slice(-8)}`);
+            continue; // 再チェック
+          }
+        }
+      }
+      break;
+    }
+    _dissolveTable(twoPersonTable.tid);
+  }
+
+  if (t.tableIds.length <= 1) return;
+
+  // 差が2以上あれば均等になるまでループで移動
+  const movedTables = new Set();
+  for (let pass = 0; pass < 10; pass++) {  // 最大10回で安全上限
+    const refreshed = t.tableIds.map(tid => ({ tid, count: (getRoom(tid)?.players ?? []).length }));
+    const maxT = refreshed.reduce((a, b) => a.count > b.count ? a : b);
+    const minT = refreshed.reduce((a, b) => a.count < b.count ? a : b);
+    if (maxT.count - minT.count < 2) break;  // 均等になったら終了
+
+    const roomMax = getRoom(maxT.tid);
+    if (!roomMax || roomMax.players.length === 0) break;
+    // showdown または waiting 以外（ゲーム進行中）のテーブルからは移動しない
+    // 次のshowdown後に再度balanceTablesが呼ばれるのを待つ
+    if (roomMax.phase !== 'waiting' && roomMax.phase !== 'showdown') break;
+    // ゲーム中でないプレイヤーを優先して移動（folded or sittingOut）
+    const candidate = roomMax.players.find(p => p.folded || p.sittingOut) ?? roomMax.players[0];
+    if (!candidate) break;
+
+    console.log(`[TM] balance: move ${candidate.name} ${maxT.tid.slice(-8)}(${maxT.count}) → ${minT.tid.slice(-8)}(${minT.count})`);
+    const chips = candidate.chips;
+    const name  = candidate.name;
+    const accId = candidate.accountId ?? candidate.id;
+    if (_io) _io.to(maxT.tid).emit('t:playerLeft', { playerName: name });
+    lr(candidate.id);
+    jr(minT.tid, candidate.id, name, { existingChips: chips, accountId: accId });
+    if (isTournamentBotId(candidate.id)) moveBot(candidate.id, maxT.tid, minT.tid);
+
+    if (_io) {
+      const sock = _io.sockets.sockets.get(candidate.id);
+      if (sock) {
+        sock.emit('t:tableTransfer', { fromTableId: maxT.tid, toTableId: minT.tid });
+        sock.leave(maxT.tid);
+        sock.join(minT.tid);
+        // join後に確実にgameStateが届くよう500ms後に再broadcast
+        setTimeout(() => broadcastTableState(minT.tid), 500);
+      }
+      _io.to(minT.tid).emit('t:playerArrived', { playerName: name });
+    }
+    movedTables.add(maxT.tid);
+    movedTables.add(minT.tid);
+  }
+  for (const tid of movedTables) broadcastTableState(tid);
+
+  // 差分移動後に移動先テーブルが waiting 状態なら autoStart をトリガー
+  if (_io && _tryAutoStartFn) {
+    for (const tid of movedTables) {
+      const r = getRoom(tid);
+      if (r && (r.phase === 'waiting' || r.players.length + r.pendingPlayers.length >= 2 && r.phase === 'showdown')) {
+        const { canAutoStart } = require('../poker/gameManager');
+        if (canAutoStart(tid)) {
+          console.log(`[TM] balance: kickstart ${tid.slice(-8)} after move`);
+          _tryAutoStartFn(_io, tid);
+        }
+      }
+    }
+  }
+}
+
+// ===== autoStart inject =====
+let _tryAutoStartFn = null;
+let _scheduleAutoStartFn = null;
+
+function injectAutoStartHandlers(tryFn, scheduleFn) {
+  _tryAutoStartFn = tryFn;
+  _scheduleAutoStartFn = scheduleFn;
+}
+
+// ===== テーブル動的追加 =====
+/**
+ * 実行中のトーナメントに新しい空テーブルを追加する
+ * BOT追加時にテーブルが足りない場合に使う
+ * @returns {string} 新テーブルのID
+ */
+/**
+ * BOT追加時にtotalPlayersをインクリメントする
+ * startTournament後にBOTを追加した場合、totalPlayersに含まれないため
+ */
+function incrementTotalPlayers(tournamentId, count = 1) {
+  const t = tournaments.get(tournamentId);
+  if (!t) return;
+  t.totalPlayers += count;
+}
+
+function addTableToTournament(tournamentId) {
+  const t = tournaments.get(tournamentId);
+  if (!t || t.status !== 'running') return null;
+
+  const tableId = _createTable(t, []);
+  // ゲーム開始（waiting状態で待機）
+  const onTimeout = _makeTimeoutHandler ? _makeTimeoutHandler(tableId) : null;
+  startGame(tableId, onTimeout);
+  console.log(`[TM] addTable: ${tableId} → ${tournamentId}`);
+
+  // 既存テーブルへブラインド通知
+  _broadcastBlindUpdate(t);
+  return tableId;
+}
+
 module.exports = {
+  injectAutoStartHandlers,
   init,
   startTournament,
   applyPendingLevelUp,
   checkEliminations,
+  balanceTables,
+  addTableToTournament,
+  incrementTotalPlayers,
   handleForcedLeave,
   isTournamentTable,
   getTournamentByTable,

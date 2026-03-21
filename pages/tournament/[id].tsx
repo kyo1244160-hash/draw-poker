@@ -25,6 +25,8 @@ interface Tournament {
   blind_levels:        unknown;
   blind_description:   string | null;
   is_test:             boolean;
+  late_reg_minutes:    number | null;
+  late_reg_open:       boolean | null;  // メモリ上のlateRegOpen（running時のみ）
 }
 
 interface Entry {
@@ -40,6 +42,12 @@ const MODE_LABEL: Record<string, string> = {
 
 const STATUS_LABEL: Record<string, string> = {
   registering: '参加受付中', running: '進行中', finished: '終了', cancelled: 'キャンセル',
+};
+// running + lateRegOpen=true の場合は「レイトレジスト受付中」と表示
+const getTournamentStatusLabel = (t: Tournament | null) => {
+  if (!t) return '';
+  if (t.status === 'running' && (t.late_reg_minutes ?? 0) > 0 && t.late_reg_open !== false) return 'レイトレジスト受付中';
+  return STATUS_LABEL[t.status] ?? t.status;
 };
 
 export default function TournamentLobby() {
@@ -69,6 +77,15 @@ export default function TournamentLobby() {
       // すでに running なら即座に draw ページへ遷移（開始通知を受け取れなかった場合の対策）
       if (data.tournament?.status === 'running' && data.registered) {
         router.replace(`/tournament/${id}/draw`);
+        return;
+      }
+      // finished/cancelled なら結果ページへリダイレクト
+      if (data.tournament?.status === 'finished') {
+        router.replace(`/tournament/${id}/result`);
+        return;
+      }
+      if (data.tournament?.status === 'cancelled') {
+        router.replace('/');
         return;
       }
     } catch {
@@ -117,6 +134,10 @@ export default function TournamentLobby() {
     setRegistered(true);
     setActionMsg('✅ 参加登録しました');
     setBusy(false);
+    // レイトレジスト: 登録後すぐにdrawページへ遷移
+    if (tournament?.status === 'running') {
+      setTimeout(() => router.replace(`/tournament/${id}/draw`), 800);
+    }
   };
 
   // ===== キャンセル =====
@@ -148,10 +169,12 @@ export default function TournamentLobby() {
     );
   }
 
-  const isRegistering = tournament.status === 'registering';
-  const isFull        = tournament.max_players !== null && entries.length >= tournament.max_players;
-  const canRegister   = isRegistering && !registered && !isFull && !!session?.user?.accountId;
-  const canCancel     = isRegistering && registered;
+  const isRegistering  = tournament.status === 'registering';
+  // レイトレジスト中: running + late_reg_minutes > 0 + サーバー上でlateRegOpen=true
+  const isLateReg      = tournament.status === 'running' && (tournament.late_reg_minutes ?? 0) > 0 && tournament.late_reg_open !== false;
+  const isFull         = tournament.max_players !== null && entries.length >= tournament.max_players;
+  const canRegister    = (isRegistering || isLateReg) && !registered && !isFull && !!session?.user?.accountId;
+  const canCancel      = isRegistering && registered;
 
   return (
     <>
@@ -168,7 +191,7 @@ export default function TournamentLobby() {
           <section style={S.card}>
             <div style={S.titleRow}>
               <h1 style={S.title}>{tournament.name}</h1>
-              <span style={statusStyle(tournament.status)}>{STATUS_LABEL[tournament.status] ?? tournament.status}</span>
+              <span style={statusStyle(tournament.status)}>{getTournamentStatusLabel(tournament)}</span>
             </div>
 
             <div style={S.infoGrid}>
@@ -178,6 +201,9 @@ export default function TournamentLobby() {
               <InfoItem label="参加人数"      value={tournament.max_players ? `${entries.length} / ${tournament.max_players}人` : `${entries.length}人（無制限）`} />
               {tournament.blind_schedule_name && (
                 <InfoItem label="ブラインド" value={tournament.blind_schedule_name} />
+              )}
+              {tournament.late_reg_minutes != null && tournament.late_reg_minutes > 0 && (
+                <InfoItem label="レイトレジスト" value={`開始後 ${tournament.late_reg_minutes} 分間`} />
               )}
             </div>
 

@@ -1,7 +1,45 @@
 import '../styles/globals.css';
 import type { AppProps } from 'next/app';
 import Head from 'next/head';
-import { SessionProvider } from 'next-auth/react';
+import { SessionProvider, useSession } from 'next-auth/react';
+import { useRouter } from 'next/router';
+import { useEffect } from 'react';
+import { socket, connectWithAuth } from '../socket';
+
+/** どのページにいても参加済みトーナメントの開始通知を受け取り自動遷移する */
+function TournamentStartWatcher() {
+  const { data: session } = useSession();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (!session?.user?.accountId) return;
+
+    // すでにdraw/spectateページにいる場合はここでの遷移は不要
+    const onTournamentStarting = async ({ tournamentId }: { tournamentId: string; tableId: string }) => {
+      const currentPath = window.location.pathname;
+      if (currentPath.includes('/draw') || currentPath.includes('/spectate')) return;
+
+      // 自分が登録済みか確認
+      try {
+        const res = await fetch(`/api/tournament/${tournamentId}/entry`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.registered) {
+          router.push(`/tournament/${tournamentId}/draw`);
+        }
+      } catch {
+        // 取得失敗は無視
+      }
+    };
+
+    socket.on('t:tournamentStarting', onTournamentStarting);
+    if (!socket.connected) connectWithAuth();
+
+    return () => { socket.off('t:tournamentStarting', onTournamentStarting); };
+  }, [session?.user?.accountId, router]);
+
+  return null;
+}
 
 export default function App({ Component, pageProps: { session, ...pageProps } }: AppProps) {
   return (
@@ -10,6 +48,7 @@ export default function App({ Component, pageProps: { session, ...pageProps } }:
         {/* スマホでのズーム防止 + viewport-fit=cover でノッチ対応 */}
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
       </Head>
+      <TournamentStartWatcher />
       <Component {...pageProps} />
     </SessionProvider>
   );

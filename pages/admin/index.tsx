@@ -44,13 +44,25 @@ interface TournamentResult {
   finalChips: number;
 }
 
+interface BlindScheduleLevel {
+  level: number | null;
+  sb: number;
+  bb: number;
+  smallBet: number;
+  bigBet: number;
+  durationMinutes: number;
+  isBreak?: boolean;
+  breakLabel?: string;
+}
+
 interface BlindSchedule {
   id: string;
   name: string;
   description: string | null;
+  levels: BlindScheduleLevel[];
 }
 
-type Tab = 'users' | 'tournaments' | 'bots';
+type Tab = 'users' | 'tournaments' | 'bots' | 'blinds';
 
 export default function AdminPage() {
   const { data: session, status } = useSession();
@@ -63,6 +75,16 @@ export default function AdminPage() {
   const [loading,       setLoading]       = useState(true);
   const [error,         setError]         = useState('');
 
+  // ブラインド設定タブ
+  const [blindSchedules,    setBlindSchedules]    = useState<BlindSchedule[]>([]);
+  const [blindsLoading,     setBlindsLoading]     = useState(false);
+  const [editingSchedule,   setEditingSchedule]   = useState<BlindSchedule | null>(null);
+  const [blindMsg,          setBlindMsg]          = useState('');
+  const defaultLevel = (): BlindScheduleLevel => ({ level: 1, sb: 5, bb: 10, smallBet: 10, bigBet: 20, durationMinutes: 15 });
+  const [newSchedule, setNewSchedule] = useState<{ name: string; description: string | null; levels: BlindScheduleLevel[] }>({
+    name: '', description: '', levels: [defaultLevel()],
+  });
+
   // トーナメント作成フォーム
   const [form, setForm] = useState({
     name:             '',
@@ -72,6 +94,7 @@ export default function AdminPage() {
     maxPlayers:       '',
     blindScheduleId:  '',
     isTest:           false,
+    lateRegMinutes:   0,
   });
   // 結果登録
   const [resultTournamentId, setResultTournamentId] = useState('');
@@ -182,6 +205,60 @@ export default function AdminPage() {
   // ボットタブ選択時にリストを更新
   useEffect(() => { if (tab === 'bots') fetchBots(); }, [tab]);
 
+  const fetchBlindSchedules = async () => {
+    setBlindsLoading(true);
+    try {
+      const r = await fetch('/api/admin/tournaments?type=schedules');
+      const d = await r.json();
+      // levelsはDBからunknown/objectで返るためBlindScheduleLevel[]にキャスト
+      const parsed = (d.schedules ?? []).map((s: BlindSchedule) => ({
+        ...s,
+        levels: Array.isArray(s.levels) ? s.levels as BlindScheduleLevel[] : [],
+      }));
+      setBlindSchedules(parsed);
+    } catch { setBlindSchedules([]); }
+    finally { setBlindsLoading(false); }
+  };
+  useEffect(() => { if (tab === 'blinds') fetchBlindSchedules(); }, [tab]);
+
+  const handleSaveSchedule = async (sched: { id?: string; name: string; description: string | null; levels: BlindScheduleLevel[] }) => {
+    setBlindMsg('');
+    try {
+      const method = sched.id ? 'PUT' : 'POST';
+      const url = sched.id
+        ? `/api/admin/tournaments?type=schedules&id=${sched.id}`
+        : '/api/admin/tournaments?type=schedules';
+      const r = await authFetch(url, {
+        method,
+        body: JSON.stringify({ name: sched.name, description: sched.description, levels: sched.levels }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error ?? 'エラー');
+      setBlindMsg(sched.id ? '✅ 更新しました' : '✅ 作成しました');
+      setEditingSchedule(null);
+      setNewSchedule({ name: '', description: '', levels: [defaultLevel()] });
+      fetchBlindSchedules();
+    } catch (e: unknown) {
+      setBlindMsg('❌ ' + (e instanceof Error ? e.message : String(e)));
+    }
+  };
+
+  const handleDeleteSchedule = async (id: string) => {
+    setDeletingBlind(true);
+    try {
+      const r = await authFetch(`/api/admin/tournaments?type=schedules&id=${id}`, { method: 'DELETE' });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error ?? '削除失敗');
+      setBlindMsg('✅ 削除しました');
+      setDeleteBlindConfirmId(null);
+      fetchBlindSchedules();
+    } catch (e: unknown) {
+      setBlindMsg('❌ ' + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setDeletingBlind(false);
+    }
+  };
+
   // トーナメントBOT管理
   interface TBotTable { tableId: string; playerCount: number; bots: { id: string; name: string; chips: number; tableId: string }[]; }
   const [tBotPanel,     setTBotPanel]    = useState<string | null>(null); // 展開中のtournamentId
@@ -220,6 +297,20 @@ export default function AdminPage() {
     } catch { setTBotMsg('❌ エラー'); }
   };
 
+  const handlePreAddBot = async (tournamentId: string) => {
+    setTBotMsg('');
+    try {
+      const res = await authFetch(`/api/admin/monitor/tournament-bots/${tournamentId}/pre-add`, {
+        method: 'POST', body: JSON.stringify({ count: tBotCount }),
+      });
+      const d = await res.json();
+      if (res.ok) {
+        setTBotMsg(`✅ BOT ${d.added.length}体 事前予約 → 合計 ${d.totalBots}体（開始時に配置）`);
+      }
+      else setTBotMsg(`❌ ${d.error}: ${d.hint ?? ''}`);
+    } catch { setTBotMsg('❌ エラー'); }
+  };
+
   const handleRemoveTBot = async (tournamentId: string, tableId: string, botId?: string) => {
     const body: Record<string, unknown> = { tableId };
     if (botId) body.botId = botId;
@@ -245,6 +336,8 @@ export default function AdminPage() {
   // トーナメント削除
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [deleteBlindConfirmId, setDeleteBlindConfirmId] = useState<string | null>(null);
+  const [deletingBlind, setDeletingBlind] = useState(false);
   const handleDeleteTournament = async (tournamentId: string) => {
     setDeleting(true);
     try {
@@ -312,13 +405,14 @@ export default function AdminPage() {
           maxPlayers:       form.maxPlayers ? Number(form.maxPlayers) : undefined,
           blindScheduleId:  form.blindScheduleId || undefined,
           isTest:           form.isTest,
+          lateRegMinutes:   form.lateRegMinutes,
         }),
       });
       const data = await res.json();
       if (!res.ok) { setCreateMsg(data.error ?? '作成失敗'); return; }
       setTournaments((prev) => [data.tournament, ...prev]);
       setCreateMsg('✅ トーナメントを作成しました');
-      setForm({ name: '', mode: '27', scheduledStartAt: '', startingChips: 5000, maxPlayers: '', blindScheduleId: '', isTest: false });
+      setForm({ name: '', mode: '27', scheduledStartAt: '', startingChips: 5000, maxPlayers: '', blindScheduleId: '', isTest: false, lateRegMinutes: 0 });
     } catch {
       setCreateMsg('通信エラーが発生しました');
     } finally {
@@ -406,11 +500,12 @@ export default function AdminPage() {
 
         {/* タブ */}
         <div style={S.tabs}>
-          {(['users', 'tournaments', 'bots'] as Tab[]).map((t) => (
+          {(['users', 'tournaments', 'bots', 'blinds'] as Tab[]).map((t) => (
             <button key={t} style={{ ...S.tab, ...(tab === t ? S.tabActive : {}) }} onClick={() => setTab(t)}>
               {t === 'users' ? `👥 ユーザー (${users.length})`
                 : t === 'tournaments' ? `🏆 トーナメント (${tournaments.length})`
-                : `🤖 ボット (${bots.length})`}
+                : t === 'bots' ? `🤖 ボット (${bots.length})`
+                : `🎚 ブラインド設定`}
             </button>
           ))}
         </div>
@@ -487,6 +582,13 @@ export default function AdminPage() {
                 <label style={{ ...S.label, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                   <input type="checkbox" checked={form.isTest} onChange={(e) => setForm((f) => ({ ...f, isTest: e.target.checked }))} />
                   テスト用トーナメント
+                </label>
+                <label style={S.label}>
+                  レイトレジスト時間（分）
+                  <span style={{ color: 'var(--cream-dim)', fontSize: 10, marginLeft: 4, fontWeight: 'normal' }}>※0 = ブラインドレベルで管理</span>
+                  <input style={S.input} type="number" value={form.lateRegMinutes} min={0} max={120}
+                    placeholder="0（無効）"
+                    onChange={(e) => setForm((f) => ({ ...f, lateRegMinutes: Number(e.target.value) }))} />
                 </label>
               </div>
               {createMsg && <p style={{ color: createMsg.startsWith('✅') ? '#88ee88' : '#ee8888', fontSize: 14, marginTop: 8 }}>{createMsg}</p>}
@@ -580,7 +682,7 @@ export default function AdminPage() {
                               disabled={startingId === t.id}
                             >{startingId === t.id ? '起動中...' : '▶ 開始'}</button>
                           )}
-                          {t.status === 'running' && (
+                          {(t.status === 'running' || t.status === 'registering') && (
                             <button
                               style={{ fontSize: 11, background: tBotPanel === t.id ? 'rgba(201,168,76,0.3)' : 'rgba(201,168,76,0.1)', border: '1px solid var(--gold-dim)', color: 'var(--gold)', borderRadius: 4, padding: '3px 8px', cursor: 'pointer', whiteSpace: 'nowrap' as const }}
                               onClick={() => toggleTBotPanel(t.id)}
@@ -627,10 +729,17 @@ export default function AdminPage() {
                               onChange={(e) => setTBotCount(Number(e.target.value))}
                             />
                             <span style={{ fontSize: 12, color: 'var(--cream-dim)' }}>体</span>
-                            <button
-                              style={{ ...S.createBtn, padding: '5px 14px', fontSize: 12 }}
-                              onClick={() => handleAddTBot(t.id)}
-                            >追加</button>
+                            {t.status === 'running'
+                              ? <button
+                                  style={{ ...S.createBtn, padding: '5px 14px', fontSize: 12 }}
+                                  onClick={() => handleAddTBot(t.id)}
+                                >追加</button>
+                              : <button
+                                  style={{ ...S.createBtn, padding: '5px 14px', fontSize: 12, background: 'rgba(80,140,200,0.3)', borderColor: '#4af' }}
+                                  onClick={() => handlePreAddBot(t.id)}
+                                  title="開始前にBOTを事前登録します（開始時にテーブルに配置されます）"
+                                >予約追加</button>
+                            }
                             <button
                               style={{ fontSize: 11, background: 'transparent', border: '1px solid var(--gold-dim)', color: 'var(--cream-dim)', borderRadius: 4, padding: '4px 10px', cursor: 'pointer' }}
                               onClick={() => fetchTBots(t.id)}
@@ -875,6 +984,69 @@ export default function AdminPage() {
             )}
           </div>
         )}
+
+        {/* ===== ブラインド設定 ===== */}
+        {tab === 'blinds' && (
+          <div style={S.section}>
+            {blindMsg && (
+              <div style={{ padding: '10px 16px', background: blindMsg.startsWith('✅') ? 'rgba(60,180,60,0.15)' : 'rgba(180,60,60,0.15)', border: `1px solid ${blindMsg.startsWith('✅') ? '#6f6' : '#f88'}`, borderRadius: 6, color: blindMsg.startsWith('✅') ? '#6f6' : '#f88', fontFamily: 'var(--font-title)', fontSize: 13 }}>
+                {blindMsg}
+              </div>
+            )}
+
+            {/* 既存スケジュール一覧 */}
+            <div style={S.card}>
+              <p style={S.cardTitle}>📋 ブラインドスケジュール一覧</p>
+              {blindsLoading ? (
+                <p style={{ color: 'var(--cream-dim)', fontSize: 13 }}>読み込み中...</p>
+              ) : blindSchedules.length === 0 ? (
+                <p style={{ color: 'var(--cream-dim)', fontSize: 13 }}>スケジュールがありません</p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column' as const, gap: 12 }}>
+                  {blindSchedules.map(s => (
+                    <div key={s.id} style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid var(--gold-dim)', borderRadius: 8, padding: '16px 20px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+                        <span style={{ fontFamily: 'var(--font-title)', fontSize: 15, color: 'var(--gold)', flex: 1 }}>{s.name}</span>
+                        <button style={{ fontSize: 12, background: 'rgba(100,160,255,0.1)', border: '1px solid #4af', color: '#9cf', borderRadius: 4, padding: '3px 10px', cursor: 'pointer' }}
+                          onClick={() => setEditingSchedule(editingSchedule?.id === s.id ? null : s)}>
+                          {editingSchedule?.id === s.id ? '閉じる' : '✏️ 編集'}
+                        </button>
+                        <button style={{ fontSize: 12, background: 'rgba(200,60,60,0.1)', border: '1px solid #f66', color: '#f99', borderRadius: 4, padding: '3px 10px', cursor: 'pointer' }}
+                          onClick={() => setDeleteBlindConfirmId(s.id)}>
+                          🗑 削除
+                        </button>
+                      </div>
+                      {s.description && <p style={{ fontSize: 12, color: 'var(--cream-dim)', margin: '0 0 8px' }}>{s.description}</p>}
+                      <BlindLevelsTable levels={s.levels ?? []} />
+                      {editingSchedule?.id === s.id && (
+                        <BlindScheduleEditor
+                          value={editingSchedule!}
+                          onChange={(v) => setEditingSchedule(v as BlindSchedule)}
+                          onSave={() => handleSaveSchedule(editingSchedule!)}
+                          onCancel={() => setEditingSchedule(null)}
+                          isEdit
+                        />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* 新規スケジュール作成 */}
+            <div style={S.card}>
+              <p style={S.cardTitle}>➕ 新しいスケジュールを作成</p>
+              <BlindScheduleEditor
+                value={newSchedule}
+                onChange={setNewSchedule}
+                onSave={() => handleSaveSchedule(newSchedule)}
+                onCancel={() => setNewSchedule({ name: '', description: '', levels: [defaultLevel()] })}
+                isEdit={false}
+              />
+            </div>
+          </div>
+        )}
+
       </div>
 
       {/* ===== トーナメント削除確認モーダル ===== */}
@@ -907,6 +1079,37 @@ export default function AdminPage() {
           </div>
         </div>
       )}
+
+      {/* ===== ブラインドスケジュール削除確認モーダル ===== */}
+      {deleteBlindConfirmId && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', backdropFilter: 'blur(3px)' }}
+          onClick={() => setDeleteBlindConfirmId(null)}>
+          <div style={{ background: 'linear-gradient(160deg,#0e1a0e,#061006)', border: '1px solid var(--gold-dim)', borderRadius: 14, padding: '36px 40px', maxWidth: 400, width: '90%', textAlign: 'center', boxShadow: '0 8px 48px rgba(0,0,0,0.8)' }}
+            onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontSize: 36, marginBottom: 12 }}>🗑</div>
+            <h2 style={{ fontFamily: 'var(--font-title)', fontSize: 18, color: 'var(--gold)', letterSpacing: '0.08em', margin: '0 0 16px' }}>
+              ブラインドスケジュールを削除
+            </h2>
+            <p style={{ fontFamily: 'var(--font-body)', fontSize: 15, color: 'var(--cream)', lineHeight: 1.7, margin: '0 0 8px' }}>
+              <strong style={{ color: 'var(--gold)' }}>{blindSchedules.find(s => s.id === deleteBlindConfirmId)?.name}</strong> を削除しますか？
+            </p>
+            <p style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: '#ee8888', margin: '0 0 28px' }}>
+              このスケジュールを使用しているトーナメントには影響しません。この操作は取り消せません。
+            </p>
+            <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
+              <button
+                style={{ background: 'transparent', border: '1px solid var(--gold-dim)', color: 'var(--cream-dim)', borderRadius: 6, padding: '10px 24px', fontSize: 13, cursor: 'pointer', fontFamily: 'var(--font-title)' }}
+                onClick={() => setDeleteBlindConfirmId(null)}
+              >キャンセル</button>
+              <button
+                style={{ background: 'linear-gradient(135deg,#8b1a1a,#5a1010)', border: '1px solid #cc4444', color: '#ffcccc', borderRadius: 6, padding: '10px 24px', fontSize: 13, cursor: deletingBlind ? 'wait' : 'pointer', fontFamily: 'var(--font-title)', fontWeight: 700 }}
+                onClick={() => handleDeleteSchedule(deleteBlindConfirmId)}
+                disabled={deletingBlind}
+              >{deletingBlind ? '削除中...' : '削除する'}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -934,6 +1137,152 @@ const S: Record<string, React.CSSProperties> = {
   td:         { padding: '10px 14px', color: 'var(--cream)', verticalAlign: 'middle' as const },
   badge:      { fontFamily: 'var(--font-title)', fontSize: 11, letterSpacing: '0.06em' },
 };
+
+// ===== ブラインド設定サブコンポーネント =====
+
+function BlindLevelsTable({ levels }: { levels: BlindScheduleLevel[] }) {
+  if (!levels || levels.length === 0) return null;
+  return (
+    <div style={{ overflowX: 'auto' as const, marginTop: 4 }}>
+      <table style={{ borderCollapse: 'collapse' as const, fontSize: 12, width: '100%' }}>
+        <thead>
+          <tr style={{ borderBottom: '1px solid rgba(201,168,76,0.3)' }}>
+            {['Lv', 'SB', 'BB', 'SBet', 'BBet', '分', ''].map(h => (
+              <th key={h} style={{ padding: '4px 10px', fontFamily: 'var(--font-title)', color: 'var(--gold)', textAlign: 'center' as const, fontSize: 11 }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {levels.map((lv, i) => (
+            <tr key={i} style={{ background: lv.isBreak ? 'rgba(80,120,200,0.08)' : undefined, borderBottom: '1px solid rgba(201,168,76,0.08)' }}>
+              <td style={{ padding: '3px 10px', color: lv.isBreak ? '#88aaff' : 'var(--gold)', textAlign: 'center' as const }}>{lv.isBreak ? '休憩' : `L${lv.level}`}</td>
+              <td style={{ padding: '3px 10px', color: 'var(--cream)', textAlign: 'right' as const }}>{lv.isBreak ? '—' : lv.sb}</td>
+              <td style={{ padding: '3px 10px', color: 'var(--cream)', textAlign: 'right' as const }}>{lv.isBreak ? '—' : lv.bb}</td>
+              <td style={{ padding: '3px 10px', color: 'var(--cream)', textAlign: 'right' as const }}>{lv.isBreak ? '—' : lv.smallBet}</td>
+              <td style={{ padding: '3px 10px', color: 'var(--cream)', textAlign: 'right' as const }}>{lv.isBreak ? '—' : lv.bigBet}</td>
+              <td style={{ padding: '3px 10px', color: lv.durationMinutes === 0 ? 'var(--cream-dim)' : 'var(--cream)', textAlign: 'center' as const }}>{lv.durationMinutes === 0 ? '∞' : lv.isBreak ? `${lv.durationMinutes}m` : lv.durationMinutes}</td>
+              <td style={{ padding: '3px 10px', color: '#88aaff', fontSize: 11 }}>{lv.isBreak ? (lv.breakLabel ?? 'Break') : ''}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+interface ScheduleEditValue { id?: string; name: string; description: string | null; levels: BlindScheduleLevel[] }
+function BlindScheduleEditor({ value, onChange, onSave, onCancel, isEdit }: {
+  value: ScheduleEditValue;
+  onChange: (v: ScheduleEditValue) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  isEdit: boolean;
+}) {
+  const inp: React.CSSProperties = { background: 'rgba(0,0,0,0.4)', border: '1px solid var(--gold-dim)', borderRadius: 4, color: 'var(--cream)', fontSize: 13, padding: '6px 8px', fontFamily: 'var(--font-body)', outline: 'none', width: '100%', boxSizing: 'border-box' as const };
+  const numInp: React.CSSProperties = { ...inp, width: 70, textAlign: 'right' as const };
+
+  const updateLevel = (i: number, key: keyof BlindScheduleLevel, val: number | boolean | string | null) => {
+    const levels = value.levels.map((lv, idx) => idx === i ? { ...lv, [key]: val } : lv);
+    onChange({ ...value, levels });
+  };
+
+  const addLevel = (isBreak = false) => {
+    const last = value.levels.filter(l => !l.isBreak).pop();
+    const nextLv = (last?.level ?? 0) + 1;
+    const newLv: BlindScheduleLevel = isBreak
+      ? { level: null, sb: 0, bb: 0, smallBet: 0, bigBet: 0, durationMinutes: 15, isBreak: true, breakLabel: 'Break' }
+      : { level: nextLv, sb: (last?.bb ?? 0) * 2 || 10, bb: (last?.bb ?? 0) * 4 || 20, smallBet: (last?.bigBet ?? 0) * 2 || 20, bigBet: (last?.bigBet ?? 0) * 4 || 40, durationMinutes: 15 };
+    onChange({ ...value, levels: [...value.levels, newLv] });
+  };
+
+  const removeLevel = (i: number) => onChange({ ...value, levels: value.levels.filter((_, idx) => idx !== i) });
+  const moveLevel = (i: number, dir: -1 | 1) => {
+    const j = i + dir;
+    if (j < 0 || j >= value.levels.length) return;
+    const levels = [...value.levels];
+    [levels[i], levels[j]] = [levels[j], levels[i]];
+    onChange({ ...value, levels });
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column' as const, gap: 12, marginTop: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4, fontFamily: 'var(--font-title)', fontSize: 11, color: 'var(--gold-dim)' }}>
+          スケジュール名
+          <input style={inp} value={value.name} onChange={e => onChange({ ...value, name: e.target.value })} placeholder="例: スタンダード20分" />
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4, fontFamily: 'var(--font-title)', fontSize: 11, color: 'var(--gold-dim)' }}>
+          説明
+          <input style={inp} value={value.description ?? ''} onChange={e => onChange({ ...value, description: e.target.value })} placeholder="例: 20分ごとブラインドアップ" />
+        </label>
+      </div>
+
+      <div style={{ overflowX: 'auto' as const }}>
+        <table style={{ borderCollapse: 'collapse' as const, fontSize: 12, width: '100%', minWidth: 600 }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid rgba(201,168,76,0.3)' }}>
+              {['', 'Lv', 'SB', 'BB', 'SmallBet', 'BigBet', '分', '休憩', 'ラベル', ''].map((h, i) => (
+                <th key={i} style={{ padding: '4px 6px', fontFamily: 'var(--font-title)', color: 'var(--gold)', fontSize: 11, whiteSpace: 'nowrap' as const }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {value.levels.map((lv, i) => (
+              <tr key={i} style={{ borderBottom: '1px solid rgba(201,168,76,0.08)', background: lv.isBreak ? 'rgba(80,120,200,0.06)' : undefined }}>
+                <td style={{ padding: '3px 4px', whiteSpace: 'nowrap' as const }}>
+                  <button style={{ background: 'none', border: 'none', color: 'var(--cream-dim)', cursor: 'pointer', padding: '0 2px', fontSize: 12 }} onClick={() => moveLevel(i, -1)}>▲</button>
+                  <button style={{ background: 'none', border: 'none', color: 'var(--cream-dim)', cursor: 'pointer', padding: '0 2px', fontSize: 12 }} onClick={() => moveLevel(i, 1)}>▼</button>
+                </td>
+                <td style={{ padding: '3px 4px' }}>
+                  {lv.isBreak ? <span style={{ color: '#88aaff', fontSize: 11 }}>休憩</span>
+                    : <input style={{ ...numInp, width: 40 }} type="number" value={lv.level ?? ''} onChange={e => updateLevel(i, 'level', e.target.value === '' ? null : Number(e.target.value))} />}
+                </td>
+                {(['sb','bb','smallBet','bigBet'] as const).map(k => (
+                  <td key={k} style={{ padding: '3px 4px' }}>
+                    {lv.isBreak ? <span style={{ color: 'var(--cream-dim)' }}>—</span>
+                      : <input style={numInp} type="number" value={lv[k]} onChange={e => updateLevel(i, k, Number(e.target.value))} />}
+                  </td>
+                ))}
+                <td style={{ padding: '3px 4px' }}>
+                  <input style={numInp} type="number" value={lv.durationMinutes} onChange={e => updateLevel(i, 'durationMinutes', Number(e.target.value))} />
+                </td>
+                <td style={{ padding: '3px 4px', textAlign: 'center' as const }}>
+                  <input type="checkbox" checked={!!lv.isBreak} onChange={e => updateLevel(i, 'isBreak', e.target.checked)} />
+                </td>
+                <td style={{ padding: '3px 4px' }}>
+                  {lv.isBreak && <input style={{ ...inp, width: 90 }} value={lv.breakLabel ?? ''} onChange={e => updateLevel(i, 'breakLabel', e.target.value)} placeholder="Break" />}
+                </td>
+                <td style={{ padding: '3px 4px' }}>
+                  <button style={{ background: 'none', border: 'none', color: '#f88', cursor: 'pointer', fontSize: 14 }} onClick={() => removeLevel(i)}>✕</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' as const }}>
+        <button style={{ fontSize: 12, background: 'rgba(60,180,60,0.12)', border: '1px solid #6a6', color: '#8f8', borderRadius: 4, padding: '4px 12px', cursor: 'pointer' }} onClick={() => addLevel(false)}>
+          ＋ レベル追加
+        </button>
+        <button style={{ fontSize: 12, background: 'rgba(80,120,200,0.12)', border: '1px solid #66a', color: '#aaf', borderRadius: 4, padding: '4px 12px', cursor: 'pointer' }} onClick={() => addLevel(true)}>
+          ＋ 休憩追加
+        </button>
+      </div>
+
+      <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
+        <button style={{ background: 'linear-gradient(135deg, var(--gold), var(--gold-dim))', border: 'none', borderRadius: 6, color: '#1a1200', fontSize: 13, fontWeight: 700, padding: '8px 20px', cursor: 'pointer', fontFamily: 'var(--font-title)' }}
+          onClick={onSave}>
+          {isEdit ? '💾 更新' : '✅ 作成'}
+        </button>
+        <button style={{ background: 'transparent', border: '1px solid var(--gold-dim)', color: 'var(--cream-dim)', borderRadius: 6, padding: '8px 16px', fontSize: 13, cursor: 'pointer', fontFamily: 'var(--font-title)' }}
+          onClick={onCancel}>
+          キャンセル
+        </button>
+      </div>
+    </div>
+  );
+}
 
 // ===== サーバーサイドアクセス制御 =====
 // getServerSideProps で管理者以外をトップページにリダイレクト

@@ -14,14 +14,42 @@ import { withAdminAuth } from '../../../lib/auth';
 import {
   listTournaments, createTournament,
   updateTournamentStatus, deleteTournament, listBlindSchedules,
+  createBlindSchedule, updateBlindSchedule, deleteBlindSchedule,
 } from '../../../lib/db';
 import { randomUUID } from 'crypto';
 
 async function handler(req: NextApiRequest, res: NextApiResponse) {
-  // ブラインドスケジュール一覧
-  if (req.method === 'GET' && req.query.type === 'schedules') {
-    const schedules = await listBlindSchedules();
-    return res.status(200).json({ schedules });
+  // ブラインドスケジュール CRUD
+  if (req.query.type === 'schedules') {
+    if (req.method === 'GET') {
+      const schedules = await listBlindSchedules();
+      return res.status(200).json({ schedules });
+    }
+    if (req.method === 'POST') {
+      const { name, description, levels } = req.body as { name?: string; description?: string; levels?: unknown };
+      if (!name?.trim() || !Array.isArray(levels) || levels.length === 0)
+        return res.status(400).json({ error: 'name と levels は必須です' });
+      const row = await createBlindSchedule({ name: name.trim(), description, levels });
+      return res.status(200).json({ schedule: row });
+    }
+    if (req.method === 'PUT') {
+      const id = req.query.id as string;
+      if (!id) return res.status(400).json({ error: 'id が必要です' });
+      const { name, description, levels } = req.body as { name?: string; description?: string; levels?: unknown };
+      if (!name?.trim() || !Array.isArray(levels) || levels.length === 0)
+        return res.status(400).json({ error: 'name と levels は必須です' });
+      const row = await updateBlindSchedule(id, { name: name.trim(), description, levels });
+      if (!row) return res.status(404).json({ error: 'スケジュールが見つかりません' });
+      return res.status(200).json({ schedule: row });
+    }
+    if (req.method === 'DELETE') {
+      const id = req.query.id as string;
+      if (!id) return res.status(400).json({ error: 'id が必要です' });
+      const row = await deleteBlindSchedule(id);
+      if (!row) return res.status(404).json({ error: 'スケジュールが見つかりません' });
+      return res.status(200).json({ ok: true });
+    }
+    return res.status(405).json({ error: 'Method not allowed' });
   }
 
   // GET: トーナメント一覧
@@ -37,11 +65,11 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
     const session = await getServerSession(req, res, authOptions);
     const {
       name, mode, scheduledStartAt,
-      startingChips, maxPlayers, blindScheduleId, isTest,
+      startingChips, maxPlayers, blindScheduleId, isTest, lateRegMinutes,
     } = req.body as {
       name?: string; mode?: string; scheduledStartAt?: string;
       startingChips?: number; maxPlayers?: number;
-      blindScheduleId?: string; isTest?: boolean;
+      blindScheduleId?: string; isTest?: boolean; lateRegMinutes?: number;
     };
 
     if (!name?.trim() || !mode || !scheduledStartAt || !startingChips) {
@@ -66,6 +94,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
       maxPlayers,
       blindScheduleId,
       isTest:           isTest ?? false,
+      lateRegMinutes:   lateRegMinutes ?? 0,
       createdBy:        session!.user!.accountId!,
     });
     return res.status(201).json({ tournament });

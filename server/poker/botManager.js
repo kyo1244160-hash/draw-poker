@@ -115,8 +115,15 @@ function decideBotDraw(hand, mode) {
 // ===== ベット決定 =====
 function decideBotBetAction(room, botPlayer) {
   const toCall = Math.max(0, room.currentBet - botPlayer.bet);
-  const canRaise = room.raiseCount < 5; // MAX_RAISES=5
+  // chips=0のオールイン済みBOTはチェック/コールのみ（レイズ不可）
+  const canRaise = room.raiseCount < 5 && botPlayer.chips > 0
+    && room.players.some(op => op.id !== botPlayer.id && !op.folded && !op.sittingOut && op.chips > 0);
   const r = Math.random();
+
+  // chips=0（オールイン済み）の場合はcheck/callのみ
+  if (botPlayer.chips <= 0) {
+    return toCall === 0 ? 'check' : 'call';
+  }
 
   if (toCall === 0) {
     // チェックまたはベット可能

@@ -102,43 +102,74 @@ function fillBotsForTournament(tournament, botsPerTable = 2) {
 }
 
 // ===== BOT アクション =====
+// 二重スケジュール防止マップ: 'tableId::botId' → true
+// リングBOTはsocketキューで自然に直列化されるが、
+// トーナメントBOTは直接呼び出しのため明示的に管理する
+const _pendingBotAction = new Map();
+
 /**
  * テーブル内でターンが来ている BOT に自動アクションを取らせる
  * index.js の _broadcast 後 or showdown 後に呼ぶ
  * @param {string} tableId
- * @param {Function} onActionDone - (tableId) => void  broadcast を再トリガーするコールバック
+ * @param {Function} onActionDone - (tableId, botName, botAction) => void
  */
 function triggerBotActions(tableId, onActionDone) {
   const room = getOrCreateRoom(tableId);
   if (!room || room.phase === 'waiting' || room.phase === 'showdown') return;
 
   const botIds = _tableBots.get(tableId);
-  if (!botIds || botIds.size === 0) return;
+  if (!botIds || botIds.size === 0) {
+    console.log(`[TBotM] ${tableId.slice(-8)} phase=${room.phase} botIds=empty → skip`);
+    return;
+  }
 
-  // 現在ターンのプレイヤーを確認
+  // 現在ターンのプレイヤーを確認（リングBOTの me.isMyTurn チェックに相当）
   const currentPlayer = room.players[room.actionIndex];
-  if (!currentPlayer || !botIds.has(currentPlayer.id)) return;
+  if (!currentPlayer || !botIds.has(currentPlayer.id)) {
+    const curName = currentPlayer?.name ?? 'none';
+    console.log(`[TBotM] ${tableId.slice(-8)} phase=${room.phase} turn=${curName} (not BOT) → skip`);
+    return;
+  }
 
   const botId = currentPlayer.id;
+  const pendingKey = `${tableId}::${botId}`;
 
-  // 遅延を入れてリアルっぽくする（300〜900ms）
-  const delay = 300 + Math.random() * 600;
+  // 同じBOTのアクションが既にスケジュール済みならスキップ
+  if (_pendingBotAction.has(pendingKey)) {
+    console.log(`[TBotM] ${tableId.slice(-8)} ${currentPlayer.name} pending → skip duplicate`);
+    return;
+  }
+  _pendingBotAction.set(pendingKey, true);
+  console.log(`[TBotM] ${tableId.slice(-8)} phase=${room.phase} → schedule ${currentPlayer.name}`);
+
+  // リングBOT同等の遅延（500〜1500ms）
+  const delay = 500 + Math.random() * 1000;
   setTimeout(() => {
+    _pendingBotAction.delete(pendingKey);
+
     const room2 = getOrCreateRoom(tableId);
-    if (!room2) return;
+    if (!room2) { console.log(`[TBotM] ${tableId.slice(-8)} room gone`); return; }
     const cur = room2.players[room2.actionIndex];
-    if (!cur || cur.id !== botId) return; // もう他が動いた
+    // ターンが変わっていたらスキップ
+    if (!cur || cur.id !== botId) {
+      console.log(`[TBotM] ${tableId.slice(-8)} turn changed → skip`);
+      return;
+    }
 
     let acted = false;
+    let doneAction = null;
     if (room2.phase.startsWith('draw')) {
       const indices = decideBotDraw(cur.hand, room2.currentMode);
       acted = !!drawCards(tableId, botId, indices);
+      console.log(`[TBotM] ${tableId.slice(-8)} ${cur.name} draw ${indices.length}枚 acted=${acted}`);
     } else if (room2.phase.startsWith('bet')) {
       const action = decideBotBetAction(room2, cur);
       acted = !!betAction(tableId, botId, action);
+      if (acted) doneAction = action;
+      console.log(`[TBotM] ${tableId.slice(-8)} ${cur.name} ${action} acted=${acted} chips=${cur.chips}`);
     }
 
-    if (acted && onActionDone) onActionDone(tableId);
+    if (acted && onActionDone) onActionDone(tableId, cur.name, doneAction);
   }, delay);
 }
 
@@ -181,6 +212,34 @@ function eliminateZeroChipBots(tableId) {
   return eliminated;
 }
 
+/**
+ * BOT を別テーブルへ移動する（balanceTables から呼ばれる）
+ * _bots / _tableBots マップを更新して triggerBotActions が正しく動くようにする
+ * @param {string} botId    - BOT の ID（tbot:: プレフィックス付き）
+ * @param {string} fromTableId
+ * @param {string} toTableId
+ */
+function moveBot(botId, fromTableId, toTableId) {
+  // _bots マップのtableIdを更新
+  const info = _bots.get(botId);
+  if (info) {
+    _bots.set(botId, { ...info, tableId: toTableId });
+  }
+
+  // 移動元の _tableBots から削除
+  const fromSet = _tableBots.get(fromTableId);
+  if (fromSet) {
+    fromSet.delete(botId);
+    if (fromSet.size === 0) _tableBots.delete(fromTableId);
+  }
+
+  // 移動先の _tableBots に追加
+  if (!_tableBots.has(toTableId)) _tableBots.set(toTableId, new Set());
+  _tableBots.get(toTableId).add(botId);
+
+  console.log(`[TBotM] moveBot ${botId} ${fromTableId.slice(-8)} → ${toTableId.slice(-8)}`);
+}
+
 module.exports = {
   spawnBot,
   fillBotsForTournament,
@@ -188,4 +247,5 @@ module.exports = {
   removeBots,
   eliminateZeroChipBots,
   isTournamentBotId,
+  moveBot,
 };

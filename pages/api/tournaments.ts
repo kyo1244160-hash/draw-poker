@@ -16,7 +16,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     const all = await listTournaments({ limit: 50 });
-    const public_ = all.filter((t) => t.status !== 'cancelled');
+    const public_ = all.filter((t) => t.status !== 'cancelled' && t.status !== 'finished');
     return res.status(200).json({ tournaments: public_ });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

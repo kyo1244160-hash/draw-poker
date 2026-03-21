@@ -13,7 +13,8 @@
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import type { PlayerState, GameMeta } from '../types/tournament';
+import { socket } from '../../socket';
+import type { PlayerState, GameMeta, BlindUpdate } from '../types/tournament';
 
 // ==========================================================
 // ■ Card（PokerTable.tsx と同じ 4色デッキ実装）
@@ -22,12 +23,13 @@ const SUIT_SYMBOL: Record<string, string> = { S:'♠', H:'♥', D:'♦', C:'♣'
 const SUIT_COLOR:  Record<string, string> = { S:'#1a1a2e', H:'#cc1111', D:'#1155cc', C:'#228833' };
 const RANK_LABEL:  Record<string, string> = { T:'10', J:'J', Q:'Q', K:'K', A:'A' };
 const SIZE_PRESET = {
-  xs: { w:26, h:38, fontSize:11, suitSize:8,  suitMult:1.2 },
-  sm: { w:32, h:48, fontSize:11, suitSize:9,  suitMult:1.3 },
-  md: { w:52, h:76, fontSize:17, suitSize:15, suitMult:2.5 },
-  lg: { w:66, h:96, fontSize:21, suitSize:19, suitMult:2.5 },
+  xs:  { w:26, h:38, fontSize:11, suitSize:8,  suitMult:1.2 },
+  sm:  { w:32, h:48, fontSize:11, suitSize:9,  suitMult:1.3 },
+  sm2: { w:40, h:60, fontSize:14, suitSize:12, suitMult:1.8 },
+  md:  { w:52, h:76, fontSize:17, suitSize:15, suitMult:2.5 },
+  lg:  { w:66, h:96, fontSize:21, suitSize:19, suitMult:2.5 },
 } as const;
-type CardSize = 'xs'|'sm'|'md'|'lg';
+type CardSize = 'xs'|'sm'|'sm2'|'md'|'lg';
 
 function Card({ code, size='md', selected=false, clickable=false, folded=false, onClick }:
   { code:string; size?:CardSize; selected?:boolean; clickable?:boolean; folded?:boolean; onClick?:()=>void }) {
@@ -101,6 +103,10 @@ function TimerBar({remaining,limit}:{remaining:number;limit:number}) {
 }
 
 // ===== 定数 =====
+function fmtBlind(s: number) {
+  return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+}
+
 const PHASE_LABEL: Record<string,string> = {
   waiting:'待機中', bet0:'BET (Pre-Draw)',
   draw1:'DRAW I', bet1:'BET I', draw2:'DRAW II', bet2:'BET II',
@@ -118,6 +124,7 @@ interface Props {
   onBetAction:      (action:string) => void;
   onDrawCards:      (indices:number[]) => void;
   onUpdateSelected: (indices:number[]) => void;
+  blind?:           BlindUpdate | null;
 }
 
 // ==========================================================
@@ -126,6 +133,7 @@ interface Props {
 export default function TournamentTable({
   players, meta, timer, isSpectator,
   onBetAction, onDrawCards, onUpdateSelected,
+  blind,
 }: Props) {
   const [selected,      setSelected]      = useState<number[]>([]);
   const [layout,        setLayout]        = useState<'pc'|'portrait'|'landscape'|null>(null);
@@ -189,6 +197,56 @@ export default function TournamentTable({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
+  // ブラインドアップカウントダウン
+  const [blindCountdown, setBlindCountdown] = useState<number>(0);
+  useEffect(() => {
+    const secs = blind?.secondsToNextLevel ?? 0;
+    setBlindCountdown(secs);
+    if (!blind || blind.isLastLevel || secs <= 0) return;
+    const iv = setInterval(() => {
+      setBlindCountdown(prev => { if (prev <= 1) { clearInterval(iv); return 0; } return prev - 1; });
+    }, 1000);
+    return () => clearInterval(iv);
+  }, [blind?.secondsToNextLevel, blind?.isLastLevel, blind?.level]);
+
+  // actionFlash 管理 — PokerTable.tsx と完全同一ロジック
+  // socketリスナーをここで直接登録することで prop 経由の遅延を排除する
+  useEffect(() => {
+    const ACTION_LABEL: Record<string,string> = {
+      fold:'フォールド', check:'チェック', call:'コール', bet:'ベット', raise:'レイズ',
+    };
+    const onPlayerAction = ({ playerName, action }: { playerName:string; action:string }) => {
+      const label = ACTION_LABEL[action] ?? action;
+      setActionFlash(prev => ({
+        ...prev,
+        [playerName]: { label, key: Date.now() },
+      }));
+      setTimeout(() => {
+        setActionFlash(prev => {
+          const next = { ...prev };
+          delete next[playerName];
+          return next;
+        });
+      }, 2000);
+    };
+    socket.on('playerAction', onPlayerAction);
+
+    // gameStarted: リングゲームと同じリセット処理
+    const onGameStarted = () => {
+      setSelected([]);
+      setLastDrawCount({});
+      setDrawFlash({});
+      setActionFlash({});
+      prevDrewRef.current = {};
+    };
+    socket.on('gameStarted', onGameStarted);
+
+    return () => {
+      socket.off('playerAction', onPlayerAction);
+      socket.off('gameStarted', onGameStarted);
+    };
+  }, []);
+
   // drawCount フラッシュ管理（PokerTable.tsx と同ロジック）
   useEffect(() => {
     if (!players.length) return;
@@ -200,12 +258,12 @@ export default function TournamentTable({
 
     const fireFlashes = (list: {pid:string;cnt:number}[]) => {
       if (!list.length) return;
+      const pids = list.map(f => f.pid);
       setDrawFlash(prev => {
         const next = { ...prev };
         for (const { pid, cnt } of list) next[pid] = { count:cnt, key:Date.now() };
         return next;
       });
-      const pids = list.map(f => f.pid);
       setTimeout(() => setDrawFlash(cur => {
         const n = { ...cur }; for (const pid of pids) delete n[pid]; return n;
       }), 2500);
@@ -230,8 +288,14 @@ export default function TournamentTable({
       const newPrev: Record<string,boolean> = {};
       for (const p of players) newPrev[p.id] = p.drewThisRound ?? false;
       prevDrewRef.current = newPrev;
-      if (lateFlashes.length) fireFlashes(lateFlashes);
-      else setDrawFlash({});
+      if (lateFlashes.length) {
+        fireFlashes(lateFlashes);
+      } else {
+        // betフェーズ中のgameState毎にsetDrawFlash({})を呼ぶとlateFlashが消えるため
+        // 新ハンド開始（全員drewThisRound=false）のときのみクリア
+        const allNotDrew = players.every(p => !(p.drewThisRound ?? false));
+        if (allNotDrew) setDrawFlash({});
+      }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [players]);
@@ -245,6 +309,15 @@ export default function TournamentTable({
       return next;
     });
   }, [isDrawPhase, isMyTurn, myDrew, onUpdateSelected]);
+
+  // オールイン中（chips=0）で自分のターンが来たら自動的にチェック/コール送信（タイムアウト防止）
+  useEffect(() => {
+    if (!self?.isAllIn || !isMyTurn || !isBetPhase) return;
+    const action = self?.canCheck ? 'check' : 'call';
+    const timer = setTimeout(() => onBetAction(action), 100);
+    return () => clearTimeout(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [self?.isAllIn, isMyTurn, isBetPhase]);
 
   // ローディング
   if (layout === null) {
@@ -277,6 +350,9 @@ export default function TournamentTable({
 
   // アクションボタン群（PC/スマホ横用）
   const ActionButtons = ({ compact }:{ compact?:boolean }) => {
+    if (self?.isPendingPlayer) {
+      return <div style={infoTextStyle(compact)}>🎯 次のハンドから参加します...</div>;
+    }
     if (phase==='waiting') {
       return <div style={infoTextStyle(compact)}>{players.length<2?'もう1人参加を待っています':'ゲームを準備中...'}</div>;
     }
@@ -293,18 +369,19 @@ export default function TournamentTable({
       </div>
     );
     if (isDrawPhase) return <div style={infoTextStyle(compact)}>{myDrew?'他プレイヤーを待っています...':'ドロー中...'}</div>;
-    if (isBetPhase && isMyTurn) return (
+    if (isBetPhase && isMyTurn && !(self?.folded)) return (
       <div style={{display:'flex',flexDirection:'column',gap:compact?6:8}}>
         <div style={infoTextStyle(compact)}>
           {(self?.toCall??0)>0?`コール: ${self?.toCall}`:'チェック or ベット'}
           <span style={{fontSize:11,opacity:0.65,display:'block'}}>単位:{self?.betSize} Bet {raiseCount}/5</span>
         </div>
-        <button style={btnStyle('red',compact)} onClick={()=>onBetAction('fold')}>フォールド</button>
+        {/* オールイン（chips=0）の場合はチェックのみ表示 */}
+        {!self?.isAllIn && <button style={btnStyle('red',compact)} onClick={()=>onBetAction('fold')}>フォールド</button>}
         {self?.canCheck
-          ? <button style={btnStyle('gray',compact)} onClick={()=>onBetAction('check')}>チェック</button>
+          ? <button style={btnStyle('gray',compact)} onClick={()=>onBetAction('check')}>{self?.isAllIn?'オールイン中（待機）':'チェック'}</button>
           : <button style={btnStyle('gray',compact)} onClick={()=>onBetAction('call')}>コール ({self?.toCall})</button>
         }
-        {self?.canRaise&&<button style={btnStyle('gold',compact)} onClick={()=>onBetAction((meta?.currentBet??0)===0?'bet':'raise')}>
+        {self?.canRaise&&!self?.isAllIn&&<button style={btnStyle('gold',compact)} onClick={()=>onBetAction((meta?.currentBet??0)===0?'bet':'raise')}>
           {(meta?.currentBet??0)===0?`ベット (+${self?.betSize})`:`レイズ (+${self?.betSize})`}
         </button>}
       </div>
@@ -393,9 +470,34 @@ export default function TournamentTable({
                 textShadow:'0 0 12px rgba(0,0,0,0.9)'}}>
                 {PHASE_LABEL[phase]}
               </div>
-              {(meta?.pot??0)>0&&<div style={{fontSize:16,color:'#f0d060',fontWeight:700,marginTop:3,fontFamily:'var(--font-title)'}}>🏦 {meta?.pot}</div>}
+              {(meta?.pot??0)>0&&(
+                <div style={{marginTop:3,display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
+                  {(meta?.pots&&meta.pots.length>1)?meta.pots.map((p,i)=>(
+                    <div key={i} style={{fontFamily:'var(--font-title)',fontSize:i===0?15:12,
+                      color:i===0?'#f0d060':'#ffaa44',fontWeight:700,
+                      background:i===0?'rgba(240,208,96,0.12)':'rgba(255,160,60,0.12)',
+                      border:`1px solid ${i===0?'rgba(240,208,96,0.35)':'rgba(255,160,60,0.3)'}`,
+                      borderRadius:4,padding:'1px 8px',whiteSpace:'nowrap'}}>
+                      🏦 {p.label} {p.amount}
+                    </div>
+                  )):(
+                    <div style={{fontSize:16,color:'#f0d060',fontWeight:700,fontFamily:'var(--font-title)'}}>🏦 {meta?.pot}</div>
+                  )}
+                </div>
+              )}
               {isBetPhase&&(meta?.currentBet??0)>0&&<div style={{fontSize:12,color:'#ffcc44',marginTop:1,fontFamily:'var(--font-body)'}}>BET {meta?.currentBet}</div>}
               {isBetPhase&&<div style={{fontSize:9,color:'rgba(255,255,255,0.4)',fontFamily:'var(--font-body)'}}>Bet {raiseCount}/5</div>}
+              {blind&&<div style={{fontSize:10,color:'#88ee88',marginTop:3,fontFamily:'var(--font-title)'}}>Lv.{blind.level} {blind.sb}/{blind.bb}</div>}
+              {blind&&!blind.isLastLevel&&blindCountdown>0&&(
+                <div style={{fontSize:10,fontFamily:'var(--font-title)',color:blindCountdown<60?'#ff6666':'rgba(255,255,255,0.5)',marginTop:1}}>⏱ {fmtBlind(blindCountdown)}</div>
+              )}
+              {blind?.isLastLevel&&<div style={{fontSize:10,color:'var(--gold)',fontFamily:'var(--font-title)',marginTop:1}}>最終Lv</div>}
+              {blind?.isBreak&&(
+                <div style={{fontSize:12,color:'#cc99ff',fontFamily:'var(--font-title)',fontWeight:700,marginTop:2,
+                  textShadow:'0 0 8px rgba(160,100,255,0.6)'}}>
+                  ☕ {blind.breakLabel??'Break'}
+                </div>
+              )}
               {isDrawPhase&&(
                 <div style={{display:'flex',gap:4,justifyContent:'center',marginTop:4}}>
                   {[1,2,3].map(n=>(
@@ -433,11 +535,9 @@ export default function TournamentTable({
             const flash  = actionFlash[p.name];
             const dflash = drawFlash[p.id];
             const active = p.isMyTurn && !p.folded && !p.sittingOut;
-            // 上段プレイヤー（top < CY）はバッジをボックスの下に表示して見切れを防ぐ
-            const bh = p.isSelf ? Math.floor(TH*0.31) : Math.floor(TH*0.25);
-            const isTopHalf = top < CY;
-            const flashTop = isTopHalf ? bh + 4 : -38;
-            const dflashTop = isTopHalf ? (flash ? bh + 28 : bh + 4) : (flash ? -62 : -38);
+            // リングゲームと同じ: 常にボックス上
+            const flashTop = -38;
+            const dflashTop = flash ? -62 : -38;
             return (
               <div key={p.id} style={{position:'absolute',left,top,width:BW,zIndex:2,overflow:'visible'}}>
                 {/* アクションフラッシュ */}
@@ -561,33 +661,36 @@ export default function TournamentTable({
   TW_M = Math.max(TW_M, 200);
   TH_M = Math.max(TH_M, 140);
 
-  const RX_M = isPortrait ? TW_M*0.42 : TW_M*0.44;
-  const RY_M = isPortrait ? TH_M*0.42 : TH_M*0.40;
-  const CX_M = TW_M/2, CY_M = TH_M/2;
+  // 縦向きスマホ座標計算
+  // 対称角度: [165,-165,-90,-15,15] → Dealer/Poker同左、Ace/Bluff同右
+  const RX_M = isPortrait ? TW_M*0.32 : TW_M*0.44;
+  const RY_M = isPortrait ? TH_M*0.36 : TH_M*0.40;
+  const CX_M = TW_M/2;
+  const CY_M = isPortrait ? TH_M*0.54 : TH_M/2;
 
-  const OTH_W  = Math.max(138, Math.floor(Math.min(TW_M,TH_M)*0.30));
+  const OTH_W  = Math.max(Math.floor(TW_M*0.36), Math.floor(Math.min(TW_M,TH_M)*0.32));
   const SELF_W = Math.min(Math.floor(TW_M*0.60), TW_M-16);
-  const SELF_H = isPortrait ? Math.floor(TH_M*0.34) : Math.floor(TH_M*0.40);
+  const SELF_H = isPortrait ? Math.floor(TH_M*0.36) : Math.floor(TH_M*0.40);
   const OTH_H  = isPortrait ? Math.floor(TH_M*0.26) : Math.floor(TH_M*0.32);
-  const SELF_C: CardSize = 'sm';
+  const SELF_C: CardSize = isPortrait ? 'sm2' : 'sm';
   const OTH_C:  CardSize = 'xs';
-  const SLOTS_M = isPortrait ? [145,-145,-90,-35,35] : [150,-150,-90,-30,30];
+  // Dealer-Dan=165°(cos=-0.966) / Poker-Pete=-155°(cos=-0.906) → 左位置が近づく + 少し下
+  // Ace-Anna=15°(cos=+0.966) / Bluff-Bill=-25°(cos=+0.906) → 右位置が近づく + 少し下
+  const SLOTS_M = isPortrait ? [165,-155,-90,-25,15] : [150,-150,-90,-30,30];
   const oth_m = orderedOthers;
   const fs = { name: Math.max(9,Math.floor(OTH_W*0.10)), chip: Math.max(9,Math.floor(OTH_W*0.095)) };
 
   const getPosMobile = (p:PlayerState) => {
-    let ang: number, top0 = 0;
+    let ang: number;
     if (p.isSelf) { ang = 90; }
     else {
       const idx = oth_m.findIndex(o => o.id===p.id);
       ang = SLOTS_M[idx] ?? (-90+72*(idx+1));
-      if (isPortrait && (idx===0||idx===oth_m.length-1)) top0 = -45;
-      if (isPortrait && idx>=1&&idx<=3) top0 += 40;
     }
     const rad = (ang*Math.PI)/180;
     const bw = p.isSelf ? SELF_W : OTH_W;
     const bh = p.isSelf ? SELF_H : OTH_H;
-    return { left: CX_M+RX_M*Math.cos(rad)-bw/2, top: CY_M+RY_M*Math.sin(rad)-bh/2+top0 };
+    return { left: CX_M+RX_M*Math.cos(rad)-bw/2, top: CY_M+RY_M*Math.sin(rad)-bh/2 };
   };
 
   const renderMobile = (p:PlayerState) => {
@@ -597,16 +700,12 @@ export default function TournamentTable({
     const bw = p.isSelf ? SELF_W : OTH_W;
     const flash  = actionFlash[p.name];
     const dflash = drawFlash[p.id];
-    // 上半分のプレイヤーはバッジをボックス下に表示して見切れを防ぐ
-    const bh_m = p.isSelf ? SELF_H : OTH_H;
-    const isTopHalf_m = top < CY_M;
-    const flashTop_m  = isTopHalf_m ? bh_m + 4 : -32;
-    const dflashTop_m = isTopHalf_m ? (flash ? bh_m + 24 : bh_m + 4) : (flash ? -52 : -32);
+    // リングゲームと同じ: 常にボックス上に表示（paddingTop:44で上段の見切れも防止）
     return (
       <div key={p.id} style={{position:'absolute',left,top,width:bw,overflow:'visible',zIndex:p.isSelf?3:2}}>
         {flash&&(
           <div key={flash.key} style={{
-            position:'absolute',top:flashTop_m,
+            position:'absolute',top:-32,
             left:p.isDealer?'calc(50% + 18px)':'50%',transform:'translateX(-50%)',
             background: flash.label==='フォールド'?'rgba(139,26,26,0.92)'
               : flash.label==='チェック'?'rgba(30,100,60,0.92)'
@@ -621,7 +720,7 @@ export default function TournamentTable({
         )}
         {dflash&&(
           <div key={dflash.key} style={{
-            position:'absolute',top:dflashTop_m,left:'50%',transform:'translateX(-50%)',
+            position:'absolute',top:flash?-52:-32,left:'50%',transform:'translateX(-50%)',
             background:'rgba(20,80,180,0.93)',color:'#fff',fontFamily:'var(--font-title)',
             fontSize:11,fontWeight:'700',padding:'3px 10px',borderRadius:20,whiteSpace:'nowrap',
             boxShadow:'0 2px 8px rgba(0,0,0,0.5)',pointerEvents:'none',zIndex:10,
@@ -641,7 +740,7 @@ export default function TournamentTable({
             {p.isSB&&<Badge bg="#2244aa" color="#fff" label="SB"/>}
             {p.isBB&&<Badge bg="#b85a10" color="#fff" label="BB"/>}
             {p.folded&&!p.sittingOut&&<Badge bg="#444" color="#aaa" label="FOLD"/>}
-            {p.isWinner&&<Badge bg="#f0d060" color="#1a1200" label="🏆 WIN"/>}
+                {p.isWinner&&<Badge bg="#f0d060" color="#1a1200" label="🏆 WIN"/>}
           </div>
           <div style={{fontFamily:'var(--font-title)',fontSize:fs.name,color:p.isSelf?'var(--gold-bright)':'var(--cream)',
             whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',letterSpacing:'0.02em'}}>
@@ -699,25 +798,48 @@ export default function TournamentTable({
       {phase!=='waiting'&&(
         <div style={{position:'absolute',left:'50%',top:'50%',transform:'translate(-50%,-50%)',
           textAlign:'center',zIndex:1,pointerEvents:'none'}}>
-          <div style={{fontFamily:'var(--font-title)',fontSize:10,color:'var(--gold-bright)',
-            letterSpacing:'0.05em',marginBottom:3,textShadow:'0 0 6px rgba(201,168,76,0.6)'}}>
-            🏦 {meta?.pot}
+          <div style={{marginBottom:3,display:'flex',flexDirection:'column',alignItems:'center',gap:1}}>
+            {(meta?.pots&&meta.pots.length>1)?meta.pots.map((p,i)=>(
+              <div key={i} style={{fontFamily:'var(--font-title)',fontSize:i===0?(isPortrait?14:10):(isPortrait?11:8),
+                color:i===0?'var(--gold-bright)':'#ffaa44',fontWeight:700,
+                background:i===0?'rgba(240,208,96,0.12)':'rgba(255,160,60,0.12)',
+                border:`1px solid ${i===0?'rgba(240,208,96,0.3)':'rgba(255,160,60,0.25)'}`,
+                borderRadius:3,padding:'0px 5px',whiteSpace:'nowrap',
+                textShadow:'0 0 6px rgba(201,168,76,0.6)'}}>
+                🏦 {p.label} {p.amount}
+              </div>
+            )):(
+              <div style={{fontFamily:'var(--font-title)',fontSize:isPortrait?14:10,color:'var(--gold-bright)',
+                letterSpacing:'0.05em',textShadow:'0 0 6px rgba(201,168,76,0.6)'}}>
+                🏦 {meta?.pot}
+              </div>
+            )}
             {isBetPhase&&(meta?.currentBet??0)>0&&(
-              <span style={{marginLeft:6,padding:'1px 5px',borderRadius:3,
-                background:'rgba(201,168,76,0.3)',color:'#f5cc40',fontSize:9,fontWeight:'700'}}>
+              <span style={{padding:'1px 5px',borderRadius:3,
+                background:'rgba(201,168,76,0.3)',color:'#f5cc40',fontSize:isPortrait?12:9,fontWeight:'700'}}>
                 BET {meta?.currentBet}
               </span>
             )}
           </div>
-          <div style={{fontFamily:'var(--font-title)',fontSize:9,color:modeColor,letterSpacing:'0.1em',opacity:0.8}}>
+          <div style={{fontFamily:'var(--font-title)',fontSize:isPortrait?11:9,color:modeColor,letterSpacing:'0.1em',opacity:0.8}}>
             {MODE_LABEL[effectiveMode]}
           </div>
-          <div style={{fontFamily:'var(--font-title)',fontSize:12,letterSpacing:'0.15em',lineHeight:1.1,
+          <div style={{fontFamily:'var(--font-title)',fontSize:isPortrait?15:12,letterSpacing:'0.15em',lineHeight:1.1,
             color:isBetPhase?'var(--gold-bright)':isDrawPhase?'#88ddff':'var(--cream-dim)',
             textShadow:'0 0 8px rgba(0,0,0,0.9)'}}>
             {PHASE_LABEL[phase]}
           </div>
-          {isBetPhase&&<div style={{fontSize:8,color:'rgba(255,255,255,0.45)',fontFamily:'var(--font-body)'}}>Bet {raiseCount}/5</div>}
+          {isBetPhase&&<div style={{fontSize:isPortrait?10:8,color:'rgba(255,255,255,0.45)',fontFamily:'var(--font-body)'}}>Bet {raiseCount}/5</div>}
+          {blind&&<div style={{fontSize:isPortrait?10:8,color:'#88ee88',marginTop:2,fontFamily:'var(--font-title)'}}>Lv.{blind.level} {blind.sb}/{blind.bb}</div>}
+          {blind&&!blind.isLastLevel&&blindCountdown>0&&(
+            <div style={{fontSize:isPortrait?10:8,fontFamily:'var(--font-title)',color:blindCountdown<60?'#ff6666':'rgba(255,255,255,0.4)',marginTop:1}}>⏱{fmtBlind(blindCountdown)}</div>
+          )}
+          {blind?.isLastLevel&&<div style={{fontSize:8,color:'var(--gold)',fontFamily:'var(--font-title)',marginTop:1}}>最終Lv</div>}
+          {blind?.isBreak&&(
+            <div style={{fontSize:9,color:'#cc99ff',fontFamily:'var(--font-title)',fontWeight:700,marginTop:2}}>
+              ☕ {blind.breakLabel??'Break'}
+            </div>
+          )}
           {isDrawPhase&&(
             <div style={{display:'flex',gap:4,justifyContent:'center',marginTop:2}}>
               {[1,2,3].map(n=>(
@@ -739,8 +861,10 @@ export default function TournamentTable({
         const ddx = dcx-CX_M, ddy = dcy-CY_M;
         const dd = Math.sqrt(ddx*ddx+ddy*ddy);
         const sc = dd>0?Math.max(0,(dd-80))/dd:0;
+        // 自プレイヤーがディーラーの時は名前と重ならないよう左にオフセット
+        const selfDealerOffset = dp.isSelf ? -65 : 0;
         return (
-          <div key="m-d" style={{position:'absolute',left:CX_M+ddx*sc-11,top:CY_M+ddy*sc-11,
+          <div key="m-d" style={{position:'absolute',left:CX_M+ddx*sc-11+selfDealerOffset,top:CY_M+ddy*sc-11,
             width:22,height:22,borderRadius:'50%',background:'#fff',border:'2px solid #444',
             display:'flex',alignItems:'center',justifyContent:'center',
             fontSize:9,fontWeight:'900',color:'#1a1a1a',
@@ -749,13 +873,29 @@ export default function TournamentTable({
         );
       })()}
       {players.map(p=>renderMobile(p))}
+      {/* ?debug=1 で座標情報を表示 */}
+      {typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('debug') === '1' && (
+        <div style={{position:'absolute',top:0,left:0,zIndex:99,background:'rgba(0,0,0,0.7)',
+          color:'#0f0',fontSize:9,fontFamily:'monospace',padding:'2px 4px',pointerEvents:'none',lineHeight:1.4}}>
+          <div>TW:{TW_M} TH:{TH_M}</div>
+          <div>CX:{Math.round(CX_M)} CY:{Math.round(CY_M)}</div>
+          <div>RX:{Math.round(RX_M)} RY:{Math.round(RY_M)}</div>
+          <div>OTH_H:{OTH_H} SELF_H:{SELF_H}</div>
+          {players.map(p=>{
+            const {left,top}=getPosMobile(p);
+            const idx=oth_m.findIndex(o=>o.id===p.id);
+            const ang=p.isSelf?90:(SLOTS_M[idx]??0);
+            return <div key={p.id}>{p.name.slice(0,8)}: ({Math.round(left)},{Math.round(top)}) {ang}°</div>;
+          })}
+        </div>
+      )}
     </div>
   );
 
   // ===== 縦表示 =====
   if (isPortrait) {
     return (
-      <div ref={containerRef} style={{display:'flex',flexDirection:'column',width:'100%',height:'100%',overflow:'hidden'}}>
+      <div ref={containerRef} style={{display:'flex',flexDirection:'column',width:'100%',height:'100%',overflow:'visible'}}>
         <MobileTable/>
         {/* 下部アクションパネル */}
         <div style={{flex:1,display:'flex',flexDirection:'column',justifyContent:'flex-end',
@@ -767,7 +907,8 @@ export default function TournamentTable({
             </div>
           </div>
           {/* アクションボタン */}
-          {phase==='waiting'&&<div style={{textAlign:'center',fontSize:13,color:'var(--cream-dim)',fontFamily:'var(--font-body)',padding:'8px 0'}}>{players.length<2?'もう1人参加を待っています':'ゲームを準備中...'}</div>}
+          {self?.isPendingPlayer&&<div style={{textAlign:'center',fontSize:13,color:'var(--gold-dim)',fontFamily:'var(--font-body)',padding:'8px 0'}}>🎯 次のハンドから参加します...</div>}
+          {!self?.isPendingPlayer&&phase==='waiting'&&<div style={{textAlign:'center',fontSize:13,color:'var(--cream-dim)',fontFamily:'var(--font-body)',padding:'8px 0'}}>{players.length<2?'もう1人参加を待っています':'ゲームを準備中...'}</div>}
           {isSpectator&&<div style={{textAlign:'center',fontSize:12,color:'#b088ff',border:'1px solid #6644aa',borderRadius:6,padding:'6px 0'}}>観戦中</div>}
           {!isSpectator&&isDrawPhase&&isMyTurn&&!myDrew&&(
             <div style={{display:'flex',gap:6}}>
@@ -782,9 +923,9 @@ export default function TournamentTable({
               {myDrew?'他プレイヤーを待っています...':'ドロー中...'}
             </div>
           )}
-          {!isSpectator&&isBetPhase&&isMyTurn&&(
+          {!isSpectator&&isBetPhase&&isMyTurn&&!self?.isAllIn&&(
             <div style={{display:'flex',gap:6}}>
-              <button style={{...btnStyle('red',true),flex:1}} onClick={()=>onBetAction('fold')}>フォールド</button>
+              {<button style={{...btnStyle('red',true),flex:1}} onClick={()=>onBetAction('fold')}>フォールド</button>}
               {self?.canCheck
                 ?<button style={{...btnStyle('gray',true),flex:1}} onClick={()=>onBetAction('check')}>チェック</button>
                 :<button style={{...btnStyle('gray',true),flex:1}} onClick={()=>onBetAction('call')}>コール({self?.toCall})</button>
@@ -792,6 +933,11 @@ export default function TournamentTable({
               {self?.canRaise&&<button style={{...btnStyle('gold',true),flex:1}} onClick={()=>onBetAction((meta?.currentBet??0)===0?'bet':'raise')}>
                 {(meta?.currentBet??0)===0?`BET+${self?.betSize}`:`RAISE+${self?.betSize}`}
               </button>}
+            </div>
+          )}
+          {!isSpectator&&isBetPhase&&isMyTurn&&self?.isAllIn&&(
+            <div style={{textAlign:'center',fontSize:12,color:'var(--gold)',fontFamily:'var(--font-title)',padding:'8px 0',fontWeight:700}}>
+              ⚡ オールイン中（待機）
             </div>
           )}
           {!isSpectator&&isBetPhase&&!isMyTurn&&(
@@ -807,8 +953,8 @@ export default function TournamentTable({
 
   // ===== 横表示 =====
   return (
-    <div ref={containerRef} style={{display:'flex',width:'100%',height:'100%',overflow:'hidden'}}>
-      <div style={{position:'relative',flex:1,minWidth:0,overflow:'hidden'}}>
+    <div ref={containerRef} style={{display:'flex',width:'100%',height:'100%',overflow:'visible'}}>
+      <div style={{position:'relative',flex:1,minWidth:0,overflow:'visible'}}>
         <div style={{position:'absolute',top:0,left:0,width:TW_M,height:TH_M}}>
           <MobileTable/>
         </div>

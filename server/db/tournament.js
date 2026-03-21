@@ -13,6 +13,7 @@ async function getTournament(tournamentId) {
       t.*,
       bs.name        AS blind_schedule_name,
       bs.levels      AS blind_levels,
+      t.late_reg_minutes,
       bs.description AS blind_description
     FROM tournaments    t
     LEFT JOIN blind_schedules bs ON bs.id = t.blind_schedule_id
@@ -49,7 +50,43 @@ async function registerEntry(tournamentId, accountId) {
   // トーナメント取得
   const tournament = await getTournament(tournamentId);
   if (!tournament) throw new Error('トーナメントが見つかりません');
-  if (tournament.status !== 'registering') throw new Error('現在参加受付中ではありません');
+  // BOTアカウント(bot_で始まるID)は running状態でも参加可能（テスト用）
+  const isBot = typeof accountId === 'string' && accountId.startsWith('bot_');
+  if (!isBot) {
+    if (tournament.status === 'registering') {
+      // 受付中: OK
+    } else if (tournament.status === 'running') {
+      // 進行中: レイトレジスト期間中なら許可
+      // メモリ上のtournamentManagerからlateRegOpenフラグを確認する
+      try {
+        const tm = require('../tournament/tournamentManager');
+        const memTournament = tm.getTournament(tournamentId);
+        if (!memTournament) {
+          // メモリにない（サーバー再起動直後等）→ late_reg_minutesで判断
+          if (!tournament.late_reg_minutes || tournament.late_reg_minutes <= 0) {
+            throw new Error('現在参加受付中ではありません');
+          }
+          // late_reg_minutes>0 かつ開始からの経過時間がlate_reg_minutes未満なら許可
+          const startedAt = new Date(tournament.scheduled_start_at).getTime();
+          const elapsedMin = (Date.now() - startedAt) / 60000;
+          if (elapsedMin > tournament.late_reg_minutes) {
+            throw new Error('レイトレジスト受付期間が終了しています');
+          }
+        } else if (!memTournament.lateRegOpen) {
+          throw new Error('レイトレジスト受付期間が終了しています');
+        }
+        // lateRegOpen=true: OK（レイトレジスト期間中）
+      } catch (tmErr) {
+        if (tmErr.message.includes('レイトレジスト') || tmErr.message.includes('参加受付')) throw tmErr;
+        // その他の例外（require失敗等）→ late_reg_minutes>0なら許可
+        if (!tournament.late_reg_minutes || tournament.late_reg_minutes <= 0) {
+          throw new Error('現在参加受付中ではありません');
+        }
+      }
+    } else {
+      throw new Error('現在参加受付中ではありません');
+    }
+  }
 
   // 満員チェック
   if (tournament.max_players) {

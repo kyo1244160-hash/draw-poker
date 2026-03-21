@@ -25,12 +25,37 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   try {
     // GET: 参加状況確認
     if (req.method === 'GET') {
-      const [registered, entries, tournament] = await Promise.all([
+      const { getTournamentResults } = require('../../../../server/db/points');
+      const [registered, entries, tournament, resultsRaw] = await Promise.all([
         tournamentDb.isRegistered(tournamentId, accountId),
         tournamentDb.getEntries(tournamentId),
         tournamentDb.getTournament(tournamentId),
+        getTournamentResults(tournamentId).catch(() => []),
       ]);
-      return res.status(200).json({ registered, entries, tournament });
+      // 結果データを整形
+      const rankings = (resultsRaw ?? []).map((r: {account_id: string; final_rank: number; final_chips: number; nickname?: string; google_name?: string; points?: number}) => ({
+        accountId: r.account_id,
+        nickname:  r.nickname ?? r.google_name ?? r.account_id.slice(0, 8),
+        rank:      r.final_rank,
+        chips:     r.final_chips,
+        points:    r.points,
+      }));
+      const myEntry = rankings.find((r: {accountId: string}) => r.accountId === accountId) ?? null;
+
+      // メモリ上のlateRegOpen状態をtournamentオブジェクトに付与
+      let lateRegOpen: boolean | null = null;
+      if (tournament?.status === 'running') {
+        try {
+          const tm = require('../../../../server/tournament/tournamentManager');
+          const memT = tm.getTournament(tournamentId);
+          if (memT) lateRegOpen = memT.lateRegOpen ?? false;
+        } catch { /* 取得できない場合は null のまま */ }
+      }
+      const tournamentWithLateReg = tournament
+        ? { ...tournament, late_reg_open: lateRegOpen }
+        : tournament;
+
+      return res.status(200).json({ registered, entries, tournament: tournamentWithLateReg, rankings, myEntry });
     }
 
     // POST: 参加登録

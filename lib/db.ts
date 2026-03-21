@@ -60,7 +60,7 @@ export const listTournaments: (opts?: { limit?: number; offset?: number }) => Pr
 export const createTournament: (params: {
   id: string; name: string; mode: string; scheduledStartAt: Date;
   startingChips: number; maxPlayers?: number; blindScheduleId?: string;
-  isTest?: boolean; createdBy: string;
+  isTest?: boolean; lateRegMinutes?: number; createdBy: string;
 }) => Promise<Record<string, unknown>> = adminDb.createTournament;
 
 export const updateTournamentStatus: (
@@ -74,6 +74,10 @@ export const deleteTournament: (
 export const listBlindSchedules: () => Promise<{
   id: string; name: string; description: string | null; levels: unknown;
 }[]> = adminDb.listBlindSchedules;
+
+export const createBlindSchedule: (opts: { name: string; description?: string; levels: unknown }) => Promise<{ id: string; name: string }> = adminDb.createBlindSchedule;
+export const updateBlindSchedule: (id: string, opts: { name: string; description?: string; levels: unknown }) => Promise<{ id: string; name: string } | null> = adminDb.updateBlindSchedule;
+export const deleteBlindSchedule: (id: string) => Promise<{ id: string } | null> = adminDb.deleteBlindSchedule;
 
 export const forceChangeNickname: (
   accountId: string, nickname: string

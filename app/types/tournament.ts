@@ -1,15 +1,22 @@
 // app/types/tournament.ts — トーナメント関連の共有型定義
 
 export interface BlindUpdate {
-  level: number;
+  level: number | null;          // nullの場合はブレイク
   sb: number;
   bb: number;
   smallBet: number;
   bigBet: number;
   secondsToNextLevel: number;
-  nextSb: number | null;
-  nextBb: number | null;
+  nextSb: number | null;         // 次レベルのSB
+  nextBb: number | null;         // 次レベルのBB
   isLastLevel: boolean;
+  isBreak: boolean;              // 休憩中かどうか
+  breakLabel: string | null;     // 休憩ラベル（"Break 1"等）
+  lateRegOpen: boolean;          // レイトレジスト受付中かどうか
+  lateRegLevelCutoff: number;    // レイトレジスト終了レベル
+  lateRegSecondsRemaining?: number | null;  // 時間ベースの残り秒数（nullならレベルベース）
+  notify?: 'blindUp' | 'break' | null;  // ブラインドアップ/ブレイク突入通知
+  pendingLevelUp?: boolean;              // 次のハンドでブラインドアップ予定
 }
 
 export interface TournamentStatus {
@@ -17,6 +24,7 @@ export interface TournamentStatus {
   totalPlayers: number;
   remainingPlayers: number;
   averageStack: number;
+  isFinalTable: boolean;         // ファイナルテーブル突入フラグ
 }
 
 export interface TournamentRankEntry {
@@ -47,14 +55,22 @@ export interface PlayerState {
   toCall?: number;
   canCheck?: boolean;
   canRaise?: boolean;
+  isAllIn?: boolean;
+  isPendingPlayer?: boolean;  // pendingPlayers待機中（次のハンドから参加）
   betSize?: number;
   timerRemaining?: number;
+}
+
+export interface PotEntry {
+  amount: number;
+  label: string;  // 'メインポット' | 'サイドポット1' | ...
 }
 
 export interface GameMeta {
   _meta: true;
   phase: string;
   pot: number;
+  pots?: PotEntry[];   // メイン/サイドポット内訳（オールイン時）
   currentBet?: number;
   raiseCount?: number;
   currentMode: string;

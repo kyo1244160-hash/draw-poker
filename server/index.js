@@ -45,7 +45,7 @@ const {
   leaveRoom, startGame, drawCards, betAction, updateSelectedIndices,
   buildGameState, removePlayer, canAutoStart, getAllRooms,
   incrementTimeout, resetTimeout,
-  getRoomMode, getRoom,
+  getRoomMode, getRoom, ensurePotsAwarded,
 } = require('./poker/gameManager');
 
 const { registerZoomHandlers, getAllPools, getWaitingCount, getTotalCount, handleZoomShowdown } = require('./zoom/zoomManager');
@@ -124,8 +124,18 @@ function getLobbyList() {
 // ■ サーバー起動
 // ==========================================================
 console.log('🔧 サーバー起動中...');
-app.prepare().then(() => {
+app.prepare().then(async () => {
   console.log('✓ Next.js 準備完了');
+
+  // ===== 自動マイグレーション =====
+  try {
+    const sql = require('./db/client');
+    await sql`ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS late_reg_minutes INTEGER NOT NULL DEFAULT 0`;
+    console.log('✓ DB migration: late_reg_minutes OK');
+  } catch (e) {
+    console.warn('⚠ DB migration warning:', e.message);
+  }
+
   const expressApp = express();
   const server     = http.createServer(expressApp);
   const io = new Server(server, {
@@ -231,15 +241,78 @@ app.prepare().then(() => {
     socket.on('t:getMyTable', ({ tournamentId }) => {
       const user = socket.data.user;
       if (!user?.accountId) return;
-      const tableId = tournamentManager.getTableForPlayer(tournamentId, user.accountId);
+      let tableId = tournamentManager.getTableForPlayer(tournamentId, user.accountId);
       if (tableId) {
-        socket.emit('t:tournamentStarting', { tournamentId, tableId });
-        console.log(`[t:getMyTable] ${user.nickname} → ${tableId}`);
+        // pendingPlayersにいるかどうか確認
+        const { getOrCreateRoom } = require('./poker/gameManager');
+        const room = getOrCreateRoom(tableId);
+        const pendingPlayer = room?.pendingPlayers?.find(p =>
+          p.accountId === user.accountId || p.name === user.nickname
+        );
+        if (pendingPlayer) {
+          // pending中に再接続: socket IDを更新してpending通知を送信
+          pendingPlayer.id = socket.id;
+          socket.join(tableId);
+          socket.emit('t:pendingTableTransfer', { tableId, message: '次のハンドから参加します' });
+          console.log(`[t:getMyTable] ${user.nickname} → ${tableId} (pending)`);
+        } else {
+          socket.emit('t:tournamentStarting', { tournamentId, tableId });
+          console.log(`[t:getMyTable] ${user.nickname} → ${tableId}`);
+        }
       } else {
         // テーブルが見つからない場合はトーナメント自体を確認
         const t = tournamentManager.getTournament(tournamentId);
         if (!t) {
           socket.emit('t:tournamentNotFound', { tournamentId });
+        } else if (t.lateRegOpen) {
+          // レイトレジスト期間中: 最も人数が少ないテーブルに配置する
+          const { getOrCreateRoom, canAutoStart } = require('./poker/gameManager');
+          let destTid = t.tableIds
+            .map(tid => {
+              const r = getOrCreateRoom(tid);
+              return { tid, cnt: (r?.players.length ?? 0) + (r?.pendingPlayers.length ?? 0) };
+            })
+            .filter(x => x.cnt < 6)
+            .sort((a, b) => a.cnt - b.cnt)[0]?.tid;
+          // 全テーブルが満席なら新テーブルを作成
+          if (!destTid) {
+            destTid = tournamentManager.addTableToTournament(tournamentId);
+            if (destTid) console.log(`[lateReg] added new table ${destTid.slice(-8)}`);
+          }
+          if (destTid) {
+            const nickname = user.nickname ?? user.accountId.slice(0, 8);
+            joinPokerRoom(destTid, socket.id, nickname, { accountId: user.accountId, existingChips: t.startingChips });
+            socket.join(destTid);
+            tournamentManager.incrementTotalPlayers(tournamentId, 1);
+            socket.emit('t:tournamentStarting', { tournamentId, tableId: destTid });
+            io.to(destTid).emit('t:playerArrived', { playerName: nickname });
+            _broadcast(io, destTid);
+            if (canAutoStart(destTid)) _tryAutoStart(io, destTid);
+            console.log(`[lateReg] ${nickname} placed at ${destTid.slice(-8)}`);
+
+            // 配置後にテーブルバランスを確認（1人テーブルが生まれた場合に対処）
+            // 少し遅延させてゲーム状態が安定してから実行
+            setTimeout(() => {
+              const tNow = tournamentManager.getTournament(tournamentId);
+              if (!tNow || tNow.status !== 'running') return;
+              const tableCount = tNow.tableIds.length;
+              if (tableCount <= 1) return;
+              // 1人または2人以下のテーブルがあればbalance
+              const hasSmallTable = tNow.tableIds.some(tid => {
+                const r = getOrCreateRoom(tid);
+                return r && (r.players.length + r.pendingPlayers.length) <= 2;
+              });
+              if (hasSmallTable) {
+                console.log(`[lateReg] triggering balance after join`);
+                tournamentManager.balanceTables(tournamentId);
+                for (const tid of tNow.tableIds) {
+                  if (canAutoStart(tid)) _tryAutoStart(io, tid);
+                }
+              }
+            }, 500);
+          } else {
+            socket.emit('error', { message: 'テーブルに空きがありません' });
+          }
         }
       }
     });
@@ -313,6 +386,16 @@ app.prepare().then(() => {
       _broadcastLobbyUpdate(io, roomId);
       _broadcast(io, roomId);
 
+      // トーナメントテーブルへの参加時: 現在のブラインド情報を即座に送信
+      if (tournamentManager.isTournamentTable(roomId)) {
+        const t = tournamentManager.getTournamentByTable(roomId);
+        if (t) {
+          const blindPayload = tournamentManager.getCurrentBlindPayload(t.id);
+          if (blindPayload) socket.emit('t:blindUpdate', blindPayload);
+          tournamentManager._broadcastTournamentStatus(t);
+        }
+      }
+
       // 自動スタート（waiting + 2人以上、canAutoStart で pendingPlayers も含めてチェック）
       if (canAutoStart(roomId)) {
         _tryAutoStart(io, roomId);
@@ -324,6 +407,31 @@ app.prepare().then(() => {
       _handleLeave(io, socket, roomId);
       currentRoom = { name: '', roomId: '' };
       socket.emit('kicked');
+    });
+
+    // ----- テーブル移動専用: Socket.IOルームのみ切り替え（gameManagerのjoinRoomは呼ばない） -----
+    socket.on('leaveSocketRoom', ({ roomId }) => {
+      if (roomId) socket.leave(roomId);
+    });
+    socket.on('joinSocketRoom', ({ roomId }) => {
+      if (roomId) {
+        socket.join(roomId);
+        currentRoom = { name: socket.data.user?.nickname ?? '', roomId };
+      }
+    });
+
+    // ----- テーブル移動後のゲーム状態取得 -----
+    socket.on('getGameState', ({ roomId }) => {
+      if (!roomId || typeof roomId !== 'string') return;
+      _broadcast(io, roomId);
+      if (tournamentManager.isTournamentTable(roomId)) {
+        const t = tournamentManager.getTournamentByTable(roomId);
+        if (t) {
+          const blindPayload = tournamentManager.getCurrentBlindPayload(t.id);
+          if (blindPayload) socket.emit('t:blindUpdate', blindPayload);
+          tournamentManager._broadcastTournamentStatus(t);
+        }
+      }
     });
 
     // ----- ドロー中の選択インデックス更新 -----
@@ -343,7 +451,16 @@ app.prepare().then(() => {
       resetTimeout(roomId, socket.id);  // アクション成功 → タイムアウトカウントリセット
       _broadcast(io, roomId);
       // ZoomテーブルはzoomManagerが管理するためindex.jsからはautoStartしない
-      if (room.phase === 'showdown') { io.to(roomId).emit('showdown'); if (room.isZoomTable) handleZoomShowdown(io, roomId); else _scheduleAutoStart(io, roomId); }
+      if (room.phase === 'showdown') {
+        if (tournamentManager.isTournamentTable(roomId)) {
+          ensurePotsAwarded(roomId);  // ポット確定後に脱落チェック
+          tournamentManager.checkEliminations(roomId);
+          _broadcast(io, roomId);
+        }
+        io.to(roomId).emit('showdown');
+        if (room.isZoomTable) handleZoomShowdown(io, roomId);
+        else _scheduleAutoStart(io, roomId);
+      }
     });
 
     // ----- ベットアクション -----
@@ -365,7 +482,16 @@ app.prepare().then(() => {
         action,
       });
       _broadcast(io, roomId);
-      if (room.phase === 'showdown') { io.to(roomId).emit('showdown'); if (room.isZoomTable) handleZoomShowdown(io, roomId); else _scheduleAutoStart(io, roomId); }
+      if (room.phase === 'showdown') {
+        if (tournamentManager.isTournamentTable(roomId)) {
+          ensurePotsAwarded(roomId);  // ポット確定後に脱落チェック
+          tournamentManager.checkEliminations(roomId);
+          _broadcast(io, roomId);
+        }
+        io.to(roomId).emit('showdown');
+        if (room.isZoomTable) handleZoomShowdown(io, roomId);
+        else _scheduleAutoStart(io, roomId);
+      }
     });
 
     // ----- 切断 -----
@@ -441,6 +567,9 @@ app.prepare().then(() => {
   // adminMonitor は express.json() が必要なので、そのルートだけに適用
   const adminMonitor = require('./adminMonitor');
   adminMonitor.setIo(io);
+  adminMonitor.injectAutoStartHandlers(_tryAutoStart, _scheduleAutoStart);
+  // tournamentManager にも注入（balanceTables後のkickstart用）
+  tournamentManager.injectAutoStartHandlers(_tryAutoStart, _scheduleAutoStart);
   expressApp.use('/api/admin/monitor', express.json(), adminMonitor.router);
 
   // ヘルスチェック（render.yaml の healthCheckPath）
@@ -519,7 +648,15 @@ function _makeTimeoutHandler(io, roomId) {
 
     _broadcast(io, rid);
     const room = getOrCreateRoom(rid);
-    if (room?.phase === 'showdown') { io.to(rid).emit('showdown'); if (room.isZoomTable) handleZoomShowdown(io, rid); else _scheduleAutoStart(io, rid); }
+    if (room?.phase === 'showdown') {
+      if (tournamentManager.isTournamentTable(rid)) {
+        tournamentManager.checkEliminations(rid);
+        _broadcast(io, rid);
+      }
+      io.to(rid).emit('showdown');
+      if (room.isZoomTable) handleZoomShowdown(io, rid);
+      else _scheduleAutoStart(io, rid);
+    }
 
     // 連続タイムアウトカウント → 3回で退室
     // タイマー切れ直前のアクションが I/O フェーズで到達して resetTimeout を
@@ -677,10 +814,35 @@ function _hasAnyReservation(roomId) {
 }
 
 function _tryAutoStart(io, roomId) {
+  // ブレイク中はゲーム開始を待機
+  if (tournamentManager.isTournamentTable(roomId)) {
+    const t = tournamentManager.getTournamentByTable(roomId);
+    if (t?.isOnBreak) {
+      // ブレイク終了まで再試行
+      setTimeout(() => {
+        if (canAutoStart(roomId)) _tryAutoStart(io, roomId);
+      }, 5000);
+      return;
+    }
+    // pendingLevelUp があれば次ハンド開始前に適用
+    if (t?.pendingLevelUp) {
+      tournamentManager.applyPendingLevelUp(t.id);
+    }
+    // applyPendingLevelUp でブレイクに入った場合はゲームを開始しない
+    const tAfter = tournamentManager.getTournamentByTable(roomId);
+    if (tAfter?.isOnBreak) {
+      setTimeout(() => {
+        if (canAutoStart(roomId)) _tryAutoStart(io, roomId);
+      }, 5000);
+      return;
+    }
+  }
   const onTimeout = _makeTimeoutHandler(io, roomId);
   const room = startGame(roomId, onTimeout);
   if (room) {
-    console.log(`[auto-start] ${roomId}`);
+    const _room = getOrCreateRoom(roomId);
+  const _allBots = _room?.players.every(p => p.id.startsWith('tbot::')) ?? false;
+  console.log(`[auto-start] ${roomId.slice(-8)} players=${_room?.players.length} allBots=${_allBots} phase=${_room?.phase}`);
     _broadcast(io, roomId);
     io.to(roomId).emit('gameStarted');
   }
@@ -695,14 +857,25 @@ function _scheduleAutoStart(io, roomId) {
   // 退室予約者は即退室
   _processLeaveReservations(io, roomId);
   if (room?.isZoomTable) {
-    // FastFoldテーブルは即スタート
     if (canAutoStart(roomId)) _tryAutoStart(io, roomId);
   } else {
-    // 通常部屋は3秒待つ（二重スケジュール防止）
     if (_pendingAutoStart.has(roomId)) return;
     _pendingAutoStart.add(roomId);
     setTimeout(() => {
       _pendingAutoStart.delete(roomId);
+      // トーナメント: 脱落チェック → テーブルバランシング → 自動スタート
+      if (tournamentManager.isTournamentTable(roomId)) {
+        // balanceTables でチップを移動する前に、全テーブルのポットを確実に精算する。
+        // BOTのみのテーブルでは _broadcast が buildGameState を呼ばないため
+        // _awardPots が未実行のままになり、移動プレイヤーのチップが旧値になるバグがある。
+        const tForEnsure = tournamentManager.getTournamentByTable(roomId);
+        if (tForEnsure) {
+          for (const tid of tForEnsure.tableIds) ensurePotsAwarded(tid);
+        }
+        tournamentManager.checkEliminations(roomId);
+        const t = tournamentManager.getTournamentByTable(roomId);
+        if (t) tournamentManager.balanceTables(t.id);
+      }
       if (canAutoStart(roomId)) _tryAutoStart(io, roomId);
     }, 3000);
   }
@@ -721,13 +894,26 @@ function _broadcast(io, roomId) {
   const room = getOrCreateRoom(roomId);
 
   // プレイヤーへ配信（手札あり）
+  // BOT-only テーブルでは全員ソケット未接続のため buildGameState が呼ばれず
+  // _awardPots が実行されない問題を防ぐため、事前に ensure する
+  let anySocketSent = false;
   for (const player of [...room.players, ...room.pendingPlayers]) {
     const s = io.sockets.sockets.get(player.id);
     if (!s) continue;
+    anySocketSent = true;
     const state   = buildGameState(room, player.id);
     const meta    = state.find((x) => x._meta);
     const players = state.filter((x) => !x._meta);
     s.emit('gameState', { players, meta });
+  }
+  // BOT-only テーブル: ソケット配信がなかった場合も buildGameState を呼んで
+  // _awardPots（ポット配布）を確実に実行する
+  if (!anySocketSent && room.phase === 'showdown' && !room._potAwarded) {
+    console.log(`[broadcast] ${roomId.slice(-8)} BOT-only showdown → ensurePots`);
+    buildGameState(room, null);  // 内部で _awardPots が実行される
+  }
+  if (!anySocketSent) {
+    console.log(`[broadcast] ${roomId.slice(-8)} BOT-only phase=${room.phase} players=${room.players.length}`);
   }
 
   // 観戦者へ配信（手札は伏せる）
@@ -743,11 +929,24 @@ function _broadcast(io, roomId) {
   }
 
   // トーナメント BOT: ターンが来ていれば自動アクション
+  // triggerBotActions は内部で二重スケジュール防止しているため安全に呼べる
   if (tournamentManager.isTournamentTable(roomId)) {
-    tournamentBotManager.triggerBotActions(roomId, (tblId) => {
+    tournamentBotManager.triggerBotActions(roomId, (tblId, botName, botAction) => {
+      // betアクション（call/check/fold/bet/raise）のみplayerActionをemit
+      // drawはdrawFlashで表示するためbotAction=nullで来る
+      if (botName && botAction) {
+        io.to(tblId).emit('playerAction', { playerName: botName, action: botAction });
+      }
+      // _broadcast で次のBOTアクションをトリガーするが、
+      // showdown判定は _broadcast 後の roomフェーズで行う（コールバック内では行わない）
+      // ← コールバック内でshowdown処理+_broadcastをすると二重処理になりバグの原因になる
       _broadcast(io, tblId);
       const r = getOrCreateRoom(tblId);
       if (r?.phase === 'showdown') {
+        ensurePotsAwarded(tblId);
+        if (tournamentManager.isTournamentTable(tblId)) {
+          tournamentManager.checkEliminations(tblId);
+        }
         io.to(tblId).emit('showdown');
         _scheduleAutoStart(io, tblId);
       }
@@ -780,7 +979,14 @@ function _startTournamentScheduler(io) {
       if (!dbTournament || dbTournament.status !== 'registering') return;
 
       const entries = await getEntries(tournamentId);
-      if (entries.length < 2) {
+      const lateRegMinutes = dbTournament.late_reg_minutes ?? 0;
+      // BOT事前予約がある場合はBOTと一緒に開始できる
+      const { getPreBotCount } = require('./adminMonitor');
+      const preBotCount = getPreBotCount(tournamentId);
+      const totalExpected = entries.length + preBotCount;
+      // lateRegMinutes>0はレイトレジスト期間中に参加者を受け付けるため0人でも開始可
+      // BOTなし・lateRegなしで参加者1人以下はキャンセル
+      if (totalExpected < 1 && lateRegMinutes <= 0) {
         console.log(`[scheduler] ${tournamentId}: only ${entries.length} player(s), skip`);
         await updateTournamentStatus(tournamentId, 'cancelled');
         return;
@@ -794,17 +1000,29 @@ function _startTournamentScheduler(io) {
       }));
 
       const tournament = startTournament({
-        id:            tournamentId,
-        name:          dbTournament.name,
-        mode:          dbTournament.mode,
-        startingChips: dbTournament.starting_chips,
-        scheduleId:    dbTournament.blind_schedule_id ?? 'default',
+        id:             tournamentId,
+        name:           dbTournament.name,
+        mode:           dbTournament.mode,
+        startingChips:  dbTournament.starting_chips,
+        scheduleId:     dbTournament.blind_schedule_id ?? 'default',
         players,
-        scheduleData:  dbTournament.blind_levels ?? null,
+        scheduleData:   dbTournament.blind_levels ?? null,
+        lateRegMinutes: dbTournament.late_reg_minutes ?? 0,
       });
 
       if (tournament) {
         console.log(`[scheduler] ${tournamentId}: auto-started (${players.length} players, ${tournament.tableIds.length} tables)`);
+
+        // 事前予約BOTをspawn（adminMonitorと同じロジック）
+        if (preBotCount > 0) {
+          const adminMonitor = require('./adminMonitor');
+          try {
+            await adminMonitor.spawnPreReservedBots(io, tournamentId, dbTournament);
+          } catch (e) {
+            console.error(`[scheduler] bot spawn error:`, e.message);
+          }
+        }
+
         for (const tableId of tournament.tableIds) {
           io.emit('t:tournamentStarting', { tournamentId, tableId });
         }
@@ -835,10 +1053,16 @@ function _startTournamentScheduler(io) {
         } else if (!_scheduled.has(row.id)) {
           console.log(`[scheduler] ${row.id}: scheduled in ${Math.round(diff / 1000)}s`);
           _scheduled.add(row.id);
-          setTimeout(() => {
+          const MAX_TIMEOUT = 24 * 60 * 60 * 1000; // 24時間上限（32bit符号付き整数対策）
+          if (diff > MAX_TIMEOUT) {
+            // 遠い未来のトーナメントは次回の_scanで再スケジュール
             _scheduled.delete(row.id);
-            _launchTournament(row.id);
-          }, diff);
+          } else {
+            setTimeout(() => {
+              _scheduled.delete(row.id);
+              _launchTournament(row.id);
+            }, diff);
+          }
         }
       }
     } catch (err) {

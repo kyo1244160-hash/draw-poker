@@ -27,9 +27,11 @@ interface Player {
   timerRemaining?: number;
 }
 
+interface PotEntry { amount: number; label: string; }
 interface Meta {
   phase: string; mode: string; currentMode: string;
-  pot: number; currentBet: number; betSize: number;
+  pot: number; pots?: PotEntry[];
+  currentBet: number; betSize: number;
   raiseCount: number; maxRaises: number; dealerIndex: number;
   timerRemaining: number | null; timerLimit: number;
   pendingPlayers: string[]; playerCount: number; maxPlayers: number;
@@ -674,7 +676,15 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
   // ===== ポット表示 =====
   const PotBar = ({compact=false}:{compact?:boolean}) => meta.phase==='waiting' ? null : (
     <div style={{display:'flex',gap:8,justifyContent:'center',alignItems:'center',padding:compact?'3px 0':'5px 0',flexWrap:'wrap' as const,flexShrink:0}}>
-      <span style={{...potChipSt, fontSize:compact?11:14}}>🏦 <b style={{color:'var(--gold-bright)'}}>{meta.pot}</b></span>
+      {(meta.pots&&meta.pots.length>1)?meta.pots.map((p,i)=>(
+        <span key={i} style={{...potChipSt,fontSize:compact?10:13,
+          color:i===0?'var(--gold-bright)':'#ffaa44',
+          borderColor:i===0?'var(--gold-dim)':'rgba(255,160,60,0.4)'}}>
+          🏦 {p.label} <b>{p.amount}</b>
+        </span>
+      )):(
+        <span style={{...potChipSt, fontSize:compact?11:14}}>🏦 <b style={{color:'var(--gold-bright)'}}>{meta.pot}</b></span>
+      )}
       {isBetPhase && meta.currentBet>0 && <span style={{...potChipSt, fontSize:compact?11:14}}>BET <b>{meta.currentBet}</b></span>}
     </div>
   );

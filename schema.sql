@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS tournaments (
   max_players         INTEGER,               -- NULL = 無制限
   blind_schedule_id   TEXT        REFERENCES blind_schedules(id),
   is_test             BOOLEAN     NOT NULL DEFAULT FALSE,
+  late_reg_minutes    INTEGER     NOT NULL DEFAULT 0,  -- 0=レベルベース, >0=開始から何分間参加可
   created_by          TEXT        REFERENCES accounts(id),
   created_at          TIMESTAMPTZ DEFAULT NOW(),
   CONSTRAINT tournament_status_check

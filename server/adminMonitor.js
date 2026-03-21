@@ -34,8 +34,10 @@ const {
   _broadcastTournamentStatus,
   startTournament,
   broadcastTableState,
+  addTableToTournament,
+  incrementTotalPlayers,
 } = require('./tournament/tournamentManager');
-const { getOrCreateRoom, getAllRooms, leaveRoom } = require('./poker/gameManager');
+const { getOrCreateRoom, getAllRooms, leaveRoom, canAutoStart, startGame, ensurePotsAwarded } = require('./poker/gameManager');
 const { getTournament: getTournamentDB, getEntries } = require('./db/tournament');
 const { updateTournamentStatus } = require('./db/admin');
 
@@ -44,6 +46,32 @@ const router = express.Router();
 // io インスタンス（index.js から setIo() で注入）
 let _io = null;
 function setIo(io) { _io = io; }
+
+// 事前BOT予約マップ: tournamentId → count
+// DBのFOREIGN KEY制約を避けてメモリで管理
+const _preBotReservations = new Map();
+
+/**
+ * BOT追加後にwaitingまたはshowdown状態のテーブルをゲーム開始させる。
+ * index.js の _tryAutoStart / _scheduleAutoStart を外部から注入して使う。
+ */
+let _tryAutoStartFn = null;
+let _scheduleAutoStartFn = null;
+
+function injectAutoStartHandlers(tryFn, scheduleFn) {
+  _tryAutoStartFn = tryFn;
+  _scheduleAutoStartFn = scheduleFn;
+}
+
+function _kickstartBotOnlyTables(tableIds) {
+  if (!_io || !_tryAutoStartFn) return;
+  for (const tid of tableIds) {
+    if (canAutoStart(tid)) {
+      console.log(`[adminMonitor] kickstart table ${tid.slice(-8)}`);
+      _tryAutoStartFn(_io, tid);
+    }
+  }
+}
 
 // ===== 管理者認証ミドルウェア =====
 async function requireAdmin(req, res, next) {
@@ -247,7 +275,15 @@ router.post('/tournaments/:tournamentId/start', async (req, res) => {
     // DB ステータスを running に更新
     await updateTournamentStatus(tournamentId, 'running');
 
-    // プレイヤー一覧を構築
+    // BOT名プール
+    const BOT_NAME_POOL = [
+      'Dealer-Dan', 'Poker-Pete', 'Lucky-Lou', 'Bluff-Bill',
+      'Ace-Anna', 'Check-Chris', 'Raise-Ray', 'Call-Carl',
+      'Fold-Frank', 'Bet-Betty', 'Slow-Sam', 'Tight-Tom',
+    ];
+    let botNameIdx = 0;
+
+    // プレイヤー一覧（全エントリーが人間）
     const players = entries.map(e => ({
       accountId: e.account_id,
       nickname:  e.nickname ?? e.google_name ?? e.account_id.slice(0, 8),
@@ -265,6 +301,7 @@ router.post('/tournaments/:tournamentId/start', async (req, res) => {
       scheduleId:    dbTournament.blind_schedule_id ?? 'default',
       players,
       scheduleData,
+      lateRegMinutes: dbTournament.late_reg_minutes ?? 0,
     });
 
     if (!tournament) {
@@ -272,6 +309,42 @@ router.post('/tournaments/:tournamentId/start', async (req, res) => {
     }
 
     console.log(`[adminMonitor] tournament ${tournamentId} started by admin ${req.adminId} (${players.length} players)`);
+
+    // 事前予約BOT（_preBotReservationsマップから取得）をspawnBotで配置
+    const preBotCount = _preBotReservations.get(tournamentId) ?? 0;
+    if (preBotCount > 0 && tournament) {
+      const { getOrCreateRoom } = require('./poker/gameManager');
+      const usedNames = new Set(players.map(p => p.nickname));
+      let spawned = 0;
+      for (let i = 0; i < preBotCount; i++) {
+        const baseName = BOT_NAME_POOL[botNameIdx % BOT_NAME_POOL.length];
+        botNameIdx++;
+        // 同名が既にいる場合は番号を付けてユニーク化（例: Dealer-Dan-2）
+        let botName = baseName;
+        let suffix = 2;
+        while (usedNames.has(botName)) {
+          botName = `${baseName}-${suffix++}`;
+        }
+        // 空きがある最小テーブルを探す
+        let targetTid = tournament.tableIds
+          .map(tid => ({ tid, cnt: (getOrCreateRoom(tid)?.players.length ?? 0) + (getOrCreateRoom(tid)?.pendingPlayers.length ?? 0) }))
+          .filter(x => x.cnt < 6)
+          .sort((a, b) => a.cnt - b.cnt)[0]?.tid;
+        // 全テーブルが満席なら新テーブルを追加
+        if (!targetTid) {
+          targetTid = addTableToTournament(tournamentId);
+          if (targetTid) console.log(`[adminMonitor] pre-bot: added new table ${targetTid.slice(-8)}`);
+        }
+        if (targetTid) {
+          tbm.spawnBot(targetTid, botName, dbTournament.starting_chips);
+          usedNames.add(botName);
+          spawned++;
+        }
+      }
+      incrementTotalPlayers(tournamentId, spawned);
+      _preBotReservations.delete(tournamentId);
+      console.log(`[adminMonitor] spawned ${spawned}/${preBotCount} pre-reserved BOTs`);
+    }
 
     // 全クライアントに開始通知（グローバルブロードキャスト）
     // クライアントは t:tournamentStarting を受け取り joinRoom を送る
@@ -412,36 +485,81 @@ router.get('/tournament-bots/:tournamentId', (req, res) => {
 /**
  * POST /api/admin/monitor/tournament-bots/:tournamentId/add
  * body: { tableId?, count? }
- * tableId 省略時は全テーブルに追加
+ * tableId 指定時: そのテーブルのみにcount体追加
+ * tableId 省略時: 全テーブルに均等にcount体ずつ追加（各テーブルの空き枠を考慮）
  */
 router.post('/tournament-bots/:tournamentId/add', (req, res) => {
   const { tableId, count = 1 } = req.body;
   const tournament = getTournament(req.params.tournamentId);
   if (!tournament) return res.status(404).json({ error: 'トーナメントが見つかりません' });
 
-  // テーブル数 × 最大6人 = 複数テーブル分を一度に追加できるよう上限を30に拡大
-  const n = Math.min(Math.max(1, parseInt(count) || 1), 30);
+  // tableId指定時: そのテーブルのみにcount体追加
+  // tableId省略時: count体を全テーブルに均等配分（ラウンドロビン）
+  const totalN = Math.min(Math.max(1, parseInt(count) || 1), 60);
   const targets = tableId ? [tableId] : tournament.tableIds;
   const added = [];
 
   const { getOrCreateRoom } = require('./poker/gameManager');
-  for (const tid of targets) {
-    if (!tournament.tableIds.includes(tid)) continue;
-    const room = getOrCreateRoom(tid);
-    if (!room) continue;
-    const existingNames = room.players.map(p => p.name);
-    for (let i = 0; i < n; i++) {
-      if (room.players.length >= (room.maxPlayers ?? 6)) break;
-      try {
-        const botId = tbm.spawnBot(tid, _pickBotName(existingNames), tournament.startingChips);
-        const spawned = room.players.find(p => p.id === botId);
-        if (spawned) { existingNames.push(spawned.name); added.push({ tableId: tid, name: spawned.name }); }
-      } catch (e) {
-        console.error('[adminMonitor] spawnBot error:', e.message);
+  
+  if (tableId) {
+    // 特定テーブルに追加
+    const room = getOrCreateRoom(tableId);
+    if (room && tournament.tableIds.includes(tableId)) {
+      const existingNames = room.players.map(p => p.name);
+      for (let i = 0; i < totalN; i++) {
+        const totalSeated = room.players.length + (room.pendingPlayers?.length ?? 0);
+        if (totalSeated >= (room.maxPlayers ?? 6)) break;
+        try {
+          const botId = tbm.spawnBot(tableId, _pickBotName(existingNames), tournament.startingChips);
+          const spawned = room.players.find(p => p.id === botId) ?? room.pendingPlayers?.find(p => p.id === botId);
+          if (spawned) { existingNames.push(spawned.name); added.push({ tableId, name: spawned.name }); }
+        } catch (e) { console.error('[adminMonitor] spawnBot error:', e.message); }
       }
+    }
+  } else {
+    // 全テーブルにラウンドロビンで均等配分
+    // テーブルが足りない場合は自動で新テーブルを作成
+    const MAX_TABLES = 10; // 安全上限
+    const tableStates = tournament.tableIds
+      .map(tid => {
+        const room = getOrCreateRoom(tid);
+        return { tid, room, existingNames: room ? room.players.map(p => p.name) : [] };
+      })
+      .filter(t => t.room);
+
+    for (let i = 0; i < totalN; i++) {
+      const maxPerTable = 6;
+      // 空きがあるテーブルを探す
+      let target = tableStates
+        .filter(t => t.room.players.length + (t.room.pendingPlayers?.length ?? 0) < maxPerTable)
+        .sort((a, b) => (a.room.players.length + (a.room.pendingPlayers?.length ?? 0)) - (b.room.players.length + (b.room.pendingPlayers?.length ?? 0)))[0];
+
+      // 全テーブルが満席かつ上限未満なら新テーブルを作成
+      if (!target && tournament.tableIds.length < MAX_TABLES) {
+        const newTid = addTableToTournament(req.params.tournamentId);
+        if (newTid) {
+          const newRoom = getOrCreateRoom(newTid);
+          if (newRoom) {
+            const newState = { tid: newTid, room: newRoom, existingNames: [] };
+            tableStates.push(newState);
+            target = newState;
+            // 新テーブルへのjoin通知をbroadcast
+            broadcastTableState(newTid);
+          }
+        }
+      }
+
+      if (!target) break; // これ以上追加不可
+      try {
+        const botId = tbm.spawnBot(target.tid, _pickBotName(target.existingNames), tournament.startingChips);
+        const spawned = target.room.players.find(p => p.id === botId) ?? target.room.pendingPlayers?.find(p => p.id === botId);
+        if (spawned) { target.existingNames.push(spawned.name); added.push({ tableId: target.tid, name: spawned.name }); }
+      } catch (e) { console.error('[adminMonitor] spawnBot error:', e.message); }
     }
   }
 
+  // BOT追加分をtotalPlayersに反映（開始後に追加したBOTはtotalPlayersに含まれていないため）
+  if (added.length > 0) incrementTotalPlayers(req.params.tournamentId, added.length);
   console.log(`[adminMonitor] トーナメント ${req.params.tournamentId} にBOT ${added.length}体 追加 by ${req.adminId}`);
 
   // 追加後にゲーム状態をブロードキャスト
@@ -449,7 +567,64 @@ router.post('/tournament-bots/:tournamentId/add', (req, res) => {
     broadcastTableState(tid);
   }
 
+  // waiting 状態のテーブルにBOTが揃った場合はゲームを開始させる
+  // （adminMonitorはindex.jsの_tryAutoStartを呼べないためここで代替処理）
+  const tablesToKickstart = (tableId ? [tableId] : tournament.tableIds)
+    .filter(tid => canAutoStart(tid));
+  if (tablesToKickstart.length > 0) {
+    setTimeout(() => _kickstartBotOnlyTables(tablesToKickstart), 500);
+  }
+
   res.json({ ok: true, added });
+});
+
+/**
+ * POST /api/admin/monitor/tournament-bots/:tournamentId/pre-add
+ * registering 状態のトーナメントにBOTを事前登録する（メモリ管理）
+ * body: { count }
+ * DBのFOREIGN KEY制約を避けるため、メモリ上のMapで予約数を管理する
+ * 開始時に startTournament の直後に spawnBot で配置される
+ */
+router.post('/tournament-bots/:tournamentId/pre-add', async (req, res) => {
+  const { count = 1 } = req.body;
+  const tournamentId = req.params.tournamentId;
+  const totalN = Math.min(Math.max(1, parseInt(count) || 1), 60);
+
+  try {
+    // ファイルトップのgetEntries等と同じ getTournamentDB を使用
+    const dbTournament = await getTournamentDB(tournamentId);
+    if (!dbTournament) return res.status(404).json({ error: 'TOURNAMENT_NOT_FOUND' });
+    console.log(`[pre-add] tournament ${tournamentId} status=${dbTournament.status}`);
+    // 既にメモリ上でrunning（startTournament済み）なら /add を使う
+    const alreadyRunning = !!getTournament(tournamentId);
+    if (alreadyRunning) {
+      return res.status(400).json({ error: 'ALREADY_RUNNING', hint: 'use /add for running tournaments' });
+    }
+    // DB status が registering か running（まだメモリにロードされていない）なら予約可能
+    if (!['registering', 'running'].includes(dbTournament.status)) {
+      return res.status(400).json({ error: 'INVALID_STATUS', currentStatus: dbTournament.status });
+    }
+
+    // メモリ上の予約マップに追加
+    const current = _preBotReservations.get(tournamentId) ?? 0;
+    const newTotal = current + totalN;
+    _preBotReservations.set(tournamentId, newTotal);
+
+    console.log(`[adminMonitor] pre-reserved ${totalN} BOTs for ${tournamentId} (total: ${newTotal})`);
+    res.json({ ok: true, added: Array.from({ length: totalN }, (_, i) => ({ name: `BOT-${current + i + 1}` })), totalBots: newTotal, humanPlayers: 0 });
+  } catch (err) {
+    console.error('[adminMonitor] pre-add-bots error:', err.message);
+    res.status(500).json({ error: 'SERVER_ERROR', detail: err.message });
+  }
+});
+
+/**
+ * GET /api/admin/monitor/tournament-bots/:tournamentId/pre-count
+ * 事前登録BOT数を返す
+ */
+router.get('/tournament-bots/:tournamentId/pre-count', (req, res) => {
+  const count = _preBotReservations.get(req.params.tournamentId) ?? 0;
+  res.json({ count });
 });
 
 /**
@@ -508,4 +683,68 @@ function _pickBotName(existingNames) {
   return `TBot-${Date.now()}`;
 }
 
-module.exports = { router, setIo };
+module.exports = {
+  router,
+  setIo,
+  injectAutoStartHandlers,
+  getPreBotCount: (tournamentId) => _preBotReservations.get(tournamentId) ?? 0,
+  /**
+   * 事前予約BOTをspawnする共通関数（手動開始・自動開始どちらからも呼べる）
+   */
+  async spawnPreReservedBots(io, tournamentId, dbTournament) {
+    const preBotCount = _preBotReservations.get(tournamentId) ?? 0;
+    if (preBotCount <= 0) return;
+
+    const { getTournament, addTableToTournament, incrementTotalPlayers } = require('./tournament/tournamentManager');
+    const tournament = getTournament(tournamentId);
+    if (!tournament) return;
+
+    const { getOrCreateRoom } = require('./poker/gameManager');
+    const entries = tournament.players ? tournament.players.map(p => p.nickname) : [];
+    const usedNames = new Set(entries);
+    const BOT_NAME_POOL = [
+      'Dealer-Dan', 'Poker-Pete', 'Lucky-Lou', 'Bluff-Bill',
+      'Ace-Anna', 'Check-Chris', 'Raise-Ray', 'Call-Carl',
+      'Fold-Frank', 'Bet-Betty', 'Slow-Sam', 'Tight-Tom',
+    ];
+    let botNameIdx = 0;
+    let spawned = 0;
+
+    for (let i = 0; i < preBotCount; i++) {
+      const baseName = BOT_NAME_POOL[botNameIdx % BOT_NAME_POOL.length];
+      botNameIdx++;
+      let botName = baseName;
+      let suffix = 2;
+      while (usedNames.has(botName)) { botName = `${baseName}-${suffix++}`; }
+
+      let targetTid = tournament.tableIds
+        .map(tid => ({ tid, cnt: (getOrCreateRoom(tid)?.players.length ?? 0) + (getOrCreateRoom(tid)?.pendingPlayers.length ?? 0) }))
+        .filter(x => x.cnt < 6)
+        .sort((a, b) => a.cnt - b.cnt)[0]?.tid;
+      if (!targetTid) {
+        targetTid = addTableToTournament(tournamentId);
+        if (targetTid) console.log(`[adminMonitor] pre-bot: added new table ${targetTid.slice(-8)}`);
+      }
+      if (targetTid) {
+        tbm.spawnBot(targetTid, botName, dbTournament.starting_chips);
+        usedNames.add(botName);
+        spawned++;
+      }
+    }
+
+    incrementTotalPlayers(tournamentId, spawned);
+    _preBotReservations.delete(tournamentId);
+    console.log(`[adminMonitor] spawned ${spawned}/${preBotCount} pre-reserved BOTs`);
+
+    // kickstart
+    if (io) {
+      const { canAutoStart } = require('./poker/gameManager');
+      for (const tableId of tournament.tableIds) {
+        if (canAutoStart(tableId)) {
+          console.log(`[adminMonitor] kickstart table ${tableId.slice(-8)}`);
+          if (_tryAutoStartFn) _tryAutoStartFn(io, tableId);
+        }
+      }
+    }
+  },
+};
