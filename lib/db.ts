@@ -75,8 +75,8 @@ export const listBlindSchedules: () => Promise<{
   id: string; name: string; description: string | null; levels: unknown;
 }[]> = adminDb.listBlindSchedules;
 
-export const createBlindSchedule: (opts: { name: string; description?: string; levels: unknown }) => Promise<{ id: string; name: string }> = adminDb.createBlindSchedule;
-export const updateBlindSchedule: (id: string, opts: { name: string; description?: string; levels: unknown }) => Promise<{ id: string; name: string } | null> = adminDb.updateBlindSchedule;
+export const createBlindSchedule: (opts: { name: string; description?: string; levels: unknown; lateLevelCutoff?: number }) => Promise<{ id: string; name: string; lateLevelCutoff: number }> = adminDb.createBlindSchedule;
+export const updateBlindSchedule: (id: string, opts: { name: string; description?: string; levels: unknown; lateLevelCutoff?: number }) => Promise<{ id: string; name: string; lateLevelCutoff: number } | null> = adminDb.updateBlindSchedule;
 export const deleteBlindSchedule: (id: string) => Promise<{ id: string } | null> = adminDb.deleteBlindSchedule;
 
 export const forceChangeNickname: (

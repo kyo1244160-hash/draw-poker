@@ -290,18 +290,30 @@ router.post('/tournaments/:tournamentId/start', async (req, res) => {
     }));
 
     // ブラインドスケジュール（DB の levels カラムを使う）
-    const scheduleData = dbTournament.blind_levels ?? null;
+    // postgres.js は JSONB を自動パースするが、二重エンコードで文字列になる場合があるため
+    // safeParseArray で確実に配列に変換する
+    const safeParseArray = (raw) => {
+      if (!raw) return null;
+      if (Array.isArray(raw)) return raw;
+      try {
+        let parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (typeof parsed === 'string') parsed = JSON.parse(parsed);
+        return Array.isArray(parsed) ? parsed : null;
+      } catch { return null; }
+    };
+    const scheduleData = safeParseArray(dbTournament.blind_levels);
 
     // tournamentManager でトーナメント開始
     const tournament = startTournament({
-      id:            tournamentId,
-      name:          dbTournament.name,
-      mode:          dbTournament.mode,
-      startingChips: dbTournament.starting_chips,
-      scheduleId:    dbTournament.blind_schedule_id ?? 'default',
+      id:               tournamentId,
+      name:             dbTournament.name,
+      mode:             dbTournament.mode,
+      startingChips:    dbTournament.starting_chips,
+      scheduleId:       dbTournament.blind_schedule_id ?? 'default',
       players,
       scheduleData,
-      lateRegMinutes: dbTournament.late_reg_minutes ?? 0,
+      lateLevelCutoff:  dbTournament.blind_late_level_cutoff ?? 0,
+      lateRegMinutes:   dbTournament.late_reg_minutes ?? 0,
     });
 
     if (!tournament) {

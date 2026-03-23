@@ -5,6 +5,7 @@ import { SessionProvider, useSession } from 'next-auth/react';
 import { useRouter } from 'next/router';
 import { useEffect } from 'react';
 import { socket, connectWithAuth } from '../socket';
+import { useKeepalive } from '../lib/useKeepalive'; // ← 追加
 
 /** どのページにいても参加済みトーナメントの開始通知を受け取り自動遷移する */
 function TournamentStartWatcher() {
@@ -41,6 +42,12 @@ function TournamentStartWatcher() {
   return null;
 }
 
+/** Render スリープ防止 keepalive（全ページで有効） */
+function Keepalive() {
+  useKeepalive();
+  return null;
+}
+
 export default function App({ Component, pageProps: { session, ...pageProps } }: AppProps) {
   return (
     <SessionProvider session={session}>
@@ -49,6 +56,7 @@ export default function App({ Component, pageProps: { session, ...pageProps } }:
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
       </Head>
       <TournamentStartWatcher />
+      <Keepalive /> {/* ← 追加 */}
       <Component {...pageProps} />
     </SessionProvider>
   );

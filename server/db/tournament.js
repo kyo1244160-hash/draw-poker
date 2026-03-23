@@ -11,10 +11,11 @@ async function getTournament(tournamentId) {
   const [row] = await sql`
     SELECT
       t.*,
-      bs.name        AS blind_schedule_name,
-      bs.levels      AS blind_levels,
+      bs.name             AS blind_schedule_name,
+      bs.levels           AS blind_levels,
+      bs.late_level_cutoff AS blind_late_level_cutoff,
       t.late_reg_minutes,
-      bs.description AS blind_description
+      bs.description      AS blind_description
     FROM tournaments    t
     LEFT JOIN blind_schedules bs ON bs.id = t.blind_schedule_id
     WHERE t.id = ${tournamentId}

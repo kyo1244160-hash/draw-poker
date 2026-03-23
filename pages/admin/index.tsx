@@ -60,6 +60,8 @@ interface BlindSchedule {
   name: string;
   description: string | null;
   levels: BlindScheduleLevel[];
+  lateLevelCutoff: number;
+  isBuiltin?: boolean;  // JS定義の組み込みスケジュール（test等）は削除不可
 }
 
 type Tab = 'users' | 'tournaments' | 'bots' | 'blinds';
@@ -81,8 +83,8 @@ export default function AdminPage() {
   const [editingSchedule,   setEditingSchedule]   = useState<BlindSchedule | null>(null);
   const [blindMsg,          setBlindMsg]          = useState('');
   const defaultLevel = (): BlindScheduleLevel => ({ level: 1, sb: 5, bb: 10, smallBet: 10, bigBet: 20, durationMinutes: 15 });
-  const [newSchedule, setNewSchedule] = useState<{ name: string; description: string | null; levels: BlindScheduleLevel[] }>({
-    name: '', description: '', levels: [defaultLevel()],
+  const [newSchedule, setNewSchedule] = useState<{ name: string; description: string | null; levels: BlindScheduleLevel[]; lateLevelCutoff: number }>({
+    name: '', description: '', levels: [defaultLevel()], lateLevelCutoff: 0,
   });
 
   // トーナメント作成フォーム
@@ -214,6 +216,7 @@ export default function AdminPage() {
       const parsed = (d.schedules ?? []).map((s: BlindSchedule) => ({
         ...s,
         levels: Array.isArray(s.levels) ? s.levels as BlindScheduleLevel[] : [],
+        lateLevelCutoff: s.lateLevelCutoff ?? 0,
       }));
       setBlindSchedules(parsed);
     } catch { setBlindSchedules([]); }
@@ -221,7 +224,7 @@ export default function AdminPage() {
   };
   useEffect(() => { if (tab === 'blinds') fetchBlindSchedules(); }, [tab]);
 
-  const handleSaveSchedule = async (sched: { id?: string; name: string; description: string | null; levels: BlindScheduleLevel[] }) => {
+  const handleSaveSchedule = async (sched: { id?: string; name: string; description: string | null; levels: BlindScheduleLevel[]; lateLevelCutoff: number }) => {
     setBlindMsg('');
     try {
       const method = sched.id ? 'PUT' : 'POST';
@@ -230,13 +233,13 @@ export default function AdminPage() {
         : '/api/admin/tournaments?type=schedules';
       const r = await authFetch(url, {
         method,
-        body: JSON.stringify({ name: sched.name, description: sched.description, levels: sched.levels }),
+        body: JSON.stringify({ name: sched.name, description: sched.description, levels: sched.levels, lateLevelCutoff: sched.lateLevelCutoff ?? 0 }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error ?? 'エラー');
       setBlindMsg(sched.id ? '✅ 更新しました' : '✅ 作成しました');
       setEditingSchedule(null);
-      setNewSchedule({ name: '', description: '', levels: [defaultLevel()] });
+      setNewSchedule({ name: '', description: '', levels: [defaultLevel()], lateLevelCutoff: 0 });
       fetchBlindSchedules();
     } catch (e: unknown) {
       setBlindMsg('❌ ' + (e instanceof Error ? e.message : String(e)));
@@ -1011,9 +1014,11 @@ export default function AdminPage() {
                           onClick={() => setEditingSchedule(editingSchedule?.id === s.id ? null : s)}>
                           {editingSchedule?.id === s.id ? '閉じる' : '✏️ 編集'}
                         </button>
-                        <button style={{ fontSize: 12, background: 'rgba(200,60,60,0.1)', border: '1px solid #f66', color: '#f99', borderRadius: 4, padding: '3px 10px', cursor: 'pointer' }}
-                          onClick={() => setDeleteBlindConfirmId(s.id)}>
-                          🗑 削除
+                        <button
+                          style={{ fontSize: 12, background: s.isBuiltin ? 'rgba(100,100,100,0.1)' : 'rgba(200,60,60,0.1)', border: `1px solid ${s.isBuiltin ? '#555' : '#f66'}`, color: s.isBuiltin ? '#666' : '#f99', borderRadius: 4, padding: '3px 10px', cursor: s.isBuiltin ? 'not-allowed' : 'pointer' }}
+                          onClick={() => !s.isBuiltin && setDeleteBlindConfirmId(s.id)}
+                          title={s.isBuiltin ? '組み込みスケジュールは削除できません' : '削除'}>
+                          🗑 削除{s.isBuiltin ? ' (不可)' : ''}
                         </button>
                       </div>
                       {s.description && <p style={{ fontSize: 12, color: 'var(--cream-dim)', margin: '0 0 8px' }}>{s.description}</p>}
@@ -1040,7 +1045,7 @@ export default function AdminPage() {
                 value={newSchedule}
                 onChange={setNewSchedule}
                 onSave={() => handleSaveSchedule(newSchedule)}
-                onCancel={() => setNewSchedule({ name: '', description: '', levels: [defaultLevel()] })}
+                onCancel={() => setNewSchedule({ name: '', description: '', levels: [defaultLevel()], lateLevelCutoff: 0 })}
                 isEdit={false}
               />
             </div>
@@ -1170,7 +1175,7 @@ function BlindLevelsTable({ levels }: { levels: BlindScheduleLevel[] }) {
   );
 }
 
-interface ScheduleEditValue { id?: string; name: string; description: string | null; levels: BlindScheduleLevel[] }
+interface ScheduleEditValue { id?: string; name: string; description: string | null; levels: BlindScheduleLevel[]; lateLevelCutoff: number }
 function BlindScheduleEditor({ value, onChange, onSave, onCancel, isEdit }: {
   value: ScheduleEditValue;
   onChange: (v: ScheduleEditValue) => void;
@@ -1214,6 +1219,12 @@ function BlindScheduleEditor({ value, onChange, onSave, onCancel, isEdit }: {
         <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4, fontFamily: 'var(--font-title)', fontSize: 11, color: 'var(--gold-dim)' }}>
           説明
           <input style={inp} value={value.description ?? ''} onChange={e => onChange({ ...value, description: e.target.value })} placeholder="例: 20分ごとブラインドアップ" />
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4, fontFamily: 'var(--font-title)', fontSize: 11, color: 'var(--gold-dim)' }}>
+          レイトレジスト終了レベル
+          <span style={{ color: 'var(--cream-dim)', fontSize: 10, fontWeight: 'normal' }}>※時間ベース管理の場合は無効 / 0 = 開始直後に終了</span>
+          <input style={{ ...numInp, width: '100%', textAlign: 'left' as const }} type="number" min={0} value={value.lateLevelCutoff ?? 0}
+            onChange={e => onChange({ ...value, lateLevelCutoff: Number(e.target.value) })} />
         </label>
       </div>
 

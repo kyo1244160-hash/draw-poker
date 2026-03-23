@@ -122,7 +122,7 @@ function _assignTables(tournament, players) {
  * @param {object}   opts.scheduleData   - levels array from DB (optional, overrides scheduleId lookup)
  */
 function startTournament(opts) {
-  const { id, name, mode, startingChips, scheduleId, players, scheduleData, lateRegMinutes } = opts;
+  const { id, name, mode, startingChips, scheduleId, players, scheduleData, lateLevelCutoff, lateRegMinutes } = opts;
 
   if (tournaments.has(id)) {
     console.warn(`[TM] Tournament ${id} already running`);
@@ -156,7 +156,8 @@ function startTournament(opts) {
     _levelTimer:      null,
     // レイトレジスト
     // scheduleDataを使う場合はscheduleがnullになるので、scheduleIdからも取得を試みる
-    lateLevelCutoff:  schedule?.lateLevelCutoff ?? getSchedule(scheduleId)?.lateLevelCutoff ?? 0,
+    // DB スケジュール使用時は opts.lateLevelCutoff を優先、フォールバックは JS 定義値
+    lateLevelCutoff:  lateLevelCutoff ?? schedule?.lateLevelCutoff ?? getSchedule(scheduleId)?.lateLevelCutoff ?? 0,
     lateRegOpen:      true,   // 開始時はtrue、cutoffレベルを過ぎたらfalse
     lateRegMinutes:   lateRegMinutes ?? 0,  // 0=レベルベース管理, >0=時間ベース管理
     lateRegEndAt:     lateRegMinutes > 0 ? Date.now() + lateRegMinutes * 60 * 1000 : null,

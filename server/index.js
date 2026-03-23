@@ -999,15 +999,27 @@ function _startTournamentScheduler(io) {
         nickname:  e.nickname ?? e.google_name ?? e.account_id.slice(0, 8),
       }));
 
+      // JSONB の二重エンコード対策（adminMonitor.js と同じ safeParseArray を使用）
+      const safeParseArray = (raw) => {
+        if (!raw) return null;
+        if (Array.isArray(raw)) return raw;
+        try {
+          let parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+          if (typeof parsed === 'string') parsed = JSON.parse(parsed);
+          return Array.isArray(parsed) ? parsed : null;
+        } catch { return null; }
+      };
+
       const tournament = startTournament({
-        id:             tournamentId,
-        name:           dbTournament.name,
-        mode:           dbTournament.mode,
-        startingChips:  dbTournament.starting_chips,
-        scheduleId:     dbTournament.blind_schedule_id ?? 'default',
+        id:               tournamentId,
+        name:             dbTournament.name,
+        mode:             dbTournament.mode,
+        startingChips:    dbTournament.starting_chips,
+        scheduleId:       dbTournament.blind_schedule_id ?? 'default',
         players,
-        scheduleData:   dbTournament.blind_levels ?? null,
-        lateRegMinutes: dbTournament.late_reg_minutes ?? 0,
+        scheduleData:     safeParseArray(dbTournament.blind_levels),
+        lateLevelCutoff:  dbTournament.blind_late_level_cutoff ?? 0,
+        lateRegMinutes:   dbTournament.late_reg_minutes ?? 0,
       });
 
       if (tournament) {

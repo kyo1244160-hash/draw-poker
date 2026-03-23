@@ -2,7 +2,7 @@
 // app/tournament/[id]/draw/page.tsx
 // トーナメントゲームページ（Socket.IO リアルタイム接続）
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { socket, connectWithAuth } from '../../../../socket';
 import TournamentTable from '../../../components/TournamentTable';
@@ -26,6 +26,7 @@ export default function TournamentDrawPage() {
   const params   = useParams() as { id: string };
   const router   = useRouter();
   const tableIdRef = useRef<string | null>(null);  // サーバーから t:tournamentStarting で受信
+  const selfAccountIdRef = useRef<string | null>(null); // 自分の accountId（gameState から取得）
 
   // players と meta を1つのstateにまとめて1回のレンダリングで更新（カクつき防止）
   const [gameState,  setGameState]  = useState<{ players: PlayerState[]; meta: GameMeta | null }>({ players: [], meta: null });
@@ -38,6 +39,7 @@ export default function TournamentDrawPage() {
   const [eliminated, setEliminated] = useState<{ rank: number; total: number } | null>(null);
   const [finished,   setFinished]   = useState<TournamentRankEntry[] | null>(null);
   const [finishCountdown, setFinishCountdown] = useState<number | null>(null);
+  const [isWinner, setIsWinner] = useState(false);
   const eliminatedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [connected,  setConnected]  = useState(false);
   const [errorMsg,   setErrorMsg]   = useState<string | null>(null);
@@ -86,6 +88,10 @@ export default function TournamentDrawPage() {
       // 自分がplayersに含まれてpendingでなくなったらpending解除
       const selfPlayer = pl?.find((p: PlayerState) => p.isSelf);
       if (selfPlayer && !selfPlayer.isPendingPlayer) setPendingTransfer(null);
+      // 自分の accountId を一度だけキャプチャ
+      if (selfPlayer && !selfAccountIdRef.current) {
+        selfAccountIdRef.current = selfPlayer.id;
+      }
     });
 
     // タイマー
@@ -203,6 +209,11 @@ export default function TournamentDrawPage() {
       }
       setEliminated(null);
       setFinished(rankings);
+      // 自分が1位かチェック（TournamentRankEntry に isSelf はないため accountId で比較）
+      const rank1Entry = rankings.find((r: TournamentRankEntry) => r.rank === 1);
+      if (rank1Entry && selfAccountIdRef.current && rank1Entry.accountId === selfAccountIdRef.current) {
+        setIsWinner(true);
+      }
       // 最終ハンドのshowdownを確認できるよう5秒カウントダウン後に結果ページへ遷移
       setFinishCountdown(5);
       let count = 5;
@@ -273,6 +284,19 @@ export default function TournamentDrawPage() {
     setEliminated(null);
     router.push(`/tournament/${params.id}/result`);
   }
+
+  // ===== 紙吹雪パーティクル（安定した位置を useMemo で生成）=====
+  const confettiParticles = useMemo(() =>
+    Array.from({ length: 60 }, (_, i) => ({
+      id: i,
+      left: `${(i * 1.667) % 100}%`,
+      color: ['#FFD700', '#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', '#C9A84C'][i % 7],
+      duration: 2 + (i % 10) * 0.3,
+      delay: (i % 8) * 0.25,
+      isCircle: i % 3 === 0,
+      size: 8 + (i % 3) * 4,
+    })),
+  []);
 
   // ===== 未接続 =====
   if (!connected) {
@@ -412,6 +436,72 @@ export default function TournamentDrawPage() {
           totalPlayers={eliminated.total}
           onClose={handleEliminatedClose}
         />
+      )}
+
+      {/* 優勝エフェクト（紙吹雪 + オーバーレイ） */}
+      {isWinner && (
+        <>
+          <style dangerouslySetInnerHTML={{ __html: `
+            @keyframes confettiFall {
+              0%   { transform: translateY(-20px) rotate(0deg);   opacity: 1; }
+              80%  { opacity: 1; }
+              100% { transform: translateY(105vh) rotate(720deg); opacity: 0; }
+            }
+            @keyframes winnerPulse {
+              0%, 100% { box-shadow: 0 0 60px rgba(201,168,76,0.7); }
+              50%       { box-shadow: 0 0 100px rgba(201,168,76,1); }
+            }
+            @keyframes winnerTrophy {
+              0%, 100% { transform: scale(1) rotate(-5deg); }
+              50%       { transform: scale(1.15) rotate(5deg); }
+            }
+          `}} />
+          {/* 紙吹雪レイヤー */}
+          <div style={{ position: 'fixed', inset: 0, zIndex: 90, pointerEvents: 'none', overflow: 'hidden' }}>
+            {confettiParticles.map(p => (
+              <div key={p.id} style={{
+                position: 'absolute',
+                top: '-20px',
+                left: p.left,
+                width: p.size,
+                height: p.size,
+                background: p.color,
+                borderRadius: p.isCircle ? '50%' : 2,
+                animation: `confettiFall ${p.duration}s ${p.delay}s ease-in infinite`,
+              }} />
+            ))}
+          </div>
+          {/* 優勝オーバーレイ */}
+          <div style={{
+            position: 'fixed', top: '50%', left: '50%',
+            transform: 'translate(-50%, -50%)',
+            background: 'linear-gradient(135deg, rgba(18,12,0,0.97), rgba(40,28,0,0.97))',
+            border: '3px solid var(--gold)',
+            borderRadius: 20,
+            padding: '44px 64px',
+            textAlign: 'center' as const,
+            zIndex: 100,
+            animation: 'winnerPulse 1.8s ease-in-out infinite',
+            minWidth: 280,
+          }}>
+            <div style={{ fontSize: 72, marginBottom: 8, display: 'inline-block', animation: 'winnerTrophy 1.2s ease-in-out infinite' }}>🏆</div>
+            <div style={{
+              fontFamily: 'var(--font-title)', fontSize: 40, color: 'var(--gold)',
+              letterSpacing: '0.2em', margin: '8px 0 12px',
+              textShadow: '0 0 20px rgba(201,168,76,0.9)',
+            }}>
+              優勝！
+            </div>
+            <div style={{ fontFamily: 'var(--font-body)', fontSize: 16, color: 'var(--cream)', marginBottom: 4 }}>
+              おめでとうございます！
+            </div>
+            {finishCountdown !== null && (
+              <div style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--cream-dim)', marginTop: 12 }}>
+                {finishCountdown}秒後に結果ページへ移動します
+              </div>
+            )}
+          </div>
+        </>
       )}
     </div>
   );

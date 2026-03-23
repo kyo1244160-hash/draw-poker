@@ -42,11 +42,12 @@ CREATE TABLE IF NOT EXISTS admins (
 -- levels の形式: [{ level, sb, bb, smallBet, bigBet, durationMinutes }]
 -- durationMinutes = 0 は最終レベル（タイマーなし）
 CREATE TABLE IF NOT EXISTS blind_schedules (
-  id          TEXT        PRIMARY KEY,  -- "standard" / "turbo" など
-  name        TEXT        NOT NULL,
-  description TEXT,
-  levels      JSONB       NOT NULL,
-  created_at  TIMESTAMPTZ DEFAULT NOW()
+  id                TEXT        PRIMARY KEY,  -- "standard" / "turbo" など
+  name              TEXT        NOT NULL,
+  description       TEXT,
+  levels            JSONB       NOT NULL,
+  late_level_cutoff INTEGER     NOT NULL DEFAULT 0,  -- レイトレジスト終了レベル（0=開始直後）
+  created_at        TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- トーナメント
@@ -179,3 +180,10 @@ VALUES (
   ]'::jsonb
 )
 ON CONFLICT (id) DO NOTHING;
+
+-- ---------------------------------------------------------------
+-- マイグレーション（既存DBへの適用）
+-- 新規構築の場合は不要。既存DBには以下を Supabase SQL Editor で実行してください。
+-- ---------------------------------------------------------------
+ALTER TABLE blind_schedules
+  ADD COLUMN IF NOT EXISTS late_level_cutoff INTEGER NOT NULL DEFAULT 0;

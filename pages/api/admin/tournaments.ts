@@ -26,28 +26,41 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
       return res.status(200).json({ schedules });
     }
     if (req.method === 'POST') {
-      const { name, description, levels } = req.body as { name?: string; description?: string; levels?: unknown };
+      const { name, description, levels, lateLevelCutoff } = req.body as { name?: string; description?: string; levels?: unknown; lateLevelCutoff?: number };
       if (!name?.trim() || !Array.isArray(levels) || levels.length === 0)
         return res.status(400).json({ error: 'name と levels は必須です' });
-      const row = await createBlindSchedule({ name: name.trim(), description, levels });
+      const row = await createBlindSchedule({ name: name.trim(), description, levels, lateLevelCutoff: lateLevelCutoff ?? 0 });
       return res.status(200).json({ schedule: row });
     }
     if (req.method === 'PUT') {
       const id = req.query.id as string;
       if (!id) return res.status(400).json({ error: 'id が必要です' });
-      const { name, description, levels } = req.body as { name?: string; description?: string; levels?: unknown };
+      const { name, description, levels, lateLevelCutoff } = req.body as { name?: string; description?: string; levels?: unknown; lateLevelCutoff?: number };
       if (!name?.trim() || !Array.isArray(levels) || levels.length === 0)
         return res.status(400).json({ error: 'name と levels は必須です' });
-      const row = await updateBlindSchedule(id, { name: name.trim(), description, levels });
-      if (!row) return res.status(404).json({ error: 'スケジュールが見つかりません' });
-      return res.status(200).json({ schedule: row });
+      try {
+        const row = await updateBlindSchedule(id, { name: name.trim(), description, levels, lateLevelCutoff: lateLevelCutoff ?? 0 });
+        if (!row) return res.status(404).json({ error: 'スケジュールが見つかりません' });
+        return res.status(200).json({ schedule: row });
+      } catch (e: unknown) {
+        const err = e as { message?: string };
+        return res.status(500).json({ error: err.message ?? '更新に失敗しました' });
+      }
     }
     if (req.method === 'DELETE') {
       const id = req.query.id as string;
       if (!id) return res.status(400).json({ error: 'id が必要です' });
-      const row = await deleteBlindSchedule(id);
-      if (!row) return res.status(404).json({ error: 'スケジュールが見つかりません' });
-      return res.status(200).json({ ok: true });
+      try {
+        const row = await deleteBlindSchedule(id);
+        if (!row) return res.status(404).json({ error: 'スケジュールが見つかりません' });
+        return res.status(200).json({ ok: true });
+      } catch (e: unknown) {
+        const err = e as { code?: string; message?: string };
+        if (err.code === 'BUILTIN_SCHEDULE') {
+          return res.status(400).json({ error: err.message ?? '組み込みスケジュールは削除できません' });
+        }
+        throw e;
+      }
     }
     return res.status(405).json({ error: 'Method not allowed' });
   }
