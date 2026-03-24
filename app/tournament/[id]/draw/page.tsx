@@ -25,8 +25,8 @@ interface ActionLog { id: number; text: string; }
 export default function TournamentDrawPage() {
   const params   = useParams() as { id: string };
   const router   = useRouter();
+  const accountIdRef = useRef<string | null>(null); // 自分の accountId（/api/auth/session から取得）
   const tableIdRef = useRef<string | null>(null);  // サーバーから t:tournamentStarting で受信
-  const selfAccountIdRef = useRef<string | null>(null); // 自分の accountId（gameState から取得）
 
   // players と meta を1つのstateにまとめて1回のレンダリングで更新（カクつき防止）
   const [gameState,  setGameState]  = useState<{ players: PlayerState[]; meta: GameMeta | null }>({ players: [], meta: null });
@@ -64,6 +64,13 @@ export default function TournamentDrawPage() {
     let cancelled = false;
     const tournamentId = params.id;
 
+    // App Router は SessionProvider の外なので useSession() が使えない
+    // /api/auth/session から accountId を取得して ref に保持する
+    fetch('/api/auth/session')
+      .then(r => r.ok ? r.json() : null)
+      .then(s => { if (s?.user?.accountId) accountIdRef.current = s.user.accountId; })
+      .catch(() => {});
+
     connectWithAuth().then(ok => {
       if (cancelled) return;
       if (!ok) { router.push('/'); return; }
@@ -88,10 +95,6 @@ export default function TournamentDrawPage() {
       // 自分がplayersに含まれてpendingでなくなったらpending解除
       const selfPlayer = pl?.find((p: PlayerState) => p.isSelf);
       if (selfPlayer && !selfPlayer.isPendingPlayer) setPendingTransfer(null);
-      // 自分の accountId を一度だけキャプチャ
-      if (selfPlayer && !selfAccountIdRef.current) {
-        selfAccountIdRef.current = selfPlayer.id;
-      }
     });
 
     // タイマー
@@ -209,22 +212,34 @@ export default function TournamentDrawPage() {
       }
       setEliminated(null);
       setFinished(rankings);
-      // 自分が1位かチェック（TournamentRankEntry に isSelf はないため accountId で比較）
+      // 自分が1位かチェック（accountIdRef と rankings の accountId を比較）
+      // ※ App Router は SessionProvider 外のため /api/auth/session で取得した値を使う
+      const myAccountId = accountIdRef.current;
       const rank1Entry = rankings.find((r: TournamentRankEntry) => r.rank === 1);
-      if (rank1Entry && selfAccountIdRef.current && rank1Entry.accountId === selfAccountIdRef.current) {
+      const isMyWin = !!(rank1Entry && myAccountId && rank1Entry.accountId === myAccountId);
+
+      const startCountdown = (seconds: number) => {
+        setFinishCountdown(seconds);
+        let count = seconds;
+        const interval = setInterval(() => {
+          count -= 1;
+          setFinishCountdown(count);
+          if (count <= 0) {
+            clearInterval(interval);
+            router.push(`/tournament/${params.id}/result`);
+          }
+        }, 1000);
+      };
+
+      if (isMyWin) {
+        // 優勝者: 即座にオーバーレイ表示（サーバーがshowdown後5秒待ってからemitするため
+        // クライアントで追加遅延は不要）。カウントダウンバナーは優勝オーバーレイ内に表示。
         setIsWinner(true);
+        startCountdown(10);
+      } else {
+        // 非優勝者: 即座に5秒カウントダウン
+        startCountdown(5);
       }
-      // 最終ハンドのshowdownを確認できるよう5秒カウントダウン後に結果ページへ遷移
-      setFinishCountdown(5);
-      let count = 5;
-      const interval = setInterval(() => {
-        count -= 1;
-        setFinishCountdown(count);
-        if (count <= 0) {
-          clearInterval(interval);
-          router.push(`/tournament/${params.id}/result`);
-        }
-      }, 1000);
     });
 
     // キック
@@ -384,8 +399,8 @@ export default function TournamentDrawPage() {
         </div>
       )}
 
-      {/* トーナメント終了カウントダウン */}
-      {finishCountdown !== null && (
+      {/* トーナメント終了カウントダウン（優勝者はオーバーレイ内に表示するためここでは非表示）*/}
+      {finishCountdown !== null && !isWinner && (
         <div style={{
           position:'fixed' as const, bottom:32, left:'50%', transform:'translateX(-50%)',
           background:'linear-gradient(135deg,rgba(20,10,0,0.97),rgba(40,25,0,0.97))',

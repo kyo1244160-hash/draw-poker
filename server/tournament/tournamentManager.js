@@ -353,22 +353,26 @@ function checkEliminations(tableId) {
 function _eliminatePlayer(tournament, tableId, player) {
   // rankは「現在の生存者数 + 脱落済み数 + 1（今脱落するプレイヤー自身）」
   // totalPlayersはBOT追加で増減するため使わず、実際の残人数から計算
-  const currentRemaining = (() => {
-    const { getOrCreateRoom: gr } = require('../poker/gameManager');
-    let cnt = 0;
-    for (const tid of tournament.tableIds) {
-      const r = gr(tid);
-      if (r) cnt += r.players.length;
-    }
-    return cnt;
-  })();
-  const rank = currentRemaining;  // 今いる人数 = この人の順位
+  // rank = 脱落時点での残人数（eliminationOrder ベース）
+  // room.players.length は leaveRoom 遅延中に不正確になるため使用しない
+  const rank = Math.max(1, tournament.totalPlayers - tournament.eliminationOrder.length);
   tournament.eliminationOrder.push(player.accountId ?? player.id);
 
   console.log(`[TM] ${tournament.id}: ${player.name} eliminated, rank=${rank}`);
 
-  // テーブルから退場（leaveRoomはsocketId単一引数）
-  leaveRoom(player.id);
+  // eliminationOrder に先に追加（_countRemaining がこれを参照して整合性を保つ）
+  // leaveRoom のタイミング:
+  //   showdown中 → 3秒遅延（手札公開のためテーブルに留める）
+  //   それ以外   → 即時（フォールド・オールイン前脱落等）
+  const { getOrCreateRoom: _gr } = require('../poker/gameManager');
+  const _roomNow = _gr(tableId);
+  const isShowdownPhase = _roomNow?.phase === 'showdown';
+  if (isShowdownPhase) {
+    const _pid = player.id;
+    setTimeout(() => leaveRoom(_pid), 3000);
+  } else {
+    leaveRoom(player.id);
+  }
 
   // 同テーブルの全員にバスト通知（showdown表示が先に届くよう1秒遅延）
   if (_io) {
@@ -392,14 +396,13 @@ function _eliminatePlayer(tournament, tableId, player) {
 }
 
 function _countRemaining(tournament) {
-  // pendingPlayers（ゲーム中テーブルに移動してきたプレイヤー）も含めてカウント。
-  // これを漏らすと「1人しかいない」と誤判定して _finishTournament が呼ばれてしまう。
-  let count = 0;
-  for (const tableId of tournament.tableIds) {
-    const room = getOrCreateRoom(tableId);
-    if (room) count += room.players.length + room.pendingPlayers.length;
-  }
-  return count;
+  // eliminationOrder（脱落済み人数）を totalPlayers から引いて残人数を計算する。
+  // leaveRoom を遅延実行している場合、room.players.length は脱落者がまだ残るため
+  // room を直接カウントすると誤った残人数になる。
+  // totalPlayers - 脱落済み数 = 正確な残人数。
+  const eliminated = tournament.eliminationOrder.length;
+  // ただし pendingPlayers（テーブル移動待機中）は totalPlayers に含まれるため考慮不要
+  return Math.max(0, tournament.totalPlayers - eliminated);
 }
 
 // ===== トーナメント終了 =====

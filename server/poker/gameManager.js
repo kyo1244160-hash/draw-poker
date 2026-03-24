@@ -598,32 +598,35 @@ function _nextPhase(room) {
 // allInプレイヤーが混在する場合にメインポット/サイドポットを正しく分配する
 // =====================================================
 function _awardPots(room, activePlayers) {
+  // sittingOut を除く全プレイヤー（フォールド含む）の貢献額を取得
   const allPlayers = room.players.filter(p => !p.sittingOut);
-  // 全プレイヤーの貢献額でサイドポットを計算
-  const contribs = allPlayers
-    .map(p => ({ player: p, contrib: p.totalContribution ?? 0 }))
-    .sort((a, b) => a.contrib - b.contrib);
+
+  // 貢献額の重複なしレベルを昇順で取得
+  const levels = [...new Set(
+    allPlayers.map(p => p.totalContribution ?? 0).filter(c => c > 0)
+  )].sort((a, b) => a - b);
 
   let totalAwarded = 0;
   let prevLevel = 0;
 
-  for (let i = 0; i < contribs.length; i++) {
-    const level = contribs[i].contrib;
-    if (level <= prevLevel) continue;
-
-    // このレベルのポット額 = (level - prevLevel) × まだ生きているプレイヤー数
-    const potSize = (level - prevLevel) * contribs.slice(i).length;
-    // 既に計算した分を超えないよう cap
+  for (const level of levels) {
+    // このレベルのポット額 = (level - prevLevel) × 貢献額 >= level の全プレイヤー数
+    // フォールドしたプレイヤーの貢献分も含めて正確に計算する
+    const contributors = allPlayers.filter(p => (p.totalContribution ?? 0) >= level).length;
+    const potSize = (level - prevLevel) * contributors;
     const cappedPot = Math.min(potSize, room.pot - totalAwarded);
     if (cappedPot <= 0) break;
 
-    // このポットに参加できるプレイヤー（貢献額 >= level かつ折り畳んでいない）
+    // 勝者決定: フォールドしていないかつ貢献額 >= level のプレイヤーが対象
     const eligible = activePlayers.filter(p => (p.totalContribution ?? 0) >= level);
     if (eligible.length === 0) {
-      // 全員フォールド → 最後に生きていたプレイヤーへ（通常ここには来ない）
-      if (activePlayers.length > 0) activePlayers[0].chips += cappedPot;
+      // 全員フォールド（通常は起きないが安全のため）→ activePlayers の勝者へ
+      if (activePlayers.length > 0) {
+        const safWinnerId = findWinner(activePlayers, room.currentMode);
+        const safWinner = activePlayers.find(p => p.id === safWinnerId) ?? activePlayers[0];
+        safWinner.chips += cappedPot;
+      }
     } else {
-      // ハンド評価で勝者決定
       const winnerId = findWinner(eligible, room.currentMode);
       const winner = eligible.find(p => p.id === winnerId);
       if (winner) winner.chips += cappedPot;
@@ -632,10 +635,12 @@ function _awardPots(room, activePlayers) {
     prevLevel = level;
   }
 
-  // 端数（計算誤差）があればトップのactiveプレイヤーに渡す
+  // 端数（計算誤差）があれば勝者に渡す
   const remainder = room.pot - totalAwarded;
   if (remainder > 0 && activePlayers.length > 0) {
-    activePlayers[0].chips += remainder;
+    const remWinnerId = findWinner(activePlayers, room.currentMode);
+    const remWinner = activePlayers.find(p => p.id === remWinnerId) ?? activePlayers[0];
+    remWinner.chips += remainder;
   }
   room.pot = 0;
 }
@@ -662,9 +667,11 @@ function buildGameState(room, requesterId) {
 
   const playerStates = room.players.map((p) => {
     const isSelf   = p.id === requesterId;
-    // ショーダウン時: 複数人が残った場合のみカードを公開（全員フォールドは1人勝ちでマック不要）
-    // activePlayers(フォールドしていないプレイヤー)が2人以上いる場合のみショーダウン公開
-    const isContested = activePlayers.length >= 2;
+    // ショーダウン時: フォールドしていないプレイヤーが2人以上いる場合にカードを公開
+    // activePlayers はchips>0を含まないケースがあるため、未フォールド全員でカウント
+    // オールイン（chips=0）プレイヤーも手札公開対象に含める
+    const notFolded = room.players.filter(q => !q.folded && !q.sittingOut);
+    const isContested = notFolded.length >= 2;
     const reveal   = isSelf || (isShowdown && !p.folded && isContested);
     const isMyTurn = !isShowdown && currentPlayer != null && p.id === currentPlayer.id;
     const toCall   = isBetPhase ? Math.max(0, room.currentBet - p.bet) : 0;
