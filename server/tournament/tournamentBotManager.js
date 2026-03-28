@@ -1,3 +1,5 @@
+const { log, logDev } = require('../logger');
+
 'use strict';
 /**
  * tournamentBotManager.js
@@ -75,7 +77,7 @@ function spawnBot(tableId, name, chips) {
   if (!_tableBots.has(tableId)) _tableBots.set(tableId, new Set());
   _tableBots.get(tableId).add(botId);
 
-  console.log(`[TBotM] spawn ${name} (${botId}) → ${tableId}`);
+  logDev(`[TBotM] spawn ${name} (${botId}) → ${tableId}`);
   return botId;
 }
 
@@ -119,7 +121,7 @@ function triggerBotActions(tableId, onActionDone) {
 
   const botIds = _tableBots.get(tableId);
   if (!botIds || botIds.size === 0) {
-    console.log(`[TBotM] ${tableId.slice(-8)} phase=${room.phase} botIds=empty → skip`);
+    logDev(`[TBotM] ${tableId.slice(-8)} phase=${room.phase} botIds=empty → skip`);
     return;
   }
 
@@ -127,7 +129,8 @@ function triggerBotActions(tableId, onActionDone) {
   const currentPlayer = room.players[room.actionIndex];
   if (!currentPlayer || !botIds.has(currentPlayer.id)) {
     const curName = currentPlayer?.name ?? 'none';
-    console.log(`[TBotM] ${tableId.slice(-8)} phase=${room.phase} turn=${curName} (not BOT) → skip`);
+    logDev(`[TBotM] ${tableId.slice(-8)} phase=${room.phase} turn=${curName} (not BOT) → skip`);
+    log(`[bot-chain] END table=${tableId.slice(-8)} phase=${room.phase} → human turn=${curName}`);
     return;
   }
 
@@ -136,11 +139,11 @@ function triggerBotActions(tableId, onActionDone) {
 
   // 同じBOTのアクションが既にスケジュール済みならスキップ
   if (_pendingBotAction.has(pendingKey)) {
-    console.log(`[TBotM] ${tableId.slice(-8)} ${currentPlayer.name} pending → skip duplicate`);
+    logDev(`[TBotM] ${tableId.slice(-8)} ${currentPlayer.name} pending → skip duplicate`);
     return;
   }
   _pendingBotAction.set(pendingKey, true);
-  console.log(`[TBotM] ${tableId.slice(-8)} phase=${room.phase} → schedule ${currentPlayer.name}`);
+  logDev(`[TBotM] ${tableId.slice(-8)} phase=${room.phase} → schedule ${currentPlayer.name}`);
 
   // リングBOT同等の遅延（500〜1500ms）
   const delay = 500 + Math.random() * 1000;
@@ -148,11 +151,11 @@ function triggerBotActions(tableId, onActionDone) {
     _pendingBotAction.delete(pendingKey);
 
     const room2 = getOrCreateRoom(tableId);
-    if (!room2) { console.log(`[TBotM] ${tableId.slice(-8)} room gone`); return; }
+    if (!room2) { logDev(`[TBotM] ${tableId.slice(-8)} room gone`); return; }
     const cur = room2.players[room2.actionIndex];
     // ターンが変わっていたらスキップ
     if (!cur || cur.id !== botId) {
-      console.log(`[TBotM] ${tableId.slice(-8)} turn changed → skip`);
+      logDev(`[TBotM] ${tableId.slice(-8)} turn changed → skip`);
       return;
     }
 
@@ -161,12 +164,12 @@ function triggerBotActions(tableId, onActionDone) {
     if (room2.phase.startsWith('draw')) {
       const indices = decideBotDraw(cur.hand, room2.currentMode);
       acted = !!drawCards(tableId, botId, indices);
-      console.log(`[TBotM] ${tableId.slice(-8)} ${cur.name} draw ${indices.length}枚 acted=${acted}`);
+      logDev(`[TBotM] ${tableId.slice(-8)} ${cur.name} draw ${indices.length}枚 acted=${acted}`);
     } else if (room2.phase.startsWith('bet')) {
       const action = decideBotBetAction(room2, cur);
       acted = !!betAction(tableId, botId, action);
       if (acted) doneAction = action;
-      console.log(`[TBotM] ${tableId.slice(-8)} ${cur.name} ${action} acted=${acted} chips=${cur.chips}`);
+      logDev(`[TBotM] ${tableId.slice(-8)} ${cur.name} ${action} acted=${acted} chips=${cur.chips}`);
     }
 
     if (acted && onActionDone) onActionDone(tableId, cur.name, doneAction);
@@ -184,7 +187,7 @@ function removeBots(tableId) {
   for (const botId of botIds) {
     leaveRoom(tableId, botId);
     _bots.delete(botId);
-    console.log(`[TBotM] remove bot ${botId} from ${tableId}`);
+    logDev(`[TBotM] remove bot ${botId} from ${tableId}`);
   }
   _tableBots.delete(tableId);
 }
@@ -206,7 +209,7 @@ function eliminateZeroChipBots(tableId) {
       _bots.delete(p.id);
       botIds.delete(p.id);
       eliminated.push(p.id);
-      console.log(`[TBotM] bot ${p.name} eliminated (chips=0)`);
+      logDev(`[TBotM] bot ${p.name} eliminated (chips=0)`);
     }
   }
   return eliminated;
@@ -237,7 +240,12 @@ function moveBot(botId, fromTableId, toTableId) {
   if (!_tableBots.has(toTableId)) _tableBots.set(toTableId, new Set());
   _tableBots.get(toTableId).add(botId);
 
-  console.log(`[TBotM] moveBot ${botId} ${fromTableId.slice(-8)} → ${toTableId.slice(-8)}`);
+  logDev(`[TBotM] moveBot ${botId} ${fromTableId.slice(-8)} → ${toTableId.slice(-8)}`);
+}
+
+/** テーブルのBOT IDセットを返す */
+function getBotIds(tableId) {
+  return _tableBots.get(tableId) ?? new Set();
 }
 
 module.exports = {
@@ -248,4 +256,5 @@ module.exports = {
   eliminateZeroChipBots,
   isTournamentBotId,
   moveBot,
+  getBotIds,
 };

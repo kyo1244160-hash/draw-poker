@@ -1,3 +1,5 @@
+const { log, logDev, logPot } = require('../logger');
+
 /**
  * gameManager.js — ゲーム状態管理
  *
@@ -409,7 +411,7 @@ function _drawFromDeck(room) {
     // 捨て札をシャッフルして新しいデッキとして使用
     room.deck = shuffleDeck([...room.discardPile]);
     room.discardPile = [];
-    console.log(`[deck] 捨て札 ${room.deck.length}枚をリシャッフルしました`);
+    logDev(`[deck] 捨て札 ${room.deck.length}枚をリシャッフルしました`);
   }
   return room.deck.shift() ?? null;
 }
@@ -598,50 +600,61 @@ function _nextPhase(room) {
 // allInプレイヤーが混在する場合にメインポット/サイドポットを正しく分配する
 // =====================================================
 function _awardPots(room, activePlayers) {
-  // sittingOut を除く全プレイヤー（フォールド含む）の貢献額を取得
   const allPlayers = room.players.filter(p => !p.sittingOut);
 
-  // 貢献額の重複なしレベルを昇順で取得
-  const levels = [...new Set(
-    allPlayers.map(p => p.totalContribution ?? 0).filter(c => c > 0)
-  )].sort((a, b) => a - b);
+  // スプリット境界 = 全プレイヤーの totalContribution を使う（標準サイドポット計算）
+  // ※ オールインのみを使うと「AllIn > 相手のcontrib」の場合に誤精算が発生する
+  //   例: AllIn=1680, 相手=1600 → levels=[1680] だとpotSize=1680*1=1680が
+  //       「AllIn専有分」として計算されるが、実際は両者共通1600*2=3200 + AllIn余剰80 が正しい
+  const allLevels = allPlayers
+    .map(p => p.totalContribution ?? 0)
+    .filter(c => c > 0);
+  const levels = [...new Set(allLevels)].sort((a, b) => a - b);
+
+  // ===== ポット計算ログ =====
+  log(`[pot] ===== _awardPots START roomId=${room.id} pot=${room.pot} =====`);
+  log(`[pot] allPlayers: ${allPlayers.map(p => `${p.name}(chips=${p.chips},contrib=${p.totalContribution??0},folded=${p.folded})`).join(', ')}`);
+  log(`[pot] activePlayers: ${activePlayers.map(p => `${p.name}(contrib=${p.totalContribution??0})`).join(', ')}`);
+  log(`[pot] levels: [${levels.join(', ')}]`);
 
   let totalAwarded = 0;
   let prevLevel = 0;
 
   for (const level of levels) {
-    // このレベルのポット額 = (level - prevLevel) × 貢献額 >= level の全プレイヤー数
-    // フォールドしたプレイヤーの貢献分も含めて正確に計算する
     const contributors = allPlayers.filter(p => (p.totalContribution ?? 0) >= level).length;
     const potSize = (level - prevLevel) * contributors;
     const cappedPot = Math.min(potSize, room.pot - totalAwarded);
     if (cappedPot <= 0) break;
 
-    // 勝者決定: フォールドしていないかつ貢献額 >= level のプレイヤーが対象
     const eligible = activePlayers.filter(p => (p.totalContribution ?? 0) >= level);
+    let winnerName = '(none)';
     if (eligible.length === 0) {
-      // 全員フォールド（通常は起きないが安全のため）→ activePlayers の勝者へ
       if (activePlayers.length > 0) {
         const safWinnerId = findWinner(activePlayers, room.currentMode);
         const safWinner = activePlayers.find(p => p.id === safWinnerId) ?? activePlayers[0];
         safWinner.chips += cappedPot;
+        winnerName = safWinner.name + ' (fallback)';
       }
     } else {
       const winnerId = findWinner(eligible, room.currentMode);
       const winner = eligible.find(p => p.id === winnerId);
-      if (winner) winner.chips += cappedPot;
+      if (winner) { winner.chips += cappedPot; winnerName = winner.name; }
     }
+    log(`[pot] level=${level} potSize=${potSize} cappedPot=${cappedPot} contributors=${contributors} eligible=[${eligible.map(p=>p.name).join(',')}] winner=${winnerName}`);
     totalAwarded += cappedPot;
     prevLevel = level;
   }
 
-  // 端数（計算誤差）があれば勝者に渡す
   const remainder = room.pot - totalAwarded;
   if (remainder > 0 && activePlayers.length > 0) {
     const remWinnerId = findWinner(activePlayers, room.currentMode);
     const remWinner = activePlayers.find(p => p.id === remWinnerId) ?? activePlayers[0];
     remWinner.chips += remainder;
+    log(`[pot] remainder=${remainder} → winner=${remWinner.name}`);
   }
+  log(`[pot] totalAwarded=${totalAwarded} remainder=${remainder} pot_after=${0}`);
+  log(`[pot] chips_after: ${allPlayers.map(p => `${p.name}=${p.chips}`).join(', ')}`);
+  log(`[pot] ===== _awardPots END =====`);
   room.pot = 0;
 }
 
@@ -711,15 +724,24 @@ function buildGameState(room, requesterId) {
   const _potsForDisplay = (() => {
     if (room.pot <= 0) return [];
     const allP = room.players.filter(p => !p.sittingOut);
-    // 真のオールイン（chips=0かつフォールドしていない）が1人以上いる場合のみ分割計算
+    // スプリット境界 = 全プレイヤーの totalContribution（BETフェーズ中も含む）
+    // オールインがない場合は単純ポット表示
     const hasRealAllIn = allP.some(p => p.chips <= 0 && !p.folded);
     if (!hasRealAllIn) return [{ amount: room.pot, label: 'ポット' }];
-
-    const contribs = allP
-      .map(p => p.totalContribution ?? 0)
+    // 全プレイヤーのcontrib+betをlevelに使う（_awardPotsと同じ境界）
+    const allLevelsDisplay = allP
+      .map(p => (p.totalContribution ?? 0))
       .filter(c => c > 0);
-    if (contribs.length === 0) return [{ amount: room.pot, label: 'ポット' }];
-    const levels = [...new Set(contribs)].sort((a, b) => a - b);
+    if (allLevelsDisplay.length === 0) return [{ amount: room.pot, label: 'ポット' }];
+    const levels = [...new Set(allLevelsDisplay)].sort((a, b) => a - b);
+
+    // BETフェーズ中は p.bet がまだ room.pot に未加算なので仮想ポットで計算
+    const virtualPot = room.pot + allP.reduce((s, p) => s + (p.bet ?? 0), 0);
+
+    // ===== 表示用ポットログ =====
+    logPot(`[pot-display] phase=${room.phase} room.pot=${room.pot} virtualPot=${virtualPot} levels=[${levels.join(',')}]`);
+    logPot(`[pot-display] players: ${allP.map(p => `${p.name}(chips=${p.chips},bet=${p.bet??0},contrib=${p.totalContribution??0},folded=${p.folded})`).join(', ')}`);
+
     const result = [];
     let prevLevel = 0;
     let totalCalc = 0;
@@ -727,24 +749,31 @@ function buildGameState(room, requesterId) {
       const level = levels[li];
       const playersAtLevel = allP.filter(p => (p.totalContribution ?? 0) >= level).length;
       const potSize = (level - prevLevel) * playersAtLevel;
-      const capped = Math.min(potSize, room.pot - totalCalc);
+      const capped = Math.min(potSize, virtualPot - totalCalc);
       if (capped <= 0) break;
-      const sideLabel = li === 0 ? 'メインポット'
+      const label = li === 0 ? 'メインポット'
         : li === 1 ? 'サイドポットA'
         : li === 2 ? 'サイドポットB'
         : li === 3 ? 'サイドポットC'
         : `サイドポット${li}`;
-      result.push({ amount: capped, label: sideLabel });
+      logPot(`[pot-display] li=${li} level=${level} playersAtLevel=${playersAtLevel} potSize=${potSize} capped=${capped} label=${label}`);
+      result.push({ amount: capped, label });
       totalCalc += capped;
       prevLevel = level;
     }
-    const rem = room.pot - totalCalc;
+    // 残額 = 全オールインプレイヤーより多く投じたプレイヤーのみ参加できるサイドポット
+    const rem = virtualPot - totalCalc;
+    const remLabel = result.length === 0 ? 'ポット'
+      : result.length === 1 ? 'サイドポットA'
+      : result.length === 2 ? 'サイドポットB'
+      : result.length === 3 ? 'サイドポットC'
+      : `サイドポット${result.length}`;
     if (rem > 0) {
-      if (result.length > 0) result[result.length - 1].amount += rem;
-      else result.push({ amount: rem, label: 'ポット' });
+      logPot(`[pot-display] rem=${rem} label=${remLabel}`);
+      result.push({ amount: rem, label: remLabel });
     }
-    // 実際に分割されている場合のみ複数返す（全額が1ポットなら単純表示）
-    return result.length > 1 ? result : [{ amount: room.pot, label: 'ポット' }];
+    logPot(`[pot-display] result: ${JSON.stringify(result)}`);
+    return result.length > 1 ? result : [{ amount: virtualPot, label: 'ポット' }];
   })();
 
   // pending待機中のリクエスター自身もstateに追加（isSelf=true, isPendingPlayer=true）

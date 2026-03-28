@@ -109,6 +109,27 @@ export default function AdminPage() {
   const [creating, setCreating] = useState(false);
   const [createMsg, setCreateMsg] = useState('');
 
+  // 結果表示
+  interface ResultRow { rank: number; chips: number; hands: number; nickname: string; accountId: string; }
+  const [resultViewId,   setResultViewId]   = useState<string | null>(null);
+  const [resultViewData, setResultViewData] = useState<ResultRow[]>([]);
+  const [resultViewName, setResultViewName] = useState('');
+  const [resultViewLoading, setResultViewLoading] = useState(false);
+
+  const handleViewResults = async (tournamentId: string, name: string) => {
+    if (resultViewId === tournamentId) { setResultViewId(null); return; }
+    setResultViewId(tournamentId);
+    setResultViewName(name);
+    setResultViewData([]);
+    setResultViewLoading(true);
+    try {
+      const res = await fetch(`/api/admin/tournaments?type=results&id=${tournamentId}`);
+      const d = await res.json();
+      setResultViewData(d.results ?? []);
+    } catch { setResultViewData([]); }
+    finally { setResultViewLoading(false); }
+  };
+
   // ボット管理
   interface BotInfo { id: number; roomId: string; name: string; connected: boolean; isFastFold?: boolean; }
   const [bots,        setBots]       = useState<BotInfo[]>([]);
@@ -691,6 +712,12 @@ export default function AdminPage() {
                               onClick={() => toggleTBotPanel(t.id)}
                             >🤖 BOT{tBotPanel === t.id ? ' ▲' : ' ▼'}</button>
                           )}
+                          {t.status === 'finished' && (
+                            <button
+                              style={{ fontSize: 11, background: resultViewId === t.id ? 'rgba(80,180,80,0.3)' : 'rgba(80,180,80,0.1)', border: '1px solid #4a4', color: '#8f8', borderRadius: 4, padding: '3px 8px', cursor: 'pointer', whiteSpace: 'nowrap' as const }}
+                              onClick={() => handleViewResults(t.id, t.name)}
+                            >📊 結果{resultViewId === t.id ? ' ▲' : ' ▼'}</button>
+                          )}
                           {t.status !== 'running' && (
                             <button
                               style={{ fontSize: 11, background: 'rgba(139,26,26,0.4)', border: '1px solid rgba(204,34,34,0.5)', color: '#ffaaaa', borderRadius: 4, padding: '3px 8px', cursor: 'pointer', whiteSpace: 'nowrap' as const }}
@@ -706,6 +733,44 @@ export default function AdminPage() {
                       </div>
                     </td>
                   </tr>
+                  {resultViewId === t.id && (
+                    <tr key={`${t.id}-result`}>
+                      <td colSpan={8} style={{ padding: '16px 20px', background: 'rgba(0,20,0,0.4)', borderBottom: '1px solid var(--gold-dim)' }}>
+                        <div style={{ fontFamily: 'var(--font-title)', fontSize: 13, color: 'var(--gold)', marginBottom: 10 }}>
+                          📊 {resultViewName} — 結果
+                        </div>
+                        {resultViewLoading ? (
+                          <p style={{ color: 'var(--cream-dim)', fontSize: 13 }}>読み込み中...</p>
+                        ) : resultViewData.length === 0 ? (
+                          <p style={{ color: 'var(--cream-dim)', fontSize: 13 }}>結果データがありません</p>
+                        ) : (
+                          <div style={{ overflowX: 'auto' }}>
+                            <table style={{ ...S.table, fontSize: 13, minWidth: 480 }}>
+                              <thead>
+                                <tr>
+                                  {['順位', 'ニックネーム', '最終チップ', 'ハンド数'].map(h => (
+                                    <th key={h} style={{ ...S.th, fontSize: 11 }}>{h}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {resultViewData.map((r) => (
+                                  <tr key={r.accountId} style={S.tr}>
+                                    <td style={{ ...S.td, textAlign: 'center' as const, fontFamily: 'var(--font-title)', color: r.rank === 1 ? 'var(--gold)' : r.rank <= 3 ? 'var(--gold-dim)' : 'var(--cream)' }}>
+                                      {r.rank === 1 ? '🥇' : r.rank === 2 ? '🥈' : r.rank === 3 ? '🥉' : `${r.rank}位`}
+                                    </td>
+                                    <td style={S.td}>{r.nickname}</td>
+                                    <td style={{ ...S.td, textAlign: 'right' as const }}>{r.chips.toLocaleString()}</td>
+                                    <td style={{ ...S.td, textAlign: 'center' as const }}>{r.hands}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  )}
                   {tBotPanel === t.id && (
                     <tr key={`${t.id}-bot`}>
                       <td colSpan={8} style={{ padding: '12px 20px', background: 'rgba(0,0,0,0.35)', borderBottom: '1px solid var(--gold-dim)' }}>

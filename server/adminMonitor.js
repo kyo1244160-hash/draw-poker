@@ -1,3 +1,5 @@
+const { log, logDev } = require('./logger');
+
 'use strict';
 /**
  * adminMonitor.js — トーナメントリアルタイム監視 API
@@ -67,7 +69,7 @@ function _kickstartBotOnlyTables(tableIds) {
   if (!_io || !_tryAutoStartFn) return;
   for (const tid of tableIds) {
     if (canAutoStart(tid)) {
-      console.log(`[adminMonitor] kickstart table ${tid.slice(-8)}`);
+      log(`[adminMonitor] kickstart table ${tid.slice(-8)}`);
       _tryAutoStartFn(_io, tid);
     }
   }
@@ -89,7 +91,7 @@ async function requireAdmin(req, res, next) {
     req.adminId = decoded.accountId;
     next();
   } catch (err) {
-    console.error('[adminMonitor] auth error:', err.message);
+    log('[adminMonitor] auth error:', err.message);
     res.status(500).json({ error: 'AUTH_ERROR' });
   }
 }
@@ -213,7 +215,7 @@ router.post('/tournaments/:tournamentId/forceFinish', (req, res) => {
   if (!t) return res.status(404).json({ error: 'TOURNAMENT_NOT_FOUND' });
   if (t.status !== 'running') return res.status(400).json({ error: 'NOT_RUNNING' });
 
-  console.log(`[adminMonitor] forceFinish tournament ${t.id} by admin ${req.adminId}`);
+  log(`[adminMonitor] forceFinish tournament ${t.id} by admin ${req.adminId}`);
   // ステータスを finished に強制変更（_finishTournament は tournamentManager 内部関数のため
   // ここでは status を直接変えるのではなく、全プレイヤーを脱落させて自然終了させる）
   // 簡易実装: running の全テーブルからプレイヤーを強制退場
@@ -239,7 +241,7 @@ router.post('/tables/:tableId/kickPlayer', (req, res) => {
     return res.json({ ok: true, message: 'Player removed from normal table' });
   }
 
-  console.log(`[adminMonitor] kickPlayer ${playerId} from ${tableId} by admin ${req.adminId}`);
+  log(`[adminMonitor] kickPlayer ${playerId} from ${tableId} by admin ${req.adminId}`);
   handleForcedLeave(tableId, playerId, 'admin-kick');
   res.json({ ok: true, message: 'Player force-eliminated from tournament' });
 });
@@ -304,6 +306,7 @@ router.post('/tournaments/:tournamentId/start', async (req, res) => {
     const scheduleData = safeParseArray(dbTournament.blind_levels);
 
     // tournamentManager でトーナメント開始
+    log(`[adminMonitor] manual start: calling startTournament for ${tournamentId.slice(-8)} (${players.length} players)`);
     const tournament = startTournament({
       id:               tournamentId,
       name:             dbTournament.name,
@@ -320,7 +323,7 @@ router.post('/tournaments/:tournamentId/start', async (req, res) => {
       return res.status(500).json({ error: 'START_FAILED' });
     }
 
-    console.log(`[adminMonitor] tournament ${tournamentId} started by admin ${req.adminId} (${players.length} players)`);
+    log(`[adminMonitor] tournament ${tournamentId} started by admin ${req.adminId} (${players.length} players)`);
 
     // 事前予約BOT（_preBotReservationsマップから取得）をspawnBotで配置
     const preBotCount = _preBotReservations.get(tournamentId) ?? 0;
@@ -345,7 +348,7 @@ router.post('/tournaments/:tournamentId/start', async (req, res) => {
         // 全テーブルが満席なら新テーブルを追加
         if (!targetTid) {
           targetTid = addTableToTournament(tournamentId);
-          if (targetTid) console.log(`[adminMonitor] pre-bot: added new table ${targetTid.slice(-8)}`);
+          if (targetTid) logDev(`[adminMonitor] pre-bot: added new table ${targetTid.slice(-8)}`);
         }
         if (targetTid) {
           tbm.spawnBot(targetTid, botName, dbTournament.starting_chips);
@@ -355,7 +358,7 @@ router.post('/tournaments/:tournamentId/start', async (req, res) => {
       }
       incrementTotalPlayers(tournamentId, spawned);
       _preBotReservations.delete(tournamentId);
-      console.log(`[adminMonitor] spawned ${spawned}/${preBotCount} pre-reserved BOTs`);
+      log(`[adminMonitor] spawned ${spawned}/${preBotCount} pre-reserved BOTs`);
     }
 
     // 全クライアントに開始通知（グローバルブロードキャスト）
@@ -373,7 +376,7 @@ router.post('/tournaments/:tournamentId/start', async (req, res) => {
       playerCount: players.length,
     });
   } catch (err) {
-    console.error('[adminMonitor] start error:', err.message);
+    log('[adminMonitor] start error:', err.message);
     res.status(500).json({ error: 'SERVER_ERROR', detail: err.message });
   }
 });
@@ -400,7 +403,7 @@ router.post('/fastfold-bots', (req, res) => {
   }
   const n = Math.min(Math.max(1, parseInt(count) || 1), 6);
   const added = ringBotManager.addFastFoldBots(poolId, n);
-  console.log(`[adminMonitor] FastFoldボット ${n}体 追加 → ${poolId} by ${req.adminId}`);
+  log(`[adminMonitor] FastFoldボット ${n}体 追加 → ${poolId} by ${req.adminId}`);
   res.json({ ok: true, added });
 });
 
@@ -409,7 +412,7 @@ router.delete('/fastfold-bots', (req, res) => {
   const { poolId } = req.body;
   if (!poolId) return res.status(400).json({ error: 'poolId は必須です' });
   const count = ringBotManager.removeFastFoldBots(poolId);
-  console.log(`[adminMonitor] FastFoldボット ${count}体 全削除 → ${poolId} by ${req.adminId}`);
+  log(`[adminMonitor] FastFoldボット ${count}体 全削除 → ${poolId} by ${req.adminId}`);
   res.json({ ok: true, removed: count });
 });
 
@@ -421,7 +424,7 @@ router.post('/bots', (req, res) => {
   }
   const n = Math.min(Math.max(1, parseInt(count) || 1), 6);
   const added = ringBotManager.addBots(roomId, n);
-  console.log(`[adminMonitor] ボット ${n}体 追加 → ${roomId} by ${req.adminId}`);
+  log(`[adminMonitor] ボット ${n}体 追加 → ${roomId} by ${req.adminId}`);
   res.json({ ok: true, added });
 });
 
@@ -430,7 +433,7 @@ router.delete('/bots/:botId', (req, res) => {
   const botId = parseInt(req.params.botId);
   const ok = ringBotManager.removeBot(botId);
   if (!ok) return res.status(404).json({ error: 'ボットが見つかりません' });
-  console.log(`[adminMonitor] ボット ${botId} 削除 by ${req.adminId}`);
+  log(`[adminMonitor] ボット ${botId} 削除 by ${req.adminId}`);
   res.json({ ok: true });
 });
 
@@ -444,7 +447,7 @@ router.patch('/bots/:botId', (req, res) => {
   const newName = name.trim().slice(0, 20);
   const ok = ringBotManager.renameBot(botId, newName);
   if (!ok) return res.status(404).json({ error: 'ボットが見つかりません' });
-  console.log(`[adminMonitor] リングボット #${botId} → "${newName}" by ${req.adminId}`);
+  log(`[adminMonitor] リングボット #${botId} → "${newName}" by ${req.adminId}`);
   res.json({ ok: true, name: newName });
 });
 
@@ -458,14 +461,14 @@ router.patch('/tournament-bots/:tournamentId/rename', (req, res) => {
   const { renamePlayer } = require('./poker/gameManager');
   const ok = renamePlayer(tableId, botId, newName);
   if (!ok) return res.status(404).json({ error: 'BOTが見つかりません' });
-  console.log(`[adminMonitor] トーナメントBOT ${botId} → "${newName}" by ${req.adminId}`);
+  log(`[adminMonitor] トーナメントBOT ${botId} → "${newName}" by ${req.adminId}`);
   res.json({ ok: true, name: newName });
 });
 router.delete('/bots', (req, res) => {
   const { roomId } = req.body;
   if (!roomId) return res.status(400).json({ error: 'roomId は必須です' });
   const count = ringBotManager.removeAllBots(roomId);
-  console.log(`[adminMonitor] ${roomId} のボット ${count}体 全削除 by ${req.adminId}`);
+  log(`[adminMonitor] ${roomId} のボット ${count}体 全削除 by ${req.adminId}`);
   res.json({ ok: true, removed: count });
 });
 
@@ -525,7 +528,7 @@ router.post('/tournament-bots/:tournamentId/add', (req, res) => {
           const botId = tbm.spawnBot(tableId, _pickBotName(existingNames), tournament.startingChips);
           const spawned = room.players.find(p => p.id === botId) ?? room.pendingPlayers?.find(p => p.id === botId);
           if (spawned) { existingNames.push(spawned.name); added.push({ tableId, name: spawned.name }); }
-        } catch (e) { console.error('[adminMonitor] spawnBot error:', e.message); }
+        } catch (e) { log('[adminMonitor] spawnBot error:', e.message); }
       }
     }
   } else {
@@ -566,13 +569,13 @@ router.post('/tournament-bots/:tournamentId/add', (req, res) => {
         const botId = tbm.spawnBot(target.tid, _pickBotName(target.existingNames), tournament.startingChips);
         const spawned = target.room.players.find(p => p.id === botId) ?? target.room.pendingPlayers?.find(p => p.id === botId);
         if (spawned) { target.existingNames.push(spawned.name); added.push({ tableId: target.tid, name: spawned.name }); }
-      } catch (e) { console.error('[adminMonitor] spawnBot error:', e.message); }
+      } catch (e) { log('[adminMonitor] spawnBot error:', e.message); }
     }
   }
 
   // BOT追加分をtotalPlayersに反映（開始後に追加したBOTはtotalPlayersに含まれていないため）
   if (added.length > 0) incrementTotalPlayers(req.params.tournamentId, added.length);
-  console.log(`[adminMonitor] トーナメント ${req.params.tournamentId} にBOT ${added.length}体 追加 by ${req.adminId}`);
+  log(`[adminMonitor] トーナメント ${req.params.tournamentId} にBOT ${added.length}体 追加 by ${req.adminId}`);
 
   // 追加後にゲーム状態をブロードキャスト
   for (const tid of (tableId ? [tableId] : tournament.tableIds)) {
@@ -606,7 +609,7 @@ router.post('/tournament-bots/:tournamentId/pre-add', async (req, res) => {
     // ファイルトップのgetEntries等と同じ getTournamentDB を使用
     const dbTournament = await getTournamentDB(tournamentId);
     if (!dbTournament) return res.status(404).json({ error: 'TOURNAMENT_NOT_FOUND' });
-    console.log(`[pre-add] tournament ${tournamentId} status=${dbTournament.status}`);
+    log(`[pre-add] tournament ${tournamentId} status=${dbTournament.status}`);
     // 既にメモリ上でrunning（startTournament済み）なら /add を使う
     const alreadyRunning = !!getTournament(tournamentId);
     if (alreadyRunning) {
@@ -622,10 +625,10 @@ router.post('/tournament-bots/:tournamentId/pre-add', async (req, res) => {
     const newTotal = current + totalN;
     _preBotReservations.set(tournamentId, newTotal);
 
-    console.log(`[adminMonitor] pre-reserved ${totalN} BOTs for ${tournamentId} (total: ${newTotal})`);
+    log(`[adminMonitor] pre-reserved ${totalN} BOTs for ${tournamentId} (total: ${newTotal})`);
     res.json({ ok: true, added: Array.from({ length: totalN }, (_, i) => ({ name: `BOT-${current + i + 1}` })), totalBots: newTotal, humanPlayers: 0 });
   } catch (err) {
-    console.error('[adminMonitor] pre-add-bots error:', err.message);
+    log(`[adminMonitor] pre-add-bots error: ${err.message}`);
     res.status(500).json({ error: 'SERVER_ERROR', detail: err.message });
   }
 });
@@ -672,7 +675,7 @@ router.delete('/tournament-bots/:tournamentId/remove', (req, res) => {
     }
   }
 
-  console.log(`[adminMonitor] トーナメント ${req.params.tournamentId} BOT削除 (${removed}) by ${req.adminId}`);
+  log(`[adminMonitor] トーナメント ${req.params.tournamentId} BOT削除 (${removed}) by ${req.adminId}`);
   res.json({ ok: true, removed });
 });
 
@@ -704,12 +707,20 @@ module.exports = {
    * 事前予約BOTをspawnする共通関数（手動開始・自動開始どちらからも呼べる）
    */
   async spawnPreReservedBots(io, tournamentId, dbTournament) {
+    const tid = tournamentId.slice(-8);
     const preBotCount = _preBotReservations.get(tournamentId) ?? 0;
-    if (preBotCount <= 0) return;
+    log(`[adminMonitor] spawnPreReservedBots called: preBotCount=${preBotCount}`);
+    if (preBotCount <= 0) {
+      log(`[adminMonitor] ${tid}: no pre-reserved BOTs → skip spawn`);
+      return;
+    }
 
     const { getTournament, addTableToTournament, incrementTotalPlayers } = require('./tournament/tournamentManager');
     const tournament = getTournament(tournamentId);
-    if (!tournament) return;
+    if (!tournament) {
+      log(`[adminMonitor] ${tid}: tournament not in memory → skip spawn`);
+      return;
+    }
 
     const { getOrCreateRoom } = require('./poker/gameManager');
     const entries = tournament.players ? tournament.players.map(p => p.nickname) : [];
@@ -735,7 +746,7 @@ module.exports = {
         .sort((a, b) => a.cnt - b.cnt)[0]?.tid;
       if (!targetTid) {
         targetTid = addTableToTournament(tournamentId);
-        if (targetTid) console.log(`[adminMonitor] pre-bot: added new table ${targetTid.slice(-8)}`);
+        if (targetTid) logDev(`[adminMonitor] pre-bot: added new table ${targetTid.slice(-8)}`);
       }
       if (targetTid) {
         tbm.spawnBot(targetTid, botName, dbTournament.starting_chips);
@@ -746,14 +757,14 @@ module.exports = {
 
     incrementTotalPlayers(tournamentId, spawned);
     _preBotReservations.delete(tournamentId);
-    console.log(`[adminMonitor] spawned ${spawned}/${preBotCount} pre-reserved BOTs`);
+    log(`[adminMonitor] spawned ${spawned}/${preBotCount} pre-reserved BOTs`);
 
     // kickstart
     if (io) {
       const { canAutoStart } = require('./poker/gameManager');
       for (const tableId of tournament.tableIds) {
         if (canAutoStart(tableId)) {
-          console.log(`[adminMonitor] kickstart table ${tableId.slice(-8)}`);
+          log(`[adminMonitor] kickstart table ${tableId.slice(-8)}`);
           if (_tryAutoStartFn) _tryAutoStartFn(io, tableId);
         }
       }

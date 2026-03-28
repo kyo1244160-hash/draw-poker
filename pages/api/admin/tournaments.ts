@@ -65,6 +65,26 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
+  // GET: トーナメント結果
+  if (req.method === 'GET' && req.query.type === 'results') {
+    const id = req.query.id as string;
+    if (!id) return res.status(400).json({ error: 'id が必要です' });
+    const { getTournamentResults } = require('../../../server/db/points');
+    const rows = await getTournamentResults(id);
+    const results = (rows ?? []).map((r: {
+      final_rank: number; final_chips: number; hands_played: number;
+      created_at: string; nickname: string | null; google_name: string | null; account_id: string;
+    }) => ({
+      rank:       r.final_rank,
+      chips:      r.final_chips,
+      hands:      r.hands_played,
+      createdAt:  r.created_at,
+      nickname:   r.nickname ?? r.google_name ?? r.account_id.slice(0, 8),
+      accountId:  r.account_id,
+    }));
+    return res.status(200).json({ results });
+  }
+
   // GET: トーナメント一覧
   if (req.method === 'GET') {
     const limit  = Math.min(Number(req.query.limit  ?? 20), 100);
