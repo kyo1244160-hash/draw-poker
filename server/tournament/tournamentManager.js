@@ -737,6 +737,12 @@ function balanceTables(tournamentId) {
     const room = getRoom(tid);
     if (!room) { t.tableIds = t.tableIds.filter(id => id !== tid); return; }
 
+    // ゲーム進行中のテーブルは解体しない（showdown/waiting のみ許可）
+    if (room.phase !== 'waiting' && room.phase !== 'showdown') {
+      logDev(`[TM] balance: dissolve skipped (in-progress phase=${room.phase}) ${tid.slice(-8)}`);
+      return;
+    }
+
     for (const p of [...room.players]) {
       // 移動先: 現テーブル以外で最も人数が少ないテーブル（毎回再計算）
       const dest = t.tableIds
@@ -790,14 +796,15 @@ function balanceTables(tournamentId) {
     const totalRemaining = _countRemaining(t);
     const neededTables = Math.max(1, Math.ceil(totalRemaining / MAX_PER_TABLE));
     if (t.tableIds.length <= neededTables) break;  // 最適なテーブル数に達した
-    // 最も人数が少ないテーブルを解体（最終的に1テーブルにする）
+    // 最も人数が少ないテーブルを解体（waiting/showdown のみ対象）
     const smallest = t.tableIds
       .map(tid => {
         const r = getRoom(tid);
-        return { tid, cnt: (r?.players.length ?? 0) + (r?.pendingPlayers.length ?? 0) };
+        return { tid, cnt: (r?.players.length ?? 0) + (r?.pendingPlayers.length ?? 0), phase: r?.phase };
       })
+      .filter(x => x.phase === 'waiting' || x.phase === 'showdown')  // ゲーム進行中は除外
       .sort((a, b) => a.cnt - b.cnt)[0];
-    if (!smallest) break;
+    if (!smallest) break;  // 解体可能なテーブルがなければ終了
     _dissolveTable(smallest.tid);
   }
 
@@ -827,7 +834,11 @@ function balanceTables(tournamentId) {
       const r = getRoom(tid);
       return { tid, count: (r?.players.length ?? 0) + (r?.pendingPlayers.length ?? 0) };
     });
-    const toDissolve = counts.find(x => x.count <= 1);
+    const toDissolve = counts.find(x => {
+      if (x.count > 1) return false;
+      const r = getRoom(x.tid);
+      return r?.phase === 'waiting' || r?.phase === 'showdown';  // ゲーム進行中は除外
+    });
     if (!toDissolve) break;
     _dissolveTable(toDissolve.tid);
   }

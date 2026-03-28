@@ -160,11 +160,21 @@ function joinRoom(roomId, socketId, name, opts = {}) {
 
   room.players.push(newPlayer);
 
-  // showdown中の着席位置チェック（BTN-SB間は1ハンド待機）
-  if (room.phase === 'showdown' && room.dealerIndex >= 0 && room.players.length > 2) {
-    const myIdx = room.players.length - 1;
-    const sbIdx = _nextActiveFromSafe(room, room.dealerIndex);
-    if (myIdx <= sbIdx) newPlayer.sittingOut = true;
+  // RRoP Rule 16: テーブルバランシングで移動してきたプレイヤーの待機ゾーン判定
+  // 待機ゾーン = BTN席〜SB席（両端含む）。BB席以降は即参加。
+  // showdown・waiting いずれのフェーズでも適用（waitingはdealer/SBを前ハンドから引き継ぐ）
+  // ヘッズアップ（2人以下）はBTN=SBのため待機ゾーンなし
+  if (room.dealerIndex >= 0 && room.players.length > 2) {
+    const n         = room.players.length;
+    const myIdx     = n - 1;
+    // ハンド中（showdown含む）は固定ポジションを使用。waiting中はdealerIndexから算出
+    const dealerRef = room.fixedDealerIdx >= 0 ? room.fixedDealerIdx : room.dealerIndex;
+    const sbRef     = room.fixedSbIdx     >= 0 ? room.fixedSbIdx
+                    : _nextActiveFromSafe(room, dealerRef);
+    if (_isInRRoPWaitZone(myIdx, dealerRef, sbRef, n)) {
+      newPlayer.sittingOut    = true;
+      newPlayer._waitZoneSkip = true;  // startGame でのリセット対象フラグ
+    }
   }
 
   return 'active';
@@ -181,7 +191,16 @@ function startGame(roomId, onTimeout) {
   // pending → active
   for (const p of room.pendingPlayers) room.players.push(p);
   room.pendingPlayers = [];
-  for (const p of room.players) p.sittingOut = false;
+  // RRoP Rule 16: _waitZoneSkip フラグがあるプレイヤーはこのハンドも待機継続し、
+  // フラグをクリアする（次ハンドからは通常参加）。それ以外は全員 sittingOut リセット。
+  for (const p of room.players) {
+    if (p._waitZoneSkip) {
+      p.sittingOut    = true;   // このハンドも待機
+      p._waitZoneSkip = false;  // 次ハンドからは参加
+    } else {
+      p.sittingOut = false;
+    }
+  }
 
   const activePlayers = room.players.filter((p) => !p.sittingOut);
   if (activePlayers.length < 2) return null;
@@ -205,7 +224,12 @@ function startGame(roomId, onTimeout) {
 
   // ディーラーボタン前進
   if (room.dealerIndex < 0) {
-    room.dealerIndex = 0;
+    // 初回ハンド: アクティブプレイヤーの中からランダムに選ぶ
+    const activeIndices = room.players
+      .map((p, i) => ({ p, i }))
+      .filter(({ p }) => !p.sittingOut)
+      .map(({ i }) => i);
+    room.dealerIndex = activeIndices[Math.floor(Math.random() * activeIndices.length)] ?? 0;
   } else {
     let next = (room.dealerIndex + 1) % room.players.length;
     for (let t = 0; t < room.players.length; t++) {
@@ -305,6 +329,27 @@ function _nextActiveFromSafe(room, fromIndex) {
     next = (next + 1) % len;
   }
   return next;
+}
+
+/**
+ * RRoP Rule 16: テーブルバランシングで移動してきたプレイヤーの待機ゾーン判定
+ *
+ * 待機ゾーン = clockwise で dealerIdx（BTN）から sbIdx（SB）まで（両端含む）
+ *   - BTN席: 待機（RRoPはTDAと異なりBTN席も待機対象）
+ *   - SB席: 待機
+ *   - BB席以降（UTG〜CO）: 即参加
+ *
+ * 巻き戻し例: dealerIdx=4, sbIdx=1, n=6 のとき
+ *   待機ゾーン = [4, 5, 0, 1] → myIdx が 4,5,0,1 なら待機
+ */
+function _isInRRoPWaitZone(myIdx, dealerIdx, sbIdx, n) {
+  if (dealerIdx <= sbIdx) {
+    // 巻き戻しなし: [dealerIdx, ..., sbIdx]
+    return myIdx >= dealerIdx && myIdx <= sbIdx;
+  } else {
+    // 巻き戻しあり: [dealerIdx, ..., n-1, 0, ..., sbIdx]
+    return myIdx >= dealerIdx || myIdx <= sbIdx;
+  }
 }
 
 function _resetDrawRound(room) {
