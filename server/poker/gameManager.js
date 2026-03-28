@@ -724,50 +724,51 @@ function buildGameState(room, requesterId) {
   const _potsForDisplay = (() => {
     if (room.pot <= 0) return [];
     const allP = room.players.filter(p => !p.sittingOut);
-    // スプリット境界 = 全プレイヤーの totalContribution（BETフェーズ中も含む）
     // オールインがない場合は単純ポット表示
-    const hasRealAllIn = allP.some(p => p.chips <= 0 && !p.folded);
+    // ※ !p.folded を外す: fastFold でオールイン後フォールドしたプレイヤーも
+    //   chips=0 として検出し、サイドポット表示が消えるバグを防ぐ
+    const hasRealAllIn = allP.some(p => p.chips <= 0);
     if (!hasRealAllIn) return [{ amount: room.pot, label: 'ポット' }];
-    // 全プレイヤーのcontrib+betをlevelに使う（_awardPotsと同じ境界）
-    const allLevelsDisplay = allP
-      .map(p => (p.totalContribution ?? 0))
-      .filter(c => c > 0);
-    if (allLevelsDisplay.length === 0) return [{ amount: room.pot, label: 'ポット' }];
-    const levels = [...new Set(allLevelsDisplay)].sort((a, b) => a - b);
 
-    // BETフェーズ中は p.bet がまだ room.pot に未加算なので仮想ポットで計算
-    const virtualPot = room.pot + allP.reduce((s, p) => s + (p.bet ?? 0), 0);
+    // 境界 = オールインプレイヤーの totalContribution のみ
+    // （全プレイヤーを使うとベット中の中途半端な contrib が余分なエントリを生む）
+    const allInLevels = allP
+      .filter(p => p.chips <= 0)
+      .map(p => p.totalContribution ?? 0)
+      .filter(c => c > 0);
+    if (allInLevels.length === 0) return [{ amount: room.pot, label: 'ポット' }];
+    const levels = [...new Set(allInLevels)].sort((a, b) => a - b);
+
+    // room.pot には p.bet が既に加算済み（betAction で room.pot += actual と同時更新）
+    // p.bet を足すと二重計上になるため room.pot をそのまま使う
+    const virtualPot = room.pot;
 
     // ===== 表示用ポットログ =====
     logPot(`[pot-display] phase=${room.phase} room.pot=${room.pot} virtualPot=${virtualPot} levels=[${levels.join(',')}]`);
     logPot(`[pot-display] players: ${allP.map(p => `${p.name}(chips=${p.chips},bet=${p.bet??0},contrib=${p.totalContribution??0},folded=${p.folded})`).join(', ')}`);
 
+    // A〜Z の26件分用意（バランス時に一時的に7人超になっても数字ラベルが出ないよう対策）
+    const SIDE_POT_LABELS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(c => `サイドポット${c}`);
+    // インデックス超過時のフォールバックも文字ベースで生成
+    const _sideLabel = (idx) => SIDE_POT_LABELS[idx] ?? `サイドポット${String.fromCharCode(65 + idx)}`;
+
+    // 各レベルの金額 = Σ min(contrib, level) - totalCalc
+    // （フォールド済みプレイヤーの部分的な contrib も正確に算入する正しい計算式）
     const result = [];
-    let prevLevel = 0;
     let totalCalc = 0;
     for (let li = 0; li < levels.length; li++) {
       const level = levels[li];
-      const playersAtLevel = allP.filter(p => (p.totalContribution ?? 0) >= level).length;
-      const potSize = (level - prevLevel) * playersAtLevel;
-      const capped = Math.min(potSize, virtualPot - totalCalc);
+      const amount = allP.reduce((sum, p) => sum + Math.min(p.totalContribution ?? 0, level), 0);
+      const capped = Math.min(amount - totalCalc, virtualPot - totalCalc);
       if (capped <= 0) break;
-      const label = li === 0 ? 'メインポット'
-        : li === 1 ? 'サイドポットA'
-        : li === 2 ? 'サイドポットB'
-        : li === 3 ? 'サイドポットC'
-        : `サイドポット${li}`;
-      logPot(`[pot-display] li=${li} level=${level} playersAtLevel=${playersAtLevel} potSize=${potSize} capped=${capped} label=${label}`);
+      const label = li === 0 ? 'メインポット' : _sideLabel(li - 1);
+      logPot(`[pot-display] li=${li} level=${level} amount=${amount} capped=${capped} label=${label}`);
       result.push({ amount: capped, label });
       totalCalc += capped;
-      prevLevel = level;
     }
-    // 残額 = 全オールインプレイヤーより多く投じたプレイヤーのみ参加できるサイドポット
+    // 残額 = 最高オールインレベル超えプレイヤーのみ参加できるサイドポット
     const rem = virtualPot - totalCalc;
-    const remLabel = result.length === 0 ? 'ポット'
-      : result.length === 1 ? 'サイドポットA'
-      : result.length === 2 ? 'サイドポットB'
-      : result.length === 3 ? 'サイドポットC'
-      : `サイドポット${result.length}`;
+    const remLabel = result.length === 0 ? 'ポット' : _sideLabel(result.length - 1);
     if (rem > 0) {
       logPot(`[pot-display] rem=${rem} label=${remLabel}`);
       result.push({ amount: rem, label: remLabel });

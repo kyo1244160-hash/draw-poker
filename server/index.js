@@ -513,7 +513,11 @@ app.prepare().then(async () => {
         if (tournamentManager.isTournamentTable(roomId)) {
           ensurePotsAwarded(roomId);  // ポット確定後に脱落チェック
           tournamentManager.checkEliminations(roomId);
-          _broadcast(io, roomId);
+          // ※ ここで _broadcast を再送しない:
+          //   checkEliminations が leaveRoom でプレイヤーを即削除するため
+          //   再送すると手札表示前にプレイヤーが消えた gameState が上書きされ
+          //   最終ハンドの showdown 手札が確認できなくなるバグの原因になる。
+          //   次の gameState 更新は _scheduleAutoStart の 3 秒後タイマーに委譲する。
         }
         io.to(roomId).emit('showdown');
         if (room.isZoomTable) handleZoomShowdown(io, roomId);
@@ -544,7 +548,7 @@ app.prepare().then(async () => {
         if (tournamentManager.isTournamentTable(roomId)) {
           ensurePotsAwarded(roomId);  // ポット確定後に脱落チェック
           tournamentManager.checkEliminations(roomId);
-          _broadcast(io, roomId);
+          // ※ 2回目の _broadcast は送らない（drawCards と同様の理由）
         }
         io.to(roomId).emit('showdown');
         if (room.isZoomTable) handleZoomShowdown(io, roomId);
@@ -711,7 +715,7 @@ function _makeTimeoutHandler(io, roomId) {
     if (room?.phase === 'showdown') {
       if (tournamentManager.isTournamentTable(rid)) {
         tournamentManager.checkEliminations(rid);
-        _broadcast(io, rid);
+        // ※ 2回目の _broadcast は送らない（betAction と同様の理由）
       }
       io.to(rid).emit('showdown');
       if (room.isZoomTable) handleZoomShowdown(io, rid);
