@@ -25,7 +25,7 @@ const { log, logDev, logPot } = require('../logger');
  */
 
 const { createShuffledDeck, shuffleDeck }                             = require('./deck');
-const { evaluate27Hand, evaluateBadugiHand, findWinner } = require('./handEvaluator');
+const { evaluate27Hand, evaluateBadugiHand, findWinner, findWinners } = require('./handEvaluator');
 const cfg                                                = require('../config');
 
 // ===== 定数 =====
@@ -208,6 +208,17 @@ function startGame(roomId, onTimeout) {
   // トーナメント: ハンド開始フック（ブラインドレベルアップ適用）
   // カード配布前に呼ぶことで、新ブラインドが今ハンドから有効になる
   if (room._onHandStart) room._onHandStart(roomId);
+
+  // 進行中のハンドをまたいでブラインドが上昇した場合の適用
+  // applyPendingLevelUp がゲーム中テーブルに _pendingBlind を残している場合はここで適用
+  if (room._pendingBlind) {
+    const pb = room._pendingBlind;
+    room.smallBlind = pb.sb;
+    room.bigBlind   = pb.bb;
+    room.smallBet   = pb.smallBet;
+    room.bigBet     = pb.bigBet;
+    room._pendingBlind = null;
+  }
 
   // mix モード切替
   if (room.mode === 'mix') room.currentMode = getMixCurrentMode(room);
@@ -662,6 +673,37 @@ function _awardPots(room, activePlayers) {
   log(`[pot] activePlayers: ${activePlayers.map(p => `${p.name}(contrib=${p.totalContribution??0})`).join(', ')}`);
   log(`[pot] levels: [${levels.join(', ')}]`);
 
+  // 奇数チップの端数はBTN左隣（SB位置）の勝者が受け取る（標準ポーカールール）
+  // fixedDealerIdx が確定している場合はその左隣、未確定は players[0] を基点にする
+  const _dealerRef = room.fixedDealerIdx >= 0 ? room.fixedDealerIdx : 0;
+  const _sbRef     = room.fixedSbIdx     >= 0 ? room.fixedSbIdx
+                   : ((_dealerRef + 1) % allPlayers.length);
+
+  /**
+   * スプリットポット分配: ポット額を winners で等分し、奇数チップは
+   * BTN 左隣（SB位置）に最も近い勝者が受け取る。
+   */
+  function _splitPot(amount, winners) {
+    if (winners.length === 0) return;
+    const share = Math.floor(amount / winners.length);
+    const odd   = amount - share * winners.length;
+
+    // BTN左隣（SB側）から時計回りで最初に見つかる勝者が奇数チップを受け取る
+    let oddWinner = winners[0];
+    let minDist   = Infinity;
+    const n = allPlayers.length;
+    for (const w of winners) {
+      const idx  = allPlayers.indexOf(w);
+      const dist = ((idx - _sbRef) % n + n) % n; // SB基点の時計回り距離
+      if (dist < minDist) { minDist = dist; oddWinner = w; }
+    }
+
+    for (const w of winners) {
+      w.chips += share + (w === oddWinner ? odd : 0);
+    }
+    return winners.map(w => `${w.name}(+${share}${w === oddWinner && odd > 0 ? `+${odd}odd` : ''})`).join(',');
+  }
+
   let totalAwarded = 0;
   let prevLevel = 0;
 
@@ -674,16 +716,14 @@ function _awardPots(room, activePlayers) {
     const eligible = activePlayers.filter(p => (p.totalContribution ?? 0) >= level);
     let winnerName = '(none)';
     if (eligible.length === 0) {
+      // eligible が空（fallback）: activePlayers 全体で再判定
       if (activePlayers.length > 0) {
-        const safWinnerId = findWinner(activePlayers, room.currentMode);
-        const safWinner = activePlayers.find(p => p.id === safWinnerId) ?? activePlayers[0];
-        safWinner.chips += cappedPot;
-        winnerName = safWinner.name + ' (fallback)';
+        const safWinners = findWinners(activePlayers, room.currentMode);
+        winnerName = _splitPot(cappedPot, safWinners) + ' (fallback)';
       }
     } else {
-      const winnerId = findWinner(eligible, room.currentMode);
-      const winner = eligible.find(p => p.id === winnerId);
-      if (winner) { winner.chips += cappedPot; winnerName = winner.name; }
+      const winners = findWinners(eligible, room.currentMode);
+      winnerName = _splitPot(cappedPot, winners);
     }
     log(`[pot] level=${level} potSize=${potSize} cappedPot=${cappedPot} contributors=${contributors} eligible=[${eligible.map(p=>p.name).join(',')}] winner=${winnerName}`);
     totalAwarded += cappedPot;
@@ -692,10 +732,9 @@ function _awardPots(room, activePlayers) {
 
   const remainder = room.pot - totalAwarded;
   if (remainder > 0 && activePlayers.length > 0) {
-    const remWinnerId = findWinner(activePlayers, room.currentMode);
-    const remWinner = activePlayers.find(p => p.id === remWinnerId) ?? activePlayers[0];
-    remWinner.chips += remainder;
-    log(`[pot] remainder=${remainder} → winner=${remWinner.name}`);
+    const remWinners = findWinners(activePlayers, room.currentMode);
+    const remName = _splitPot(remainder, remWinners);
+    log(`[pot] remainder=${remainder} → ${remName}`);
   }
   log(`[pot] totalAwarded=${totalAwarded} remainder=${remainder} pot_after=${0}`);
   log(`[pot] chips_after: ${allPlayers.map(p => `${p.name}=${p.chips}`).join(', ')}`);
@@ -706,7 +745,7 @@ function _awardPots(room, activePlayers) {
 function buildGameState(room, requesterId) {
   const isShowdown    = room.phase === 'showdown';
   const activePlayers = room.players.filter((p) => !p.folded && !p.sittingOut);
-  const winnerId      = isShowdown ? findWinner(activePlayers, room.currentMode) : null;
+  const winnerIds     = isShowdown ? new Set(findWinners(activePlayers, room.currentMode).map(p => p.id)) : null;
 
   if (isShowdown && !room._potAwarded) {
     _awardPots(room, activePlayers);
@@ -744,7 +783,7 @@ function buildGameState(room, requesterId) {
       drewThisRound: p.drewThisRound, drawCount: p.drawCount,
       result: reveal && p.hand.length > 0 && !p.folded
                 ? evaluateHand(p.hand, room.currentMode) : undefined,
-      isWinner:  isShowdown && p.id === winnerId,
+      isWinner:  isShowdown && winnerIds != null && winnerIds.has(p.id),
       isDealer:  myIdx === dealerIdx,
       isSB:      myIdx === sbIdx && sbIdx >= 0,
       isBB:      myIdx === bbIdx && bbIdx >= 0,

@@ -202,21 +202,35 @@ function compareBadugiHands(handA, handB) {
 // ==========================================================
 
 /**
- * プレイヤーリストから勝者の socketId を返す
+ * プレイヤーリストから勝者の socketId を返す（引き分け時は先頭のみ返す）
  * @param {Array}    players   - { id, hand }[] フォールドしていないプレイヤー
  * @param {'27'|'badugi'} mode - ゲームモード
  */
 function findWinner(players, mode = '27') {
-  if (!players || players.length === 0) return null;
+  const winners = findWinners(players, mode);
+  return winners.length > 0 ? winners[0].id : null;
+}
+
+/**
+ * プレイヤーリストから同点を含む全勝者を返す（スプリットポット対応）
+ * @param {Array}    players   - { id, hand }[] フォールドしていないプレイヤー
+ * @param {'27'|'badugi'} mode - ゲームモード
+ * @returns {Array} 最強手を持つプレイヤーの配列（引き分けなら複数）
+ */
+function findWinners(players, mode = '27') {
+  if (!players || players.length === 0) return [];
   const compare = mode === 'badugi' ? compareBadugiHands : compare27Hands;
 
-  let winner = players[0];
+  let best = [players[0]];
   for (let i = 1; i < players.length; i++) {
-    if (compare(players[i].hand, winner.hand) < 0) {
-      winner = players[i]; // players[i] の方が強い
+    const cmp = compare(players[i].hand, best[0].hand);
+    if (cmp < 0) {
+      best = [players[i]]; // players[i] の方が強い → 更新
+    } else if (cmp === 0) {
+      best.push(players[i]); // 引き分け → 追加
     }
   }
-  return winner.id;
+  return best;
 }
 
 module.exports = {
@@ -230,5 +244,6 @@ module.exports = {
   getBadugiEffective,
   // 共通
   findWinner,
+  findWinners,
   RANK_ORDER,
 };

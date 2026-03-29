@@ -306,12 +306,23 @@ function applyPendingLevelUp(tournamentId) {
   }
 
   // 全テーブルのブラインドを更新
+  // ゲーム進行中（bet0〜bet3 / draw1〜draw3）のテーブルは即時書き換えしない。
+  // 書き換えると同一ハンド内でフェーズによってベット額が変わるバグが発生するため、
+  // 進行中テーブルには _pendingBlind に新値を保持し、次の startGame で適用する。
   for (const tableId of t.tableIds) {
     const room = getOrCreateRoom(tableId);
-    room.smallBlind    = lv.sb;
-    room.bigBlind      = lv.bb;
-    room.smallBet      = lv.smallBet;
-    room.bigBet        = lv.bigBet;
+    const inProgress = room.phase !== 'waiting' && room.phase !== 'showdown';
+    if (inProgress) {
+      // 進行中: 次ハンド開始時に適用するため pending に保持
+      room._pendingBlind = { sb: lv.sb, bb: lv.bb, smallBet: lv.smallBet, bigBet: lv.bigBet };
+      logDev(`[TM] blind-pending (in-progress phase=${room.phase}) ${tableId.slice(-8)}`);
+    } else {
+      // 待機中/showdown: 即時適用
+      room.smallBlind    = lv.sb;
+      room.bigBlind      = lv.bb;
+      room.smallBet      = lv.smallBet;
+      room.bigBet        = lv.bigBet;
+    }
   }
 
   // 次レベルのタイマー開始
