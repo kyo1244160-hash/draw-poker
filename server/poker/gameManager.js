@@ -1032,11 +1032,10 @@ function canAutoStart(roomId) {
   if (!room) return false;
   if (room.phase !== 'showdown' && room.phase !== 'waiting') return false;
   // startGame の先頭で sittingOut = false にリセットするため、
-  // waiting フェーズでは sittingOut プレイヤーも参加人数に含めてよい
-  const countPlayers = room.phase === 'waiting'
-    ? room.players.length
-    : room.players.filter((p) => !p.sittingOut).length;
-  return countPlayers + room.pendingPlayers.length >= 2;
+  // showdown・waiting いずれも全プレイヤーを参加人数に含めてよい。
+  // （_waitZoneSkip プレイヤーは startGame 1回目で sittingOut のまま失敗しても
+  //    _waitZoneSkip がクリアされるため、2回目の startGame で必ず active になる）
+  return room.players.length + room.pendingPlayers.length >= 2;
 }
 
 function getAllRooms() { return rooms; }

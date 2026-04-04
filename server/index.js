@@ -938,6 +938,16 @@ function _tryAutoStart(io, roomId) {
   logDev(`[auto-start] ${roomId.slice(-8)} players=${_room?.players.length} allBots=${_allBots} phase=${_room?.phase}`);
     _broadcast(io, roomId);
     io.to(roomId).emit('gameStarted');
+  } else if (tournamentManager.isTournamentTable(roomId)) {
+    // startGame が null を返した場合（_waitZoneSkip プレイヤーが多く active < 2）:
+    // startGame 内で _waitZoneSkip がクリアされたため、1秒後に再試行すると全員 sittingOut=false になり成功する
+    logDev(`[auto-start] ${roomId.slice(-8)} startGame=null → retry in 1s (waitZone recovery)`);
+    setTimeout(() => {
+      const r = getOrCreateRoom(roomId);
+      if (r && (r.phase === 'waiting' || r.phase === 'showdown') && canAutoStart(roomId)) {
+        _tryAutoStart(io, roomId);
+      }
+    }, 1000);
   }
 }
 
