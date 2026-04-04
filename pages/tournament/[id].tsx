@@ -47,7 +47,9 @@ const STATUS_LABEL: Record<string, string> = {
 const getTournamentStatusLabel = (t: Tournament | null) => {
   if (!t) return '';
   // 時間ベース・レベルベース両方対応: late_reg_open === true なら「レイトレジスト受付中」
-  if (t.status === 'running' && t.late_reg_open === true) return 'レイトレジスト受付中';
+  const _lateOpen = t.late_reg_open === true
+    || (t.late_reg_open === null && (t.late_reg_minutes ?? 0) === 0);
+  if (t.status === 'running' && _lateOpen) return 'レイトレジスト受付中';
   return STATUS_LABEL[t.status] ?? t.status;
 };
 
@@ -172,9 +174,14 @@ export default function TournamentLobby() {
 
   const isRegistering  = tournament.status === 'registering';
   // レイトレジスト中:
-  //   時間ベース: running + late_reg_minutes > 0 + サーバー上でlateRegOpen=true
-  //   レベルベース: running + late_reg_minutes = 0 + late_reg_open = true（サーバーがlateRegOpenを管理）
-  const isLateReg      = tournament.status === 'running' && tournament.late_reg_open === true;
+  //   時間ベース: running + late_reg_minutes > 0 + late_reg_open === true
+  //   レベルベース: running + late_reg_minutes = 0 + late_reg_open === true
+  //   ※ late_reg_open が null（メモリ取得失敗）の場合:
+  //     - レベルベース（minutes=0）: 安全側に倒して true 扱い（まだ終了していないとみなす）
+  //     - 時間ベース（minutes>0）: null のまま false 扱い
+  const lateRegOpenResolved = tournament.late_reg_open === true
+    || (tournament.late_reg_open === null && (tournament.late_reg_minutes ?? 0) === 0);
+  const isLateReg      = tournament.status === 'running' && lateRegOpenResolved;
   const isFull         = tournament.max_players !== null && entries.length >= tournament.max_players;
   const canRegister    = (isRegistering || isLateReg) && !registered && !isFull && !!session?.user?.accountId;
   const canCancel      = isRegistering && registered;
