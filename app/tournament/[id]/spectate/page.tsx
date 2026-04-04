@@ -31,11 +31,15 @@ export default function SpectatePage() {
       if (cancelled || !ok) return;
       setConnected(true);
 
-      // テーブルIDが指定されていれば即観戦参加
+      // テーブルIDが指定されていれば即観戦参加。
+      // 指定なしの場合も tournamentId をサーバーに渡して即解決する
+      // （サーバーの spectate ハンドラが tournamentId → tableId を自動解決）
       if (targetTableId) {
         socket.emit('spectate', { tableId: targetTableId });
       } else {
-        // 指定なし: tournamentStarting を待って最初のテーブルへ
+        // 進行中トーナメントなら tournamentId だけで即解決できる
+        socket.emit('spectate', { tournamentId: params.id });
+        // 未開始の場合に備えて t:tournamentStarting も待つ
         socket.on('t:tournamentStarting', ({ tableId: tid }: { tournamentId: string; tableId: string }) => {
           if (!tableIdRef.current) {
             tableIdRef.current = tid;

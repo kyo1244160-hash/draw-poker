@@ -7,7 +7,7 @@
  *   - 参加者一覧（リアルタイム更新）
  */
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/router';
 import { useSession } from 'next-auth/react';
 import Head from 'next/head';
@@ -66,6 +66,7 @@ export default function TournamentLobby() {
   const [busy,       setBusy]       = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [isEliminated, setIsEliminated] = useState(false);
+  const isEliminatedRef = useRef(false);  // ソケットコールバック内から参照するためのref
 
   // ===== データ取得 =====
   const fetchData = useCallback(async () => {
@@ -77,7 +78,9 @@ export default function TournamentLobby() {
       setTournament(data.tournament);
       setEntries(data.entries ?? []);
       setRegistered(data.registered ?? false);
-      setIsEliminated(data.isEliminated ?? false);
+      const eliminated = data.isEliminated ?? false;
+      setIsEliminated(eliminated);
+      isEliminatedRef.current = eliminated;
 
       // すでに running なら即座に draw ページへ遷移（脱落済みなら遷移しない）
       if (data.tournament?.status === 'running' && data.registered && !data.isEliminated) {
@@ -114,6 +117,8 @@ export default function TournamentLobby() {
 
     const onTournamentStarting = ({ tournamentId, tableId }: { tournamentId: string; tableId: string }) => {
       if (tournamentId !== id) return;
+      // 脱落済みプレイヤーはゲーム画面へ遷移しない（観戦ボタンで手動移動）
+      if (isEliminatedRef.current) return;
       // 自分が参加登録しているトーナメントが開始 → ゲーム画面へ
       router.push(`/tournament/${tournamentId}/draw`);
     };
