@@ -164,6 +164,7 @@ function joinRoom(roomId, socketId, name, opts = {}) {
   // 待機ゾーン = BTN席〜SB席（両端含む）。BB席以降は即参加。
   // showdown・waiting いずれのフェーズでも適用（waitingはdealer/SBを前ハンドから引き継ぐ）
   // ヘッズアップ（2人以下）はBTN=SBのため待機ゾーンなし
+  // レイトレジストプレイヤーもバランシング移動と同じRRoP Rule 16を適用
   if (room.dealerIndex >= 0 && room.players.length > 2) {
     const n         = room.players.length;
     const myIdx     = n - 1;

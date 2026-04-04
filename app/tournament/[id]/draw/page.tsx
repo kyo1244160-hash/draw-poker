@@ -114,6 +114,11 @@ export default function TournamentDrawPage() {
       setTimeout(() => router.push('/'), 2000);
     });
 
+    // 脱落済みでレイトレジスト参加不可 → 観戦モードへ誘導
+    socket.on('t:eliminatedSpectate', ({ tournamentId: tid }: { tournamentId: string }) => {
+      router.replace(`/tournament/${tid}/spectate`);
+    });
+
     // ブラインド更新
     // ファイナルテーブル通知
     socket.on('t:finalTable', () => {
@@ -258,6 +263,7 @@ export default function TournamentDrawPage() {
       socket.off('timerUpdate');
       socket.off('t:tournamentStarting');
       socket.off('t:tournamentNotFound');
+      socket.off('t:eliminatedSpectate');
       socket.off('t:finalTable');
       socket.off('t:lateRegClosed');
       socket.off('t:playerEliminated');

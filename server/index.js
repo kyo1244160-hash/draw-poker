@@ -327,8 +327,9 @@ app.prepare().then(async () => {
           if (t.status === 'running' && t.lateRegOpen) {
             // 脱落済みプレイヤーは配置しない
             if (t.eliminationOrder?.includes(user.accountId)) {
-              log(`[t:getMyTable] ${user.nickname}: already eliminated → denied`);
-              socket.emit('t:tournamentNotFound', { tournamentId });
+              log(`[t:getMyTable] ${user.nickname}: already eliminated → redirect to spectate`);
+              // 脱落済みプレイヤーは観戦モードへ誘導
+              socket.emit('t:eliminatedSpectate', { tournamentId });
               return;
             }
             log(`[t:getMyTable] ${user.nickname}: lateReg immediate placement (status=${t.status})`);
