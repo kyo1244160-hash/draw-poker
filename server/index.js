@@ -322,8 +322,11 @@ app.prepare().then(async () => {
             log(`[t:getMyTable] ${user.nickname} → ${retryTableId} (after retry)`);
             return;
           }
-          // テーブルはまだ未割当だがメモリにはある → もう少し待つ
-          if (retriesLeft > 0) {
+          // テーブルはまだ未割当だがメモリにはある
+          // レイトレジスト中（lateRegOpen=true）なら即座に配置する（60秒待ちをスキップ）
+          if (t.status === 'running' && t.lateRegOpen) {
+            log(`[t:getMyTable] ${user.nickname}: lateReg immediate placement (status=${t.status})`);
+          } else if (retriesLeft > 0) {
             if (retriesLeft === 120 || retriesLeft % 10 === 0) {
               log(`[t:getMyTable] ${user.nickname}: in memory but table not assigned, ${retriesLeft} retries left (status=${t.status})`);
             }
