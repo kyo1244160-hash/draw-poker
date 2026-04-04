@@ -79,6 +79,10 @@ async function registerEntry(tournamentId, accountId) {
           throw new Error('レイトレジスト受付期間が終了しています');
         }
         // lateRegOpen=true: OK（レイトレジスト期間中）
+        // 脱落済みプレイヤーの再入室を拒否
+        if (memTournament && memTournament.eliminationOrder?.includes(accountId)) {
+          throw new Error('すでにトーナメントから脱落しています');
+        }
       } catch (tmErr) {
         if (tmErr.message.includes('レイトレジスト') || tmErr.message.includes('参加受付')) throw tmErr;
         // その他の例外（require失敗等）→ late_reg_minutes>0なら許可

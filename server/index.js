@@ -325,6 +325,12 @@ app.prepare().then(async () => {
           // テーブルはまだ未割当だがメモリにはある
           // レイトレジスト中（lateRegOpen=true）なら即座に配置する（60秒待ちをスキップ）
           if (t.status === 'running' && t.lateRegOpen) {
+            // 脱落済みプレイヤーは配置しない
+            if (t.eliminationOrder?.includes(user.accountId)) {
+              log(`[t:getMyTable] ${user.nickname}: already eliminated → denied`);
+              socket.emit('t:tournamentNotFound', { tournamentId });
+              return;
+            }
             log(`[t:getMyTable] ${user.nickname}: lateReg immediate placement (status=${t.status})`);
           } else if (retriesLeft > 0) {
             if (retriesLeft === 120 || retriesLeft % 10 === 0) {
