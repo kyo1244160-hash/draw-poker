@@ -13,10 +13,11 @@ interface Props {
   status: TournamentStatus | null;
   tournamentName?: string;
   timer: { remaining: number; limit: number } | null;
+  onLeave?: () => void;
 }
 
 export default function SpectatorView({
-  players, meta, blind, status, tournamentName, timer,
+  players, meta, blind, status, tournamentName, timer, onLeave,
 }: Props) {
   return (
     <div style={{
@@ -35,14 +36,28 @@ export default function SpectatorView({
           <TournamentInfoBar blind={blind} status={status} tournamentName={tournamentName} />
         </div>
         {/* 観戦バッジ */}
-        <span style={{
-          background: 'rgba(80,20,120,0.6)', border: '1px solid rgba(150,60,220,0.5)',
-          color: '#c088ff', fontSize: 10, padding: '2px 10px', borderRadius: 12,
-          fontFamily: 'var(--font-title)', letterSpacing: '0.04em', flexShrink: 0,
-          whiteSpace: 'nowrap' as const,
-        }}>
-          👁 観戦中
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+          <span style={{
+            background: 'rgba(80,20,120,0.6)', border: '1px solid rgba(150,60,220,0.5)',
+            color: '#c088ff', fontSize: 10, padding: '2px 10px', borderRadius: 12,
+            fontFamily: 'var(--font-title)', letterSpacing: '0.04em',
+            whiteSpace: 'nowrap' as const,
+          }}>
+            👁 観戦中
+          </span>
+          {onLeave && (
+            <button
+              onClick={onLeave}
+              style={{
+                background: 'rgba(139,26,26,0.55)', border: '1px solid rgba(204,34,34,0.4)',
+                color: '#ffaaaa', fontSize: 10, padding: '2px 7px', borderRadius: 4,
+                cursor: 'pointer', fontFamily: 'var(--font-title)', whiteSpace: 'nowrap' as const,
+              }}
+            >
+              ロビーへ
+            </button>
+          )}
+        </div>
       </nav>
 
       {/* ゲームテーブル — draw ページと完全同一の flex:1 全画面レイアウト */}

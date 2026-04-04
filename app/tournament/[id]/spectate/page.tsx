@@ -65,6 +65,14 @@ export default function SpectatePage() {
       router.push(`/tournament/${params.id}/result`);
     });
 
+    // 観戦中テーブルがバランシングで解体された → 新テーブルへ切り替え
+    socket.on('t:tableClosed', ({ tournamentId, newTableId }: { tournamentId: string; newTableId: string }) => {
+      if (tournamentId !== params.id) return;
+      tableIdRef.current = newTableId;
+      // 新テーブルを観戦開始（setPlayers/setMetaは新テーブルのgameStateで上書きされる）
+      socket.emit('spectate', { tableId: newTableId });
+    });
+
     return () => {
       cancelled = true;
       socket.off('gameState');
@@ -73,6 +81,7 @@ export default function SpectatePage() {
       socket.off('t:tournamentStatus');
       socket.off('t:tournamentStarting');
       socket.off('t:tournamentFinished');
+      socket.off('t:tableClosed');
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -95,6 +104,7 @@ export default function SpectatePage() {
       blind={blind}
       status={status}
       timer={timer}
+      onLeave={() => router.push('/')}
     />
   );
 }

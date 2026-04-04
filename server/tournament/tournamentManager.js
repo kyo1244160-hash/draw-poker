@@ -815,6 +815,13 @@ function balanceTables(tournamentId) {
     t.tableIds = t.tableIds.filter(id => id !== tid);
     roomToTournament.delete(tid);
     logDev(`[TM] balance: dissolved ${tid.slice(-8)}, tables left: ${t.tableIds.length}`);
+
+    // 解体テーブルを観戦していたソケットへ移動先テーブルを通知
+    // （観戦者は t:tableClosed を受け取って新テーブルへ切り替える）
+    if (_io && t.tableIds.length > 0) {
+      const newTid = t.tableIds[0];
+      _io.to(tid).emit('t:tableClosed', { tournamentId: t.id, newTableId: newTid });
+    }
   };
 
   // --- フェーズ1: テーブル数の最適化（過剰なテーブルを解消）---

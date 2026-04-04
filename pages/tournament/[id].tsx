@@ -67,6 +67,7 @@ export default function TournamentLobby() {
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [isEliminated, setIsEliminated] = useState(false);
   const isEliminatedRef = useRef(false);  // ソケットコールバック内から参照するためのref
+  const fetchReadyRef   = useRef(false);  // fetchData 完了前に t:tournamentStarting で誤遷移を防ぐ
 
   // ===== データ取得 =====
   const fetchData = useCallback(async () => {
@@ -100,6 +101,7 @@ export default function TournamentLobby() {
       setActionMsg('データの取得に失敗しました');
     } finally {
       setLoading(false);
+      fetchReadyRef.current = true;
     }
   }, [id]);
 
@@ -117,6 +119,8 @@ export default function TournamentLobby() {
 
     const onTournamentStarting = ({ tournamentId, tableId }: { tournamentId: string; tableId: string }) => {
       if (tournamentId !== id) return;
+      // fetchData 完了前は遷移しない（isEliminatedRef がまだ false の可能性がある）
+      if (!fetchReadyRef.current) return;
       // 脱落済みプレイヤーはゲーム画面へ遷移しない（観戦ボタンで手動移動）
       if (isEliminatedRef.current) return;
       // 自分が参加登録しているトーナメントが開始 → ゲーム画面へ

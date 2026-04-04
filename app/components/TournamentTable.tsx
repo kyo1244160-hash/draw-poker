@@ -479,9 +479,16 @@ export default function TournamentTable({
       let ang: number;
       if (p.isSelf) { ang = 90; }
       else {
-        const slots = [150,-150,-90,-30,30];
         const idx = others.findIndex(o => o.id===p.id);
-        ang = slots[idx] ?? (-90+60*(idx+1));
+        if (self) {
+          // 自分がいる場合: 自分の席（90°）を除いた5スロット
+          const slots = [150,-150,-90,-30,30];
+          ang = slots[idx] ?? (-90+60*(idx+1));
+        } else {
+          // 観戦モード（self=null）: 全員を均等配置（360°/n 間隔、90°=下から時計回り）
+          const n = others.length || 1;
+          ang = 90 - (360 / n) * idx;
+        }
       }
       const rad = (ang*Math.PI)/180;
       const bh = p.isSelf ? Math.floor(TH*0.31) : Math.floor(TH*0.25);
@@ -730,7 +737,12 @@ export default function TournamentTable({
     if (p.isSelf) { ang = 90; }
     else {
       const idx = oth_m.findIndex(o => o.id===p.id);
-      ang = SLOTS_M[idx] ?? (-90+72*(idx+1));
+      if (self) {
+        ang = SLOTS_M[idx] ?? (-90+72*(idx+1));
+      } else {
+        const n = oth_m.length || 1;
+        ang = 90 - (360 / n) * idx;
+      }
     }
     const rad = (ang*Math.PI)/180;
     const bw = p.isSelf ? SELF_W : OTH_W;
