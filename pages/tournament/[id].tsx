@@ -65,6 +65,7 @@ export default function TournamentLobby() {
   const [actionMsg,  setActionMsg]  = useState('');
   const [busy,       setBusy]       = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
+  const [isEliminated, setIsEliminated] = useState(false);
 
   // ===== データ取得 =====
   const fetchData = useCallback(async () => {
@@ -76,9 +77,10 @@ export default function TournamentLobby() {
       setTournament(data.tournament);
       setEntries(data.entries ?? []);
       setRegistered(data.registered ?? false);
+      setIsEliminated(data.isEliminated ?? false);
 
-      // すでに running なら即座に draw ページへ遷移（開始通知を受け取れなかった場合の対策）
-      if (data.tournament?.status === 'running' && data.registered) {
+      // すでに running なら即座に draw ページへ遷移（脱落済みなら遷移しない）
+      if (data.tournament?.status === 'running' && data.registered && !data.isEliminated) {
         router.replace(`/tournament/${id}/draw`);
         return;
       }
@@ -183,7 +185,7 @@ export default function TournamentLobby() {
     || (tournament.late_reg_open === null && (tournament.late_reg_minutes ?? 0) === 0);
   const isLateReg      = tournament.status === 'running' && lateRegOpenResolved;
   const isFull         = tournament.max_players !== null && entries.length >= tournament.max_players;
-  const canRegister    = (isRegistering || isLateReg) && !registered && !isFull && !!session?.user?.accountId;
+  const canRegister    = (isRegistering || isLateReg) && !registered && !isFull && !!session?.user?.accountId && !isEliminated;
   const canCancel      = isRegistering && registered;
   // running 中かつ未登録の場合の状態
   const isRunningNotRegistered = tournament.status === 'running' && !registered;
@@ -223,6 +225,21 @@ export default function TournamentLobby() {
 
             {/* 参加ボタン */}
             <div style={S.actionRow}>
+              {/* 脱落済みプレイヤー: 観戦ボタンのみ表示 */}
+              {isEliminated ? (
+                <>
+                  <p style={{ color: 'var(--cream-dim)', fontFamily: 'var(--font-title)', fontSize: 14, margin: 0 }}>
+                    このトーナメントからは脱落しています
+                  </p>
+                  <button
+                    style={S.spectateBtn}
+                    onClick={() => router.push(`/tournament/${tournament.id}/spectate`)}
+                  >
+                    👁 観戦する
+                  </button>
+                </>
+              ) : (
+                <>
               {!session?.user?.accountId && isRegistering && (
                 <p style={S.loginNote}>参加登録にはログインが必要です</p>
               )}
@@ -257,6 +274,8 @@ export default function TournamentLobby() {
               )}
               {actionMsg && (
                 <p style={{ color: actionMsg.startsWith('✅') ? '#88ee88' : '#ee8888', fontSize: 14, margin: 0 }}>{actionMsg}</p>
+              )}
+                </>
               )}
             </div>
           </section>

@@ -42,20 +42,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }));
       const myEntry = rankings.find((r: {accountId: string}) => r.accountId === accountId) ?? null;
 
-      // メモリ上のlateRegOpen状態をtournamentオブジェクトに付与
+      // メモリ上のlateRegOpen状態・脱落状態をtournamentオブジェクトに付与
       let lateRegOpen: boolean | null = null;
+      let isEliminated = false;
       if (tournament?.status === 'running') {
         try {
           const tm = require('../../../../server/tournament/tournamentManager');
           const memT = tm.getTournament(tournamentId);
-          if (memT) lateRegOpen = memT.lateRegOpen ?? false;
+          if (memT) {
+            lateRegOpen = memT.lateRegOpen ?? false;
+            isEliminated = memT.eliminationOrder?.includes(accountId) ?? false;
+          }
         } catch { /* 取得できない場合は null のまま */ }
       }
       const tournamentWithLateReg = tournament
         ? { ...tournament, late_reg_open: lateRegOpen }
         : tournament;
 
-      return res.status(200).json({ registered, entries, tournament: tournamentWithLateReg, rankings, myEntry });
+      return res.status(200).json({ registered, entries, tournament: tournamentWithLateReg, rankings, myEntry, isEliminated });
     }
 
     // POST: 参加登録
