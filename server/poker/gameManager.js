@@ -543,14 +543,23 @@ function betAction(roomId, socketId, action) {
       player.chips -= actual; player.bet += actual; room.pot += actual;
       player.totalContribution = (player.totalContribution??0) + actual;
       // currentBetは上がることしかない（ショートオールインで下げない）
+      const prevBet = room.currentBet;
       room.currentBet = Math.max(room.currentBet, player.bet);
-      // フルレイズ（actual === needed）の場合のみraiseCount増加 & 他プレイヤーのacted リセット
-      // ショートオールイン（actual < needed）はレイズ権を与えず、acted済みプレイヤーも再アクション不要
       if (actual >= needed) {
+        // フルレイズ: raiseCount増加 & 全員のacted をリセット（再アクション権あり）
         room.raiseCount++;
         for (let i = 0; i < room.players.length; i++) {
           if (i !== myIndex && !room.players[i].folded && !room.players[i].sittingOut) {
             room.players[i].acted = false;
+          }
+        }
+      } else if (room.currentBet > prevBet) {
+        // ショートオールイン: currentBet が上昇した場合、まだ新しいcurrentBetに達していない
+        // プレイヤーだけ acted をリセットしてコールを求める（再レイズ権は与えない）
+        for (let i = 0; i < room.players.length; i++) {
+          const op = room.players[i];
+          if (i !== myIndex && !op.folded && !op.sittingOut && op.bet < room.currentBet) {
+            op.acted = false;
           }
         }
       }

@@ -41,53 +41,54 @@ export default function TableNoticeModal({ notices, onClose, autoCloseMs = 5000 
   if (notices.length === 0) return null;
 
   return (
+    // pointerEvents: 'none' で背後のアクションボタン操作を妨げない（非ブロッキング表示）
     <div
       style={{
-        position: 'fixed', inset: 0, zIndex: 55,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: 'rgba(0,0,0,0.6)',
+        position: 'fixed', top: 44, right: 8, zIndex: 55,
+        display: 'flex', flexDirection: 'column' as const,
+        alignItems: 'flex-end', gap: 4,
+        pointerEvents: 'none',
         animation: 'tnFadeIn 0.2s ease-out',
       }}
-      onClick={onClose}
     >
       <div
         style={{
-          background: 'linear-gradient(160deg,rgba(10,20,35,0.98),rgba(5,10,20,0.98))',
-          border: '2px solid rgba(100,130,180,0.5)',
-          borderRadius: 16,
-          padding: '20px 24px',
-          minWidth: 260,
-          maxWidth: 340,
-          width: '90vw',
-          boxShadow: '0 8px 40px rgba(0,0,0,0.8)',
+          background: 'linear-gradient(160deg,rgba(10,20,35,0.95),rgba(5,10,20,0.95))',
+          border: '1px solid rgba(100,130,180,0.4)',
+          borderRadius: 10,
+          padding: '10px 14px',
+          minWidth: 200,
+          maxWidth: 280,
+          boxShadow: '0 4px 20px rgba(0,0,0,0.7)',
           animation: 'tnSlideUp 0.25s ease-out',
           position: 'relative' as const,
+          pointerEvents: 'auto',
         }}
-        onClick={(e) => e.stopPropagation()}
+        onClick={onClose}
       >
         {/* ヘッダー */}
         <div style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          marginBottom: 14,
-          borderBottom: '1px solid rgba(255,255,255,0.1)',
-          paddingBottom: 10,
+          marginBottom: 8,
+          borderBottom: '1px solid rgba(255,255,255,0.08)',
+          paddingBottom: 6,
         }}>
           <span style={{
-            fontFamily: 'var(--font-title)', fontSize: 12, fontWeight: 700,
-            color: 'rgba(255,255,255,0.5)', letterSpacing: '0.08em',
+            fontFamily: 'var(--font-title)', fontSize: 11, fontWeight: 700,
+            color: 'rgba(255,255,255,0.4)', letterSpacing: '0.06em',
           }}>
             📋 テーブル情報
           </span>
           <button
             onClick={onClose}
             style={{
-              background: 'rgba(255,255,255,0.1)',
-              border: '1px solid rgba(255,255,255,0.2)',
-              borderRadius: 6,
-              color: 'rgba(255,255,255,0.7)',
+              background: 'rgba(255,255,255,0.08)',
+              border: '1px solid rgba(255,255,255,0.15)',
+              borderRadius: 5,
+              color: 'rgba(255,255,255,0.6)',
               fontFamily: 'var(--font-title)',
-              fontSize: 11,
-              padding: '2px 10px',
+              fontSize: 10,
+              padding: '1px 7px',
               cursor: 'pointer',
               lineHeight: 1.6,
             }}
@@ -122,17 +123,17 @@ export default function TableNoticeModal({ notices, onClose, autoCloseMs = 5000 
 
         {/* フッター */}
         <div style={{
-          marginTop: 14, textAlign: 'center' as const,
+          marginTop: 8, textAlign: 'center' as const,
           fontFamily: 'var(--font-body)', fontSize: 10,
-          color: 'rgba(255,255,255,0.25)',
+          color: 'rgba(255,255,255,0.2)',
         }}>
-          {Math.round(autoCloseMs / 1000)}秒後に自動で閉じます
+          {Math.round(autoCloseMs / 1000)}秒後に閉じます
         </div>
       </div>
 
       <style>{`
         @keyframes tnFadeIn  { from { opacity:0 }                          to { opacity:1 } }
-        @keyframes tnSlideUp { from { transform:translateY(14px);opacity:0 } to { transform:translateY(0);opacity:1 } }
+        @keyframes tnSlideUp { from { transform:translateX(14px);opacity:0 } to { transform:translateX(0);opacity:1 } }
       `}</style>
     </div>
   );

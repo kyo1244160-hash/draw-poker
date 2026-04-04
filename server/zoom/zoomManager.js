@@ -115,10 +115,15 @@ function _returnAllToPool(io, roomId, poolId) {
 
   // --- 1. 全員退室・socketToRoom削除・待機列追加（_tryAssignTable は呼ばない）---
   for (const sid of playerIds) {
-    leaveRoom(sid);
-    const sock = io.sockets.sockets.get(sid);
-    if (sock) sock.leave(roomId);
-    socketToRoom.delete(sid);
+    // FastFold 後に新テーブルへ移動済みのプレイヤーは socketToRoom が別 roomId を
+    // 指しているため、leaveRoom を呼ぶと新テーブルで誤ってフォールド扱いになる。
+    // socketToRoom が現テーブルを指しているプレイヤーだけ leaveRoom する。
+    if (socketToRoom.get(sid) === roomId) {
+      leaveRoom(sid);
+      const sock = io.sockets.sockets.get(sid);
+      if (sock) sock.leave(roomId);
+      socketToRoom.delete(sid);
+    }
 
     if (socketToPool.get(sid) === poolId) {
       _addToWaiting(pool, sid);
@@ -166,6 +171,15 @@ function _doFastFold(io, socket, poolId) {
       setTimeout(() => _returnAllToPool(io, currentRoomId, poolId), 3000);
       return;
     }
+  }
+
+  // FastFold 後に待機列→新テーブルへ移動する前に、
+  // 旧テーブルの activeTables から自分を削除する。
+  // 削除しないと旧テーブルの showdown 後 (_returnAllToPool) が
+  // leaveRoom を呼んで新テーブルの自分をフォールド扱いにするバグが発生する。
+  if (currentRoomId) {
+    pool.activeTables.get(currentRoomId)?.delete(socket.id);
+    socketToRoom.delete(socket.id);
   }
 
   _addToWaiting(pool, socket.id);

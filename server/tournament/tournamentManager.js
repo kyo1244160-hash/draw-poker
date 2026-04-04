@@ -349,7 +349,10 @@ function checkEliminations(tableId) {
   const room = getRoom(tableId);
   if (!room) return;
 
-  const eliminated = room.players.filter(p => p.chips <= 0);
+  const alreadyEliminated = new Set(t.eliminationOrder);
+  const eliminated = room.players.filter(p =>
+    p.chips <= 0 && !alreadyEliminated.has(p.accountId ?? p.id)
+  );
   for (const p of eliminated) {
     _eliminatePlayer(t, tableId, p);
   }
@@ -432,10 +435,14 @@ function _finishTournament(tournament) {
       }
     }
   }
-  // 脱落順から下位を追加
+  // 脱落順から下位を追加（重複 accountId がある場合は最初のエントリのみ使用）
+  const seenIds = new Set(rankings.map(r => r.accountId));
   for (let i = tournament.eliminationOrder.length - 1; i >= 0; i--) {
+    const accountId = tournament.eliminationOrder[i];
+    if (seenIds.has(accountId)) continue;  // 重複をスキップ
+    seenIds.add(accountId);
     const rank = tournament.totalPlayers - i;
-    rankings.push({ accountId: tournament.eliminationOrder[i], rank });
+    rankings.push({ accountId, rank });
   }
 
   log(`[TM] ${tournament.id}: finished`);

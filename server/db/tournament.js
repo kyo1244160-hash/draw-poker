@@ -63,11 +63,13 @@ async function registerEntry(tournamentId, accountId) {
         const tm = require('../tournament/tournamentManager');
         const memTournament = tm.getTournament(tournamentId);
         if (!memTournament) {
-          // メモリにない（サーバー再起動直後等）→ late_reg_minutesで判断
+          // メモリにない（サーバー再起動直後等）
+          // 時間ベース（late_reg_minutes > 0）: 経過時間で判断
+          // レベルベース（late_reg_minutes = 0）: メモリがないため拒否（安全側に倒す）
           if (!tournament.late_reg_minutes || tournament.late_reg_minutes <= 0) {
-            throw new Error('現在参加受付中ではありません');
+            throw new Error('現在参加受付中ではありません（サーバー再起動後はレイトレジスト不可）');
           }
-          // late_reg_minutes>0 かつ開始からの経過時間がlate_reg_minutes未満なら許可
+          // 時間ベース: 開始からの経過時間がlate_reg_minutes未満なら許可
           const startedAt = new Date(tournament.scheduled_start_at).getTime();
           const elapsedMin = (Date.now() - startedAt) / 60000;
           if (elapsedMin > tournament.late_reg_minutes) {

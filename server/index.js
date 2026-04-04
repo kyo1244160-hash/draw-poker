@@ -258,6 +258,20 @@ app.prepare().then(async () => {
           socket.emit('t:pendingTableTransfer', { tableId, message: '次のハンドから参加します' });
           logDev(`[t:getMyTable] ${user.nickname} → ${tableId} (pending)`);
         } else {
+          // 再接続: room.players の socket.id を即座に更新する。
+          // t:tournamentStarting → フロントの joinRoom 到達までの非同期の隙間に
+          // betAction が送られると "そのアクションはできません" エラーになるバグを防ぐ。
+          const activePlayer = room?.players.find(p =>
+            p.accountId === user.accountId || p.name === user.nickname
+          );
+          if (activePlayer && activePlayer.id !== socket.id) {
+            _cancelTournamentDisconnectGrace(activePlayer.id);
+            activePlayer.id = socket.id;
+            activePlayer.disconnected = false;
+            logDev(`[t:getMyTable] ${user.nickname}: player.id updated → ${socket.id}`);
+          }
+          socket.join(tableId);
+          currentRoom = { name: user.nickname ?? '', roomId: tableId };
           socket.emit('t:tournamentStarting', { tournamentId, tableId });
           logDev(`[t:getMyTable] ${user.nickname} → ${tableId}`);
         }
@@ -578,7 +592,13 @@ app.prepare().then(async () => {
     registerZoomHandlers(io, socket);
 
     // ----- 観戦（トーナメントテーブル専用）-----
-    socket.on('spectate', ({ tableId }) => {
+    socket.on('spectate', ({ tableId: rawTableId, tournamentId }) => {
+      // tableId 未指定の場合は tournamentId からアクティブなテーブルを自動解決
+      let tableId = rawTableId;
+      if (!tableId && tournamentId) {
+        const t = tournamentManager.getTournament(tournamentId);
+        tableId = t?.tableIds?.[0] ?? null;
+      }
       if (!tableId || typeof tableId !== 'string' || tableId.length > 64) return;
       if (!tournamentManager.isTournamentTable(tableId)) {
         socket.emit('error', { message: 'この部屋は観戦できません' });

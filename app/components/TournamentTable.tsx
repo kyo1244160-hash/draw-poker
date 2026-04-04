@@ -197,6 +197,51 @@ export default function TournamentTable({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
+  // ===== ターン通知音 =====
+  // isMyTurn が false→true に変化した瞬間だけ短いブザー音を再生する。
+  // Web Audio API で生成するため外部ファイル不要。ユーザー操作後に初期化（iOS 対応）。
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const prevIsMyTurnRef = useRef<boolean>(false);
+
+  // ユーザーの最初のタップ/クリックで AudioContext を初期化（iOS Safari 要件）
+  useEffect(() => {
+    const init = () => {
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || (window as unknown as Record<string,unknown>).webkitAudioContext as typeof AudioContext)();
+      }
+    };
+    window.addEventListener('pointerdown', init, { once: true });
+    return () => window.removeEventListener('pointerdown', init);
+  }, []);
+
+  useEffect(() => {
+    const wasMyTurn = prevIsMyTurnRef.current;
+    prevIsMyTurnRef.current = isMyTurn;
+
+    // false → true のときだけ鳴らす（自分のターン開始）
+    if (!wasMyTurn && isMyTurn && audioCtxRef.current) {
+      const ctx = audioCtxRef.current;
+      // 短い「ポン」音: 800Hz → 600Hz で 0.15秒
+      // 「ピピピッ」: 1000Hz の短いビープを 3 回（間隔 0.12秒）
+      const freq = 1000;
+      const dur  = 0.07;   // 1音の長さ
+      const gap  = 0.12;   // 音の間隔（start基準）
+      for (let i = 0; i < 3; i++) {
+        const t0   = ctx.currentTime + i * gap;
+        const osc  = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, t0);
+        gain.gain.setValueAtTime(0.4, t0);
+        gain.gain.linearRampToValueAtTime(0, t0 + dur);
+        osc.start(t0);
+        osc.stop(t0 + dur);
+      }
+    }
+  }, [isMyTurn]);
+
   // ブラインドアップカウントダウン
   const [blindCountdown, setBlindCountdown] = useState<number>(0);
   useEffect(() => {

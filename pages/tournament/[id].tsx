@@ -46,7 +46,8 @@ const STATUS_LABEL: Record<string, string> = {
 // running + lateRegOpen=true の場合は「レイトレジスト受付中」と表示
 const getTournamentStatusLabel = (t: Tournament | null) => {
   if (!t) return '';
-  if (t.status === 'running' && (t.late_reg_minutes ?? 0) > 0 && t.late_reg_open !== false) return 'レイトレジスト受付中';
+  // 時間ベース・レベルベース両方対応: late_reg_open === true なら「レイトレジスト受付中」
+  if (t.status === 'running' && t.late_reg_open === true) return 'レイトレジスト受付中';
   return STATUS_LABEL[t.status] ?? t.status;
 };
 
@@ -170,11 +171,15 @@ export default function TournamentLobby() {
   }
 
   const isRegistering  = tournament.status === 'registering';
-  // レイトレジスト中: running + late_reg_minutes > 0 + サーバー上でlateRegOpen=true
-  const isLateReg      = tournament.status === 'running' && (tournament.late_reg_minutes ?? 0) > 0 && tournament.late_reg_open !== false;
+  // レイトレジスト中:
+  //   時間ベース: running + late_reg_minutes > 0 + サーバー上でlateRegOpen=true
+  //   レベルベース: running + late_reg_minutes = 0 + late_reg_open = true（サーバーがlateRegOpenを管理）
+  const isLateReg      = tournament.status === 'running' && tournament.late_reg_open === true;
   const isFull         = tournament.max_players !== null && entries.length >= tournament.max_players;
   const canRegister    = (isRegistering || isLateReg) && !registered && !isFull && !!session?.user?.accountId;
   const canCancel      = isRegistering && registered;
+  // running 中かつ未登録の場合の状態
+  const isRunningNotRegistered = tournament.status === 'running' && !registered;
 
   return (
     <>
@@ -202,9 +207,11 @@ export default function TournamentLobby() {
               {tournament.blind_schedule_name && (
                 <InfoItem label="ブラインド" value={tournament.blind_schedule_name} />
               )}
-              {tournament.late_reg_minutes != null && tournament.late_reg_minutes > 0 && (
+              {tournament.late_reg_minutes != null && tournament.late_reg_minutes > 0 ? (
                 <InfoItem label="レイトレジスト" value={`開始後 ${tournament.late_reg_minutes} 分間`} />
-              )}
+              ) : tournament.late_reg_open === true ? (
+                <InfoItem label="レイトレジスト" value="ブラインドレベルで管理" />
+              ) : null}
             </div>
 
             {/* 参加ボタン */}
@@ -227,6 +234,19 @@ export default function TournamentLobby() {
               )}
               {isFull && !registered && isRegistering && (
                 <p style={{ color: '#ee8888', fontFamily: 'var(--font-title)', fontSize: 14 }}>定員に達しました</p>
+              )}
+              {isRunningNotRegistered && !isLateReg && (
+                <>
+                  <p style={{ color: 'var(--cream-dim)', fontFamily: 'var(--font-title)', fontSize: 14 }}>
+                    現在参加受付中ではありません（進行中）
+                  </p>
+                  <button
+                    style={S.spectateBtn}
+                    onClick={() => router.push(`/tournament/${tournament.id}/spectate`)}
+                  >
+                    👁 観戦する
+                  </button>
+                </>
               )}
               {actionMsg && (
                 <p style={{ color: actionMsg.startsWith('✅') ? '#88ee88' : '#ee8888', fontSize: 14, margin: 0 }}>{actionMsg}</p>
@@ -328,4 +348,5 @@ const S: Record<string, React.CSSProperties> = {
   modalButtons: { display: 'flex', gap: 12, justifyContent: 'center' },
   modalCancelBtn:  { background: 'transparent', border: '1px solid var(--gold-dim)', color: 'var(--cream-dim)', borderRadius: 6, padding: '10px 24px', fontSize: 13, cursor: 'pointer', fontFamily: 'var(--font-title)', letterSpacing: '0.06em' },
   modalConfirmBtn: { background: 'linear-gradient(135deg, #8b2020, #5a1010)', border: '1px solid #cc4444', color: '#ffcccc', borderRadius: 6, padding: '10px 24px', fontSize: 13, cursor: 'pointer', fontFamily: 'var(--font-title)', letterSpacing: '0.06em', fontWeight: 700 },
+  spectateBtn:     { background: 'transparent', border: '1px solid #9966cc', color: '#b088ee', borderRadius: 6, fontSize: 13, padding: '9px 20px', cursor: 'pointer', fontFamily: 'var(--font-title)', letterSpacing: '0.04em' },
 };

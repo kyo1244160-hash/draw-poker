@@ -320,6 +320,45 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
   const modeBg        = effectiveMode==='badugi' ? 'rgba(204,119,68,0.22)' : 'rgba(68,136,204,0.22)';
   const modeBorder    = effectiveMode==='badugi' ? 'rgba(204,119,68,0.45)' : 'rgba(68,136,204,0.45)';
 
+  // ===== ターン通知音 =====
+  const audioCtxRef = React.useRef<AudioContext | null>(null);
+  const prevIsMyTurnRef = React.useRef<boolean>(false);
+
+  React.useEffect(() => {
+    const init = () => {
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || (window as unknown as Record<string,unknown>).webkitAudioContext as typeof AudioContext)();
+      }
+    };
+    window.addEventListener('pointerdown', init, { once: true });
+    return () => window.removeEventListener('pointerdown', init);
+  }, []);
+
+  React.useEffect(() => {
+    const wasMyTurn = prevIsMyTurnRef.current;
+    prevIsMyTurnRef.current = isMyTurn;
+    if (!wasMyTurn && isMyTurn && audioCtxRef.current) {
+      const ctx = audioCtxRef.current;
+      // 「ピピピッ」: 1000Hz の短いビープを 3 回（間隔 0.12秒）
+      const freq = 1000;
+      const dur  = 0.07;   // 1音の長さ
+      const gap  = 0.12;   // 音の間隔（start基準）
+      for (let i = 0; i < 3; i++) {
+        const t0   = ctx.currentTime + i * gap;
+        const osc  = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, t0);
+        gain.gain.setValueAtTime(0.4, t0);
+        gain.gain.linearRampToValueAtTime(0, t0 + dur);
+        osc.start(t0);
+        osc.stop(t0 + dur);
+      }
+    }
+  }, [isMyTurn]);
+
   // ===== ハンドラ =====
   const handleCardClick = useCallback((j:number) => {
     if (!isDrawPhase || !isMyTurn || myDrew) return;
