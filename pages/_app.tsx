@@ -20,12 +20,13 @@ function TournamentStartWatcher() {
       const currentPath = window.location.pathname;
       if (currentPath.includes('/draw') || currentPath.includes('/spectate')) return;
 
-      // 自分が登録済みか確認
+      // 自分が登録済みかつ脱落していないか確認
       try {
         const res = await fetch(`/api/tournament/${tournamentId}/entry`);
         if (!res.ok) return;
         const data = await res.json();
-        if (data.registered) {
+        // isEliminated=true の場合は draw ページへ遷移しない（観戦ボタンで手動移動）
+        if (data.registered && !data.isEliminated) {
           router.push(`/tournament/${tournamentId}/draw`);
         }
       } catch {

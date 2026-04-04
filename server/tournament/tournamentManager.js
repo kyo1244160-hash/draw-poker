@@ -10,6 +10,7 @@ const { log, logDev } = require('../logger');
 
 const {
   getOrCreateRoom,
+  canAutoStart,
   joinRoom: joinPokerRoom,
   leaveRoom,
   startGame,
@@ -609,6 +610,16 @@ function _kickstartAfterBalance(tableId) {
   } else {
     // フォールバック: _broadcastFn 未注入の場合は gameState のみ送信
     broadcastTableState(tableId);
+  }
+  // バランシング後に移動先テーブルが自動開始できる状態なら開始を試みる
+  // （_waitZoneSkip プレイヤーがいて startGame が null を返す場合は
+  //   _tryAutoStart 内のリトライが 1 秒後に再試行する）
+  if (_io && _tryAutoStartFn) {
+    if (canAutoStart(tableId)) {
+      setTimeout(() => {
+        if (canAutoStart(tableId)) _tryAutoStartFn(_io, tableId);
+      }, 300);
+    }
   }
 }
 
