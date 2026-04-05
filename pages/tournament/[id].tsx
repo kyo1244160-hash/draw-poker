@@ -79,12 +79,16 @@ export default function TournamentLobby() {
       setTournament(data.tournament);
       setEntries(data.entries ?? []);
       setRegistered(data.registered ?? false);
-      const eliminated = data.isEliminated ?? false;
+      // isEliminated: APIのメモリ参照が失敗した場合のフォールバックとして
+      // トーナメント進行中に結果エントリ(myEntry)が存在すれば脱落済みとみなす
+      const eliminated =
+        (data.isEliminated === true) ||
+        (data.tournament?.status === 'running' && !!data.myEntry);
       setIsEliminated(eliminated);
       isEliminatedRef.current = eliminated;
 
       // すでに running なら即座に draw ページへ遷移（脱落済みなら遷移しない）
-      if (data.tournament?.status === 'running' && data.registered && !data.isEliminated) {
+      if (data.tournament?.status === 'running' && data.registered && !eliminated) {
         router.replace(`/tournament/${id}/draw`);
         return;
       }

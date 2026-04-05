@@ -485,9 +485,9 @@ export default function TournamentTable({
           const slots = [150,-150,-90,-30,30];
           ang = slots[idx] ?? (-90+60*(idx+1));
         } else {
-          // 観戦モード（self=null）: 全員を均等配置（360°/n 間隔、90°=下から時計回り）
+          // 観戦モード（self=null）: 全員を均等配置（360°/n 間隔、90°=下から反時計回り＝ポーカー時計回り順）
           const n = others.length || 1;
-          ang = 90 - (360 / n) * idx;
+          ang = 90 + (360 / n) * idx;
         }
       }
       const rad = (ang*Math.PI)/180;
@@ -741,7 +741,7 @@ export default function TournamentTable({
         ang = SLOTS_M[idx] ?? (-90+72*(idx+1));
       } else {
         const n = oth_m.length || 1;
-        ang = 90 - (360 / n) * idx;
+        ang = 90 + (360 / n) * idx;
       }
     }
     const rad = (ang*Math.PI)/180;

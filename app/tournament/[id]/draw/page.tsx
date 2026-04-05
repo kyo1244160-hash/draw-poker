@@ -166,6 +166,8 @@ export default function TournamentDrawPage() {
       socket.emit('leaveSocketRoom', { roomId: fromTableId });
       socket.emit('joinSocketRoom', { roomId: toTableId });
       logAction('別テーブルへ移動しました');
+      // 移動直後にgameStateをリセット（旧テーブルのshowdown画面に止まるバグ防止）
+      setGameState({ players: [], meta: null });
       // 移動先のゲーム状態を取得
       socket.emit('getGameState', { roomId: toTableId });
       // join完了後に確実にgameStateが届くよう再送（フリーズ防止）
