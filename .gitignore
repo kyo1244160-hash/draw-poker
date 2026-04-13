@@ -1,8 +1,33 @@
+# 依存パッケージ
 node_modules
+
+# ビルド成果物
 build
+.next
+tsconfig.tsbuildinfo
+
+# 環境変数（秘密情報）
 .env
 .env.local
 .env.*.local
+
+# Claude 設定（個人・環境依存）
+CLAUDE.md
+MEMORY.md
+.claude/
+
+# バックアップ・一時ファイル
+*.bak
+*.orig
+*.log
+*.swp
+*.swo
+
+# OS 生成ファイル
 .DS_Store
-.next
-/server/bot.js
+Thumbs.db
+
+# エディタ設定
+.vscode/
+.idea/
+

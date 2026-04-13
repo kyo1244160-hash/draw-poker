@@ -510,7 +510,7 @@ router.post('/tournament-bots/:tournamentId/add', (req, res) => {
 
   // tableId指定時: そのテーブルのみにcount体追加
   // tableId省略時: count体を全テーブルに均等配分（ラウンドロビン）
-  const totalN = Math.min(Math.max(1, parseInt(count) || 1), 60);
+  const totalN = Math.min(Math.max(1, parseInt(count) || 1), 500);
   const targets = tableId ? [tableId] : tournament.tableIds;
   const added = [];
 
@@ -534,7 +534,7 @@ router.post('/tournament-bots/:tournamentId/add', (req, res) => {
   } else {
     // 全テーブルにラウンドロビンで均等配分
     // テーブルが足りない場合は自動で新テーブルを作成
-    const MAX_TABLES = 10; // 安全上限
+    const MAX_TABLES = 100; // 安全上限
     const tableStates = tournament.tableIds
       .map(tid => {
         const room = getOrCreateRoom(tid);
@@ -603,7 +603,7 @@ router.post('/tournament-bots/:tournamentId/add', (req, res) => {
 router.post('/tournament-bots/:tournamentId/pre-add', async (req, res) => {
   const { count = 1 } = req.body;
   const tournamentId = req.params.tournamentId;
-  const totalN = Math.min(Math.max(1, parseInt(count) || 1), 60);
+  const totalN = Math.min(Math.max(1, parseInt(count) || 1), 500);
 
   try {
     // ファイルトップのgetEntries等と同じ getTournamentDB を使用
@@ -627,6 +627,13 @@ router.post('/tournament-bots/:tournamentId/pre-add', async (req, res) => {
 
     log(`[adminMonitor] pre-reserved ${totalN} BOTs for ${tournamentId} (total: ${newTotal})`);
     res.json({ ok: true, added: Array.from({ length: totalN }, (_, i) => ({ name: `BOT-${current + i + 1}` })), totalBots: newTotal, humanPlayers: 0 });
+
+    // Sit & Go: BOT 追加後に参加人数チェックを再実行
+    // （人間が先に登録済みでも BOT 追加で min_players を満たす場合がある）
+    if (dbTournament.is_sit_and_go) {
+      const { triggerSitAndGoCheck } = require('./tournament/tournamentManager');
+      triggerSitAndGoCheck(tournamentId).catch(() => {});
+    }
   } catch (err) {
     log(`[adminMonitor] pre-add-bots error: ${err.message}`);
     res.status(500).json({ error: 'SERVER_ERROR', detail: err.message });

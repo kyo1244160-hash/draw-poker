@@ -27,6 +27,8 @@ interface Tournament {
   is_test:             boolean;
   late_reg_minutes:    number | null;
   late_reg_open:       boolean | null;  // メモリ上のlateRegOpen（running時のみ）
+  is_sit_and_go:       boolean;
+  min_players:         number;
 }
 
 interface Entry {
@@ -47,8 +49,8 @@ const STATUS_LABEL: Record<string, string> = {
 const getTournamentStatusLabel = (t: Tournament | null) => {
   if (!t) return '';
   // 時間ベース・レベルベース両方対応: late_reg_open === true なら「レイトレジスト受付中」
-  const _lateOpen = t.late_reg_open === true
-    || (t.late_reg_open === null && (t.late_reg_minutes ?? 0) === 0);
+  // null（不明）の場合は安全側に倒して非表示
+  const _lateOpen = t.late_reg_open === true;
   if (t.status === 'running' && _lateOpen) return 'レイトレジスト受付中';
   return STATUS_LABEL[t.status] ?? t.status;
 };
@@ -189,13 +191,11 @@ export default function TournamentLobby() {
 
   const isRegistering  = tournament.status === 'registering';
   // レイトレジスト中:
-  //   時間ベース: running + late_reg_minutes > 0 + late_reg_open === true
-  //   レベルベース: running + late_reg_minutes = 0 + late_reg_open === true
-  //   ※ late_reg_open が null（メモリ取得失敗）の場合:
-  //     - レベルベース（minutes=0）: 安全側に倒して true 扱い（まだ終了していないとみなす）
-  //     - 時間ベース（minutes>0）: null のまま false 扱い
-  const lateRegOpenResolved = tournament.late_reg_open === true
-    || (tournament.late_reg_open === null && (tournament.late_reg_minutes ?? 0) === 0);
+  //   late_reg_open の値:
+  //     true  → 開放中（global.__pastisLateRegClosed 経由で Express から正確に取得）
+  //     false → 終了済み
+  //     null  → 不明（サーバー再起動直後等）→ 安全側に倒してボタン非表示
+  const lateRegOpenResolved = tournament.late_reg_open === true;
   const isLateReg      = tournament.status === 'running' && lateRegOpenResolved;
   const isFull         = tournament.max_players !== null && entries.length >= tournament.max_players;
   const canRegister    = (isRegistering || isLateReg) && !registered && !isFull && !!session?.user?.accountId && !isEliminated;
@@ -223,9 +223,17 @@ export default function TournamentLobby() {
 
             <div style={S.infoGrid}>
               <InfoItem label="ゲームモード"  value={MODE_LABEL[tournament.mode] ?? tournament.mode} />
-              <InfoItem label="開始日時"      value={new Date(tournament.scheduled_start_at).toLocaleString('ja-JP', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} />
+              {tournament.is_sit_and_go ? (
+                <InfoItem label="形式" value={`🎰 Sit & Go（${tournament.min_players}人集まったら即開始）`} />
+              ) : (
+                <InfoItem label="開始日時" value={new Date(tournament.scheduled_start_at).toLocaleString('ja-JP', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} />
+              )}
               <InfoItem label="開始チップ"    value={`${tournament.starting_chips.toLocaleString()} chips`} />
-              <InfoItem label="参加人数"      value={tournament.max_players ? `${entries.length} / ${tournament.max_players}人` : `${entries.length}人（無制限）`} />
+              {tournament.is_sit_and_go ? (
+                <InfoItem label="参加人数" value={`${entries.length}人参加中（${tournament.min_players}人で開始）`} />
+              ) : (
+                <InfoItem label="参加人数" value={tournament.max_players ? `${entries.length} / ${tournament.max_players}人` : `${entries.length}人（無制限）`} />
+              )}
               {tournament.blind_schedule_name && (
                 <InfoItem label="ブラインド" value={tournament.blind_schedule_name} />
               )}
@@ -267,7 +275,11 @@ export default function TournamentLobby() {
                 </button>
               )}
               {registered && !isRegistering && (
-                <p style={{ color: 'var(--gold)', fontFamily: 'var(--font-title)', fontSize: 14 }}>✅ 参加登録済み</p>
+                <p style={{ color: 'var(--gold)', fontFamily: 'var(--font-title)', fontSize: 14 }}>
+                  {tournament.is_sit_and_go && tournament.status === 'registering'
+                    ? `✅ 参加登録済み — あと ${Math.max(0, tournament.min_players - entries.length)} 人で開始`
+                    : '✅ 参加登録済み'}
+                </p>
               )}
               {isFull && !registered && isRegistering && (
                 <p style={{ color: '#ee8888', fontFamily: 'var(--font-title)', fontSize: 14 }}>定員に達しました</p>

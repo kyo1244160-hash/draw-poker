@@ -398,11 +398,11 @@ export default function TournamentTable({
     if (self?.isPendingPlayer) {
       return <div style={infoTextStyle(compact)}>🎯 次のハンドから参加します...</div>;
     }
-    if (phase==='waiting') {
-      return <div style={infoTextStyle(compact)}>{players.length<2?'もう1人参加を待っています':'ゲームを準備中...'}</div>;
-    }
     if (isSpectator) {
       return <div style={{...infoTextStyle(compact),color:'#b088ff',border:'1px solid #6644aa',borderRadius:6,padding:'4px 0'}}>観戦中</div>;
+    }
+    if (phase==='waiting') {
+      return <div style={infoTextStyle(compact)}>{players.length<2?'もう1人参加を待っています':'ゲームを準備中...'}</div>;
     }
     if (isDrawPhase && isMyTurn && !myDrew) return (
       <div style={{display:'flex',flexDirection:'column',gap:compact?6:8}}>
@@ -965,8 +965,8 @@ export default function TournamentTable({
           </div>
           {/* アクションボタン */}
           {self?.isPendingPlayer&&<div style={{textAlign:'center',fontSize:13,color:'var(--gold-dim)',fontFamily:'var(--font-body)',padding:'8px 0'}}>🎯 次のハンドから参加します...</div>}
-          {!self?.isPendingPlayer&&phase==='waiting'&&<div style={{textAlign:'center',fontSize:13,color:'var(--cream-dim)',fontFamily:'var(--font-body)',padding:'8px 0'}}>{players.length<2?'もう1人参加を待っています':'ゲームを準備中...'}</div>}
           {isSpectator&&<div style={{textAlign:'center',fontSize:12,color:'#b088ff',border:'1px solid #6644aa',borderRadius:6,padding:'6px 0'}}>観戦中</div>}
+          {!self?.isPendingPlayer&&!isSpectator&&phase==='waiting'&&<div style={{textAlign:'center',fontSize:13,color:'var(--cream-dim)',fontFamily:'var(--font-body)',padding:'8px 0'}}>{players.length<2?'もう1人参加を待っています':'ゲームを準備中...'}</div>}
           {!isSpectator&&isDrawPhase&&isMyTurn&&!myDrew&&(
             <div style={{display:'flex',gap:6}}>
               <button style={{...btnStyle('gold',true),flex:2}} onClick={()=>onDrawCards(selected)}>

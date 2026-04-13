@@ -23,6 +23,16 @@ const { getSchedule } = require('./blindSchedule');
 // tournamentId → Tournament オブジェクト
 const tournaments = new Map();
 
+// global を使ってレイトレジスト終了状態を Next.js API Route と共有
+// (webpack バンドル境界をまたぐため require は別インスタンスになるため global を使う)
+if (!global.__pastisLateRegClosed) global.__pastisLateRegClosed = new Set();
+function _markLateRegClosed(tournamentId) {
+  global.__pastisLateRegClosed.add(tournamentId);
+}
+function _clearLateRegState(tournamentId) {
+  global.__pastisLateRegClosed.delete(tournamentId);
+}
+
 // roomId → tournamentId （どのトーナメントのテーブルかを逆引き）
 const roomToTournament = new Map();
 
@@ -30,10 +40,17 @@ const roomToTournament = new Map();
 let _io = null;
 // タイムアウトハンドラファクトリ（index.js から注入）
 let _makeTimeoutHandler = null;
+// Sit & Go 起動コールバック（index.js の _launchTournament を注入）
+let _launchCallback = null;
+// accountId → 最新 socket.id のルックアップ関数（index.js から注入）
+// t:eliminated が旧 socket.id に届かない場合のフォールバック用
+let _getSocketByAccountId = null;
 
-function init(io, makeTimeoutHandler) {
+function init(io, makeTimeoutHandler, launchTournamentCallback, getSocketByAccountId) {
   _io = io;
   _makeTimeoutHandler = makeTimeoutHandler ?? null;
+  _launchCallback = launchTournamentCallback ?? null;
+  _getSocketByAccountId = getSocketByAccountId ?? null;
 }
 
 // ===== Tournament オブジェクト構造 =====
@@ -125,7 +142,7 @@ function _assignTables(tournament, players) {
  * @param {object}   opts.scheduleData   - levels array from DB (optional, overrides scheduleId lookup)
  */
 function startTournament(opts) {
-  const { id, name, mode, startingChips, scheduleId, players, scheduleData, lateLevelCutoff, lateRegMinutes } = opts;
+  const { id, name, mode, startingChips, scheduleId, players, scheduleData, lateLevelCutoff, lateRegMinutes, isSitAndGo, minPlayers } = opts;
   log(`[TM] startTournament called: id=${id.slice(-8)} players=${players.length} mode=${mode} chips=${startingChips}`);
 
   if (tournaments.has(id)) {
@@ -169,6 +186,9 @@ function startTournament(opts) {
     finalTableReached: false,
     // ブレイク中フラグ
     isOnBreak:        false,
+    // Sit & Go
+    isSitAndGo:       isSitAndGo ?? false,
+    minPlayers:       minPlayers ?? 3,
   };
 
   tournaments.set(id, tournament);
@@ -196,6 +216,7 @@ function startTournament(opts) {
       const t = tournaments.get(id);
       if (!t || !t.lateRegOpen) return;
       t.lateRegOpen = false;
+      _markLateRegClosed(id);
       log(`[TM] ${id}: late registration CLOSED (time-based, ${tournament.lateRegMinutes}min)`);
       if (_io) {
         for (const tableId of t.tableIds) {
@@ -203,6 +224,39 @@ function startTournament(opts) {
         }
       }
       _broadcastBlindUpdate(t);
+
+      // SNG: レイトレジスト終了と同時に次のトーナメントを作成する。
+      // _finishTournament でも作成するが、BOT のみの場合はトーナメントが
+      // 長時間続くため、レイトレジスト終了時点で次を用意して参加を受け付ける。
+      if (t.isSitAndGo) {
+        (async () => {
+          try {
+            const { createTournament } = require('../db/admin');
+            const { getTournament: getTournamentDB } = require('../db/tournament');
+            const dbT = await getTournamentDB(id);
+            if (dbT) {
+              const newId = require('crypto').randomUUID();
+              await createTournament({
+                id:               newId,
+                name:             dbT.name,
+                mode:             dbT.mode,
+                scheduledStartAt: new Date('2099-01-01').toISOString(),
+                startingChips:    dbT.starting_chips,
+                maxPlayers:       dbT.max_players ?? null,
+                blindScheduleId:  dbT.blind_schedule_id,
+                isTest:           dbT.is_test ?? false,
+                lateRegMinutes:   dbT.late_reg_minutes ?? 0,
+                createdBy:        dbT.created_by,
+                isSitAndGo:       true,
+                minPlayers:       dbT.min_players ?? 3,
+              });
+              log(`[SNG] auto-recreated on lateReg close: ${newId.slice(-8)} (copy of ${id.slice(-8)})`);
+            }
+          } catch (e) {
+            console.error('[SNG] auto-recreate error:', e.message);
+          }
+        })();
+      }
     }, tournament.lateRegMinutes * 60 * 1000);
   }
 
@@ -298,6 +352,7 @@ function applyPendingLevelUp(tournamentId) {
   // レイトレジスト終了チェック（時間ベース管理の場合はタイマーに任せるのでスキップ）
   if (t.lateRegOpen && t.lateRegMinutes === 0 && lv.level !== null && lv.level > t.lateLevelCutoff) {
     t.lateRegOpen = false;
+    _markLateRegClosed(tournamentId);
     log(`[TM] ${tournamentId}: late registration CLOSED at Lv${lv.level}`);
     if (_io) {
       for (const tableId of t.tableIds) {
@@ -388,6 +443,15 @@ function _eliminatePlayer(tournament, tableId, player) {
   // テーブルから退場（leaveRoomはsocketId単一引数）
   leaveRoom(player.id);
 
+  // ソケットをSocket.IOルームからも退出させる。
+  // これをしないと脱落後もソケットがトーナメントテーブルの room に残り、
+  // 次ハンドの t:tournamentStarting が脱落者に届いて
+  // _app.tsx の TournamentStartWatcher が draw ページへ誤遷移させるバグの原因になる。
+  if (_io) {
+    const sock = _io.sockets.sockets.get(player.id);
+    if (sock) sock.leave(tableId);
+  }
+
   // 同テーブルの全員にバスト通知（showdown表示が先に届くよう1秒遅延）
   if (_io) {
     const tid = tableId;
@@ -398,13 +462,21 @@ function _eliminatePlayer(tournament, tableId, player) {
   }
 
   // 本人に脱落通知
+  // player.id（socket.id）が古い場合のフォールバックとして accountId でも検索する
   if (_io) {
-    const sock = _io.sockets.sockets.get(player.id);
+    let sock = _io.sockets.sockets.get(player.id);
+    if (!sock && _getSocketByAccountId && player.accountId) {
+      const freshSocketId = _getSocketByAccountId(player.accountId);
+      if (freshSocketId) sock = _io.sockets.sockets.get(freshSocketId);
+      if (sock) log(`[TM] _eliminatePlayer: fallback socket found for ${player.name} via accountId`);
+    }
     if (sock) {
       sock.emit('t:eliminated', {
         rank,
         totalPlayers: tournament.totalPlayers,
       });
+    } else {
+      log(`[TM] _eliminatePlayer: socket not found for ${player.name} (${player.id.slice(-8)})`);
     }
   }
 }
@@ -447,11 +519,12 @@ function _finishTournament(tournament) {
   }
 
   log(`[TM] ${tournament.id}: finished`);
+  _clearLateRegState(tournament.id);
 
-  // DBのステータスをfinishedに更新 + 結果を保存
+  // DBのステータスをfinishedに更新 + 結果を保存 + SNG自動再作成
   (async () => {
     try {
-      const { updateTournamentStatus } = require('../db/admin');
+      const { updateTournamentStatus, createTournament } = require('../db/admin');
       await updateTournamentStatus(tournament.id, 'finished');
       const { recordTournamentResults } = require('../db/points');
       const { isTournamentBotId } = require('./tournamentBotManager');
@@ -465,6 +538,31 @@ function _finishTournament(tournament) {
         }));
       if (dbResults.length > 0) {
         await recordTournamentResults(tournament.id, dbResults);
+      }
+
+      // Sit & Go: lateRegMinutes=0（レベルベース）の場合のみ終了時に次を作成。
+      // lateRegMinutes>0（時間ベース）の場合はレイトレジスト終了タイマー内で既に作成済み。
+      if (tournament.isSitAndGo && (tournament.lateRegMinutes ?? 0) === 0) {
+        const { getTournament: getTournamentDB } = require('../db/tournament');
+        const dbT = await getTournamentDB(tournament.id);
+        if (dbT) {
+          const newId = require('crypto').randomUUID();
+          await createTournament({
+            id:              newId,
+            name:            dbT.name,
+            mode:            dbT.mode,
+            scheduledStartAt: new Date('2099-01-01').toISOString(),
+            startingChips:   dbT.starting_chips,
+            maxPlayers:      dbT.max_players ?? null,
+            blindScheduleId: dbT.blind_schedule_id,
+            isTest:          dbT.is_test ?? false,
+            lateRegMinutes:  dbT.late_reg_minutes ?? 0,
+            createdBy:       dbT.created_by,
+            isSitAndGo:      true,
+            minPlayers:      dbT.min_players ?? 3,
+          });
+          log(`[SNG] auto-recreated on finish: ${newId.slice(-8)} (copy of ${tournament.id.slice(-8)})`);
+        }
       }
     } catch (e) {
       console.error('[TM] finish DB error:', e.message);
@@ -648,16 +746,18 @@ function getTableForPlayer(tournamentId, accountId) {
   for (const tableId of t.tableIds) {
     const room = getRoom(tableId);
     if (!room) continue;
-    // player.id は最初 accountId で登録され、joinRoom後にsocket.idに更新される
-    // player.accountId は _createTable で opts.accountId を渡していないため null
-    // → p.id（初期値=accountId）または p.accountId または p.name で検索
-    // pendingPlayers も含めて検索（テーブル移動後の再接続対応）
     const allPlayers = [...room.players, ...room.pendingPlayers];
     const found = allPlayers.find(p =>
       p.id === accountId ||
       p.accountId === accountId ||
       p.name === accountId
     );
+    if (process.env.NODE_ENV !== 'production' && !found && allPlayers.length > 0) {
+      const humanPlayers = allPlayers.filter(p => !p.id?.startsWith('bot::'));
+      if (humanPlayers.length > 0) {
+        log(`[getTableForPlayer] table=${tableId.slice(-8)} humans=[${humanPlayers.map(p => `${p.name}(id=${p.id?.slice(-8)},accId=${p.accountId})`).join(',')}] searching=${accountId}`);
+      }
+    }
     if (found) return tableId;
   }
   return null;
@@ -1043,6 +1143,73 @@ function addTableToTournament(tournamentId) {
   return tableId;
 }
 
+// ===== Sit & Go 自動起動チェック =====
+/**
+ * 参加登録のたびに呼ばれる。
+ * is_sit_and_go=true かつ エントリー数 + 事前予約BOT数 >= min_players になったら _launchCallback を呼ぶ。
+ * fire & forget（エラーはログのみ、呼び出し元はawait不要）。
+ */
+async function triggerSitAndGoCheck(tournamentId) {
+  if (!_launchCallback) return;
+  // すでにメモリで running なら何もしない
+  if (tournaments.has(tournamentId)) return;
+
+  try {
+    const { getTournament, getEntries } = require('../db/tournament');
+    const dbT = await getTournament(tournamentId);
+    if (!dbT) return;
+    if (!dbT.is_sit_and_go) return;                    // 通常トーナメントは無視
+    if (dbT.status !== 'registering') return;          // 既に開始済み or 終了済みは無視
+
+    const entries = await getEntries(tournamentId);
+    const minPlayers = dbT.min_players ?? 3;
+
+    // 事前予約 BOT 数も参加人数に含めて判定する
+    const { getPreBotCount } = require('../adminMonitor');
+    const preBotCount = getPreBotCount(tournamentId);
+    const totalCount = entries.length + preBotCount;
+
+    log(`[SNG] ${tournamentId.slice(-8)}: ${entries.length} humans + ${preBotCount} bots = ${totalCount}/${minPlayers}`);
+    // キャンセル競合調査用: エントリー一覧を出力（開発環境のみ）
+    logDev(`[SNG-debug] ${tournamentId.slice(-8)}: entries at check time = [${entries.map(e => e.nickname ?? e.account_id?.slice(-8)).join(', ')}]`);
+
+    if (totalCount >= minPlayers) {
+      log(`[SNG] ${tournamentId.slice(-8)}: min_players reached → launching`);
+      _launchCallback(tournamentId);
+    }
+  } catch (err) {
+    log(`[SNG] triggerSitAndGoCheck error: ${err.message}`);
+  }
+}
+
+// 外部から呼び出し可能なブロードキャストラッパー
+function broadcastStatus(tournamentId) {
+  const t = tournaments.get(tournamentId);
+  if (t) _broadcastTournamentStatus(t);
+}
+function broadcastBlind(tournamentId) {
+  const t = tournaments.get(tournamentId);
+  if (t) _broadcastBlindUpdate(t);
+}
+// 特定ソケットへの直接送信用: ステータスペイロードを返す
+function getTournamentStatusPayload(tournamentId) {
+  const t = tournaments.get(tournamentId);
+  if (!t) return null;
+  const remaining = _countRemaining(t);
+  const total = remaining + t.eliminationOrder.length;
+  if (total > t.totalPlayers) t.totalPlayers = total;
+  const totalChips = t.totalPlayers * t.startingChips;
+  const averageStack = remaining > 0 ? Math.floor(totalChips / remaining) : 0;
+  const isFinalTable = t.tableIds.length === 1 && remaining > 1 && !t.lateRegOpen;
+  return {
+    tournamentId:     t.id,
+    totalPlayers:     t.totalPlayers,
+    remainingPlayers: remaining,
+    averageStack,
+    isFinalTable,
+  };
+}
+
 module.exports = {
   injectAutoStartHandlers,
   injectBroadcast,
@@ -1062,4 +1229,8 @@ module.exports = {
   broadcastTableState,
   _broadcastTournamentStatus,
   _broadcastBlindUpdate,
+  triggerSitAndGoCheck,
+  broadcastStatus,
+  broadcastBlind,
+  getTournamentStatusPayload,
 };

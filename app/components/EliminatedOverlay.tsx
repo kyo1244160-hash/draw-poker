@@ -18,8 +18,10 @@ function ordinal(n: number) {
 
 export default function EliminatedOverlay({ rank, totalPlayers, onClose }: Props) {
   const points = POINT_TABLE[rank] ?? 0;
-  const isTop3 = rank <= 3;
-  const emoji  = rank === 1 ? '🏆' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : '💀';
+  // rank=0 はフォールバック検出（t:eliminated 未受信）の場合
+  const rankUnknown = rank === 0;
+  const isTop3 = !rankUnknown && rank <= 3;
+  const emoji  = rankUnknown ? '💀' : rank === 1 ? '🏆' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : '💀';
 
   return (
     <div className="fixed inset-0 flex items-center justify-center bg-black/80 z-50 backdrop-blur-sm">
@@ -35,10 +37,10 @@ export default function EliminatedOverlay({ rank, totalPlayers, onClose }: Props
           'text-3xl font-bold mb-1',
           isTop3 ? 'text-yellow-400' : 'text-white',
         ].join(' ')}>
-          {ordinal(rank)}
+          {rankUnknown ? '脱落' : ordinal(rank)}
         </h2>
         <p className="text-gray-400 text-sm mb-4">
-          {totalPlayers}人中
+          {rankUnknown ? '集計中...' : `${totalPlayers}人中`}
         </p>
 
         {/* ポイント */}

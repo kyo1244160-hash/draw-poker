@@ -15,7 +15,7 @@ async function isAdmin(accountId) {
 
 /** ユーザー一覧（accounts + profiles 結合） */
 async function listUsers({ limit = 50, offset = 0 } = {}) {
-  return sql`
+  const rows = await sql`
     SELECT
       a.id,
       a.email,
@@ -32,6 +32,8 @@ async function listUsers({ limit = 50, offset = 0 } = {}) {
     LIMIT  ${limit}
     OFFSET ${offset}
   `;
+  const [{ count }] = await sql`SELECT COUNT(*)::int AS count FROM accounts`;
+  return { users: rows, total: count };
 }
 
 /** トーナメント一覧 */
@@ -63,6 +65,8 @@ async function createTournament({
   isTest,
   lateRegMinutes,
   createdBy,
+  isSitAndGo,
+  minPlayers,
 }) {
   // JSのみ定義されているスケジュール（test/test1min/test2min等）はFK違反になるため
   // tournament INSERT前にblind_schedulesへUPSERTして存在を保証する
@@ -82,11 +86,13 @@ async function createTournament({
     INSERT INTO tournaments (
       id, name, mode, scheduled_start_at, status,
       starting_chips, max_players, blind_schedule_id,
-      is_test, late_reg_minutes, created_by
+      is_test, late_reg_minutes, created_by,
+      is_sit_and_go, min_players
     ) VALUES (
       ${id}, ${name}, ${mode}, ${scheduledStartAt}, 'registering',
       ${startingChips}, ${maxPlayers ?? null}, ${blindScheduleId ?? null},
-      ${isTest ?? false}, ${lateRegMinutes ?? 0}, ${createdBy}
+      ${isTest ?? false}, ${lateRegMinutes ?? 0}, ${createdBy},
+      ${isSitAndGo ?? false}, ${minPlayers ?? 3}
     )
     RETURNING *
   `;

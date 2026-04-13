@@ -41,8 +41,13 @@ export default function TournamentDrawPage() {
   const [finishCountdown, setFinishCountdown] = useState<number | null>(null);
   const [isWinner, setIsWinner] = useState(false);
   const eliminatedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // フォールバック用: 自分が最後に確認したチップ数を記録
+  // t:eliminated が届かなかった場合でも gameState から脱落を検出するために使用
+  const lastSelfChipsRef = useRef<number | null>(null);
+  const eliminatedRef = useRef<boolean>(false); // クロージャ問題回避用 ref
   const [connected,  setConnected]  = useState(false);
   const [errorMsg,   setErrorMsg]   = useState<string | null>(null);
+  const [actionErrorMsg, setActionErrorMsg] = useState<string | null>(null); // 一時的なアクションエラートースト
   const [finalTableAlert, setFinalTableAlert] = useState<boolean>(false);
   const [lateRegOpen, setLateRegOpen] = useState<boolean>(false);
   const [pendingTransfer, setPendingTransfer] = useState<string | null>(null); // pending待機中のテーブルID
@@ -95,6 +100,33 @@ export default function TournamentDrawPage() {
       // 自分がplayersに含まれてpendingでなくなったらpending解除
       const selfPlayer = pl?.find((p: PlayerState) => p.isSelf);
       if (selfPlayer && !selfPlayer.isPendingPlayer) setPendingTransfer(null);
+
+      // フォールバック: t:eliminated が届かなかった場合の脱落検出
+      if (selfPlayer) {
+        lastSelfChipsRef.current = selfPlayer.chips;
+        // chips=0 かつ showdown フェーズのときのみフォールバックタイマーを起動する。
+        // オールイン中（bet/draw フェーズで chips=0）は発動させない。
+        // gameState が届くたびにリセットしてはいけない（無限ループ対策）ため
+        // eliminatedRef.current = true を先にセットして再入を防ぐ。
+        const isShowdownPhase = m?.phase === 'showdown';
+        if (selfPlayer.chips === 0 && isShowdownPhase && !eliminatedRef.current) {
+          eliminatedRef.current = true;          // ← 先にロックして再入を防ぐ
+          if (eliminatedTimerRef.current) clearTimeout(eliminatedTimerRef.current);
+          eliminatedTimerRef.current = setTimeout(() => {
+            // t:eliminated が届いて実際の rank で上書きされる場合もある。
+            // showdown を確認できる時間を確保するため 5 秒後に発動
+            setEliminated({ rank: 0, total: 0 });
+          }, 5000);
+        }
+      } else if (lastSelfChipsRef.current === 0 && !eliminatedRef.current) {
+        // chips=0 の後に自分が players から消えた = 脱落
+        // eliminatedRef を先にロックして、連続する gameState でタイマーがリセットされるのを防ぐ
+        eliminatedRef.current = true;
+        if (eliminatedTimerRef.current) clearTimeout(eliminatedTimerRef.current);
+        eliminatedTimerRef.current = setTimeout(() => {
+          setEliminated({ rank: 0, total: 0 }); // rank 不明のため 0 で表示
+        }, 1500);
+      }
     });
 
     // タイマー
@@ -204,10 +236,14 @@ export default function TournamentDrawPage() {
 
     // 脱落
     socket.on('t:eliminated', ({ rank, totalPlayers }: { rank: number; totalPlayers: number }) => {
-      // showdown結果を確認できるよう5秒待ってからオーバーレイ表示
+      eliminatedRef.current = true;
+      // chips=0 フォールバックタイマーが走っている場合はキャンセルして上書き
+      if (eliminatedTimerRef.current) clearTimeout(eliminatedTimerRef.current);
+      // showdown結果を確認できるよう 4 秒待ってからオーバーレイ表示
+      // （2秒では最終ハンドを確認できない・5秒はフリーズに見える）
       eliminatedTimerRef.current = setTimeout(() => {
         setEliminated({ rank, total: totalPlayers });
-      }, 5000);
+      }, 4000);
     });
 
     // トーナメント終了
@@ -256,7 +292,16 @@ export default function TournamentDrawPage() {
 
     // エラー
     socket.on('error', ({ message }: { message: string }) => {
-      setErrorMsg(message);
+      if (message === 'そのアクションはできません') {
+        // 一時的なトースト表示（3秒後に消える）＋ gameState を再取得
+        setActionErrorMsg(message);
+        setTimeout(() => setActionErrorMsg(null), 3000);
+        if (tableIdRef.current) {
+          socket.emit('getGameState', { roomId: tableIdRef.current });
+        }
+      } else {
+        setErrorMsg(message);
+      }
     });
 
     return () => {
@@ -348,7 +393,7 @@ export default function TournamentDrawPage() {
           <TournamentInfoBar blind={blind} status={status} />
         </div>
         <button
-          onClick={() => router.push('/')}
+          onClick={() => { window.location.href = '/'; }}
           style={{ fontFamily:'var(--font-title)', fontSize:10, padding:'2px 7px', background:'rgba(139,26,26,0.55)', border:'1px solid rgba(204,34,34,0.4)', borderRadius:4, color:'#ffaaaa', cursor:'pointer', flexShrink:0, whiteSpace:'nowrap' as const }}
         >ロビーへ</button>
       </nav>
@@ -367,6 +412,19 @@ export default function TournamentDrawPage() {
         />
       </div>
 
+      {/* 一時的なアクションエラートースト（3秒で自動消去） */}
+      {actionErrorMsg && (
+        <div style={{
+          position:'fixed' as const, top:60, left:'50%', transform:'translateX(-50%)',
+          background:'rgba(120,30,30,0.92)', border:'1px solid #c44',
+          borderRadius:8, padding:'10px 20px', zIndex:60,
+          color:'#ffaaaa', fontFamily:'var(--font-body)', fontSize:14,
+          pointerEvents:'none' as const,
+        }}>
+          ⚠️ {actionErrorMsg}（画面を更新しています…）
+        </div>
+      )}
+
       {/* エラーメッセージ */}
       {errorMsg && (
         <div style={{
@@ -382,7 +440,7 @@ export default function TournamentDrawPage() {
           }}>
             <p style={{ color:'#ff8888', fontFamily:'var(--font-body)', fontSize:16, marginBottom:16 }}>{errorMsg}</p>
             <button
-              onClick={() => router.push('/')}
+              onClick={() => { window.location.href = '/'; }}
               style={{ padding:'8px 20px', borderRadius:6, background:'transparent', border:'1px solid var(--gold-dim)', color:'var(--cream-dim)', fontFamily:'var(--font-title)', fontSize:12, cursor:'pointer' }}
             >ロビーへ戻る</button>
           </div>

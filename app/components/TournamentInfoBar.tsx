@@ -72,10 +72,12 @@ const badge = (bg: string, border: string, color: string): React.CSSProperties =
 export default function TournamentInfoBar({ blind, status }: Props) {
   const isBreak  = blind?.isBreak ?? false;
   // pendingLevelUp: サーバーフラグ優先、フォールバックとして secondsToNextLevel===0 を使用
-  const pendingLevelUp = blind?.pendingLevelUp === true
-    || ((blind?.secondsToNextLevel ?? 0) === 0 && !blind?.isLastLevel && !isBreak);
   const cdRunning = isBreak || (!blind?.isLastLevel && (blind?.secondsToNextLevel ?? 0) > 0);
   const countdown = useCountdown(blind?.secondsToNextLevel ?? 0, cdRunning);
+  // ローカルカウントダウンが 0 になった場合も pendingLevelUp 扱い（"0:00" で止まるのを防ぐ）
+  const pendingLevelUp = blind?.pendingLevelUp === true
+    || ((blind?.secondsToNextLevel ?? 0) === 0 && !blind?.isLastLevel && !isBreak)
+    || (countdown === 0 && !blind?.isLastLevel && !isBreak && (blind?.secondsToNextLevel ?? 0) > 0);
   const urgency   = !isBreak && countdown < 60 && !blind?.isLastLevel && countdown > 0;
 
   if (!blind && !status) return null;

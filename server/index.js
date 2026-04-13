@@ -229,7 +229,7 @@ app.prepare().then(async () => {
 
   // トーナメントマネージャー初期化（タイムアウトハンドラを注入）
   // _makeTimeoutHandler(io, roomId) をtournamentManager用にラップ
-  tournamentManager.init(io, (roomId) => _makeTimeoutHandler(io, roomId));
+  tournamentManager.init(io, (roomId) => _makeTimeoutHandler(io, roomId), null, (accountId) => _connectedUsers.get(accountId) ?? null);
 
   io.on('connection', (socket) => {
     logDev(`[connect] ${socket.id}`);
@@ -244,6 +244,25 @@ app.prepare().then(async () => {
       const user = socket.data.user;
       if (!user?.accountId) return;
       let tableId = tournamentManager.getTableForPlayer(tournamentId, user.accountId);
+      // getTableForPlayer が null の場合、nickname でも検索する（accountId が未設定の場合の補完）
+      if (!tableId && user.nickname) {
+        const { getOrCreateRoom: _scanRoom } = require('./poker/gameManager');
+        const t0 = tournamentManager.getTournament(tournamentId);
+        if (t0) {
+          for (const tid of t0.tableIds) {
+            const r0 = _scanRoom(tid);
+            if (!r0) continue;
+            const found0 = [...r0.players, ...r0.pendingPlayers].find(p => p.name === user.nickname);
+            if (found0) {
+              // accountId を補完してから検索に使えるようにする
+              if (!found0.accountId && user.accountId) found0.accountId = user.accountId;
+              tableId = tid;
+              logDev(`[t:getMyTable] ${user.nickname}: found by nickname on ${tid.slice(-8)} (accountId補完)`);
+              break;
+            }
+          }
+        }
+      }
       if (tableId) {
         // pendingPlayersにいるかどうか確認
         const { getOrCreateRoom } = require('./poker/gameManager');
@@ -274,6 +293,13 @@ app.prepare().then(async () => {
           currentRoom = { name: user.nickname ?? '', roomId: tableId };
           socket.emit('t:tournamentStarting', { tournamentId, tableId });
           logDev(`[t:getMyTable] ${user.nickname} → ${tableId}`);
+          // 接続直後に現在のステータスを本人のソケットに直接送信（残り人数・ブラインドを即表示）
+          {
+            const statusPayload = tournamentManager.getTournamentStatusPayload(tournamentId);
+            if (statusPayload) socket.emit('t:tournamentStatus', statusPayload);
+            const blindPayload = tournamentManager.getCurrentBlindPayload(tournamentId);
+            if (blindPayload) socket.emit('t:blindUpdate', blindPayload);
+          }
         }
       } else {
         // テーブルが見つからない場合はトーナメント自体を確認
@@ -318,6 +344,13 @@ app.prepare().then(async () => {
               socket.emit('t:pendingTableTransfer', { tableId: retryTableId, message: '次のハンドから参加します' });
             } else {
               socket.emit('t:tournamentStarting', { tournamentId, tableId: retryTableId });
+              // 接続直後に現在のステータスを本人のソケットに直接送信
+              {
+                const statusPayload = tournamentManager.getTournamentStatusPayload(tournamentId);
+                if (statusPayload) socket.emit('t:tournamentStatus', statusPayload);
+                const blindPayload = tournamentManager.getCurrentBlindPayload(tournamentId);
+                if (blindPayload) socket.emit('t:blindUpdate', blindPayload);
+              }
             }
             log(`[t:getMyTable] ${user.nickname} → ${retryTableId} (after retry)`);
             return;
@@ -344,52 +377,90 @@ app.prepare().then(async () => {
           if (t.lateRegOpen) {
           // レイトレジスト期間中: 最も人数が少ないテーブルに配置する
           const { getOrCreateRoom, canAutoStart } = require('./poker/gameManager');
-          let destTid = t.tableIds
-            .map(tid => {
-              const r = getOrCreateRoom(tid);
-              return { tid, cnt: (r?.players.length ?? 0) + (r?.pendingPlayers.length ?? 0) };
-            })
-            .filter(x => x.cnt < 6)
-            .sort((a, b) => a.cnt - b.cnt)[0]?.tid;
-          // 全テーブルが満席なら新テーブルを作成
-          if (!destTid) {
-            destTid = tournamentManager.addTableToTournament(tournamentId);
-            if (destTid) log(`[lateReg] added new table ${destTid.slice(-8)}`);
-          }
-          if (destTid) {
-            const nickname = user.nickname ?? user.accountId.slice(0, 8);
-            joinPokerRoom(destTid, socket.id, nickname, { accountId: user.accountId, existingChips: t.startingChips });
-            socket.join(destTid);
-            tournamentManager.incrementTotalPlayers(tournamentId, 1);
-            socket.emit('t:tournamentStarting', { tournamentId, tableId: destTid });
-            io.to(destTid).emit('t:playerArrived', { playerName: nickname });
-            _broadcast(io, destTid);
-            if (canAutoStart(destTid)) _tryAutoStart(io, destTid);
-            log(`[lateReg] ${nickname} placed at ${destTid.slice(-8)}`);
 
-            // 配置後にテーブルバランスを確認（1人テーブルが生まれた場合に対処）
-            // 少し遅延させてゲーム状態が安定してから実行
-            setTimeout(() => {
-              const tNow = tournamentManager.getTournament(tournamentId);
-              if (!tNow || tNow.status !== 'running') return;
-              const tableCount = tNow.tableIds.length;
-              if (tableCount <= 1) return;
-              // 1人または2人以下のテーブルがあればbalance
-              const hasSmallTable = tNow.tableIds.some(tid => {
+          // 配置直前に既存テーブルを再確認する。
+          // リトライ中のタイミング問題で getTableForPlayer が null を返した場合でも
+          // ここで見つかれば fresh chips での二重登録を防ぐ。
+          const existingTidFinal = tournamentManager.getTableForPlayer(tournamentId, user.accountId);
+          if (existingTidFinal) {
+            const _nickname = user.nickname ?? user.accountId.slice(0, 8);
+            log(`[lateReg] ${_nickname} already on ${existingTidFinal.slice(-8)} → reconnect (skip fresh placement)`);
+            const existingRoom = getOrCreateRoom(existingTidFinal);
+            const existingPlayer = existingRoom?.players.find(p => p.accountId === user.accountId)
+                                ?? existingRoom?.pendingPlayers?.find(p => p.accountId === user.accountId);
+            if (existingPlayer) existingPlayer.id = socket.id; // socket.id を更新
+            socket.join(existingTidFinal);
+            const statusPayloadF = tournamentManager.getTournamentStatusPayload(tournamentId);
+            if (statusPayloadF) socket.emit('t:tournamentStatus', statusPayloadF);
+            const blindPayloadF = tournamentManager.getCurrentBlindPayload(tournamentId);
+            if (blindPayloadF) socket.emit('t:blindUpdate', blindPayloadF);
+            socket.emit('t:tournamentStarting', { tournamentId, tableId: existingTidFinal });
+            _broadcast(io, existingTidFinal);
+          } else {
+            // 本当に新規: 空きテーブルを探して配置
+            let destTid = t.tableIds
+              .map(tid => {
                 const r = getOrCreateRoom(tid);
-                return r && (r.players.length + r.pendingPlayers.length) <= 2;
-              });
-              if (hasSmallTable) {
+                return { tid, cnt: (r?.players.length ?? 0) + (r?.pendingPlayers.length ?? 0) };
+              })
+              .filter(x => x.cnt < 6)
+              .sort((a, b) => a.cnt - b.cnt)[0]?.tid;
+            // 全テーブルが満席なら新テーブルを作成
+            if (!destTid) {
+              destTid = tournamentManager.addTableToTournament(tournamentId);
+              if (destTid) log(`[lateReg] added new table ${destTid.slice(-8)}`);
+            }
+            if (destTid) {
+              const nickname = user.nickname ?? user.accountId.slice(0, 8);
+              joinPokerRoom(destTid, socket.id, nickname, { accountId: user.accountId, existingChips: t.startingChips });
+              socket.join(destTid);
+              tournamentManager.incrementTotalPlayers(tournamentId, 1);
+              socket.emit('t:tournamentStarting', { tournamentId, tableId: destTid });
+              io.to(destTid).emit('t:playerArrived', { playerName: nickname });
+              _broadcast(io, destTid);
+              if (canAutoStart(destTid)) _tryAutoStart(io, destTid);
+              log(`[lateReg] ${nickname} placed at ${destTid.slice(-8)}`);
+              // レイトレジスト参加直後に残り人数を送信（SNG等でも即座に表示されるよう）
+              tournamentManager.broadcastStatus(tournamentId);
+              tournamentManager.broadcastBlind(tournamentId);
+
+              // 配置後にテーブルバランスを確認（1人テーブルが生まれた場合に対処）
+              const _lateRegBalanceRetry = (retriesLeft) => {
+                setTimeout(() => {
+                  const tNow = tournamentManager.getTournament(tournamentId);
+                  if (!tNow || tNow.status !== 'running') return;
+                  if (tNow.tableIds.length <= 1) return;
+                  const newTableRoom = getOrCreateRoom(destTid);
+                  const newTableCount = (newTableRoom?.players.length ?? 0) + (newTableRoom?.pendingPlayers?.length ?? 0);
+                  if (newTableCount >= 2) {
+                    if (canAutoStart(destTid)) _tryAutoStart(io, destTid);
+                    return;
+                  }
+                  log(`[lateReg] retry balance (${retriesLeft} left) for ${destTid.slice(-8)}`);
+                  tournamentManager.balanceTables(tournamentId);
+                  for (const tid of tNow.tableIds) {
+                    if (canAutoStart(tid)) _tryAutoStart(io, tid);
+                  }
+                  if (retriesLeft > 1) _lateRegBalanceRetry(retriesLeft - 1);
+                }, 3000);
+              };
+              setTimeout(() => {
+                const tNow = tournamentManager.getTournament(tournamentId);
+                if (!tNow || tNow.status !== 'running') return;
+                if (tNow.tableIds.length <= 1) return;
                 log(`[lateReg] triggering balance after join`);
                 tournamentManager.balanceTables(tournamentId);
                 for (const tid of tNow.tableIds) {
                   if (canAutoStart(tid)) _tryAutoStart(io, tid);
                 }
-              }
-            }, 500);
-          } else {
-            socket.emit('error', { message: 'テーブルに空きがありません' });
-          }
+                const newRoom = getOrCreateRoom(destTid);
+                const cnt = (newRoom?.players.length ?? 0) + (newRoom?.pendingPlayers?.length ?? 0);
+                if (cnt < 2) _lateRegBalanceRetry(10);
+              }, 500);
+            } else {
+              socket.emit('error', { message: 'テーブルに空きがありません' });
+            }
+          } // else: 新規 lateReg 配置
           } else {
             // lateRegOpen でなく自分のテーブルも見つからない → 参加不可
             socket.emit('t:tournamentNotFound', { tournamentId });
@@ -560,7 +631,13 @@ app.prepare().then(async () => {
         ? roomBefore.players.find((p) => p.id === socket.id)
         : null;
       const room = betAction(roomId, socket.id, action);
-      if (!room) { socket.emit('error', { message: 'そのアクションはできません' }); return; }
+      if (!room) {
+        // 原因をログ（開発環境のみ）
+        const { getOrCreateRoom: _gorBet } = require('./poker/gameManager');
+        const _r = _gorBet(roomId);
+        logDev(`[betAction] rejected: roomId=${roomId?.slice(-8)} socketId=${socket.id.slice(-8)} action=${action} user=${user?.nickname} phase=${_r?.phase ?? 'no-room'} actionIdx=${_r?.actionIndex} currentPlayer=${_r?.players[_r?.actionIndex]?.id?.slice(-8)}`);
+        socket.emit('error', { message: 'そのアクションはできません' }); return;
+      }
       resetTimeout(roomId, socket.id);
       // アクション名を全員に通知（socket.id は含めない）
       io.to(roomId).emit('playerAction', {
@@ -648,8 +725,18 @@ app.prepare().then(async () => {
       const roomId = currentRoom.roomId;
 
       if (tournamentManager.isTournamentTable(roomId)) {
-        // トーナメントテーブル: 即退室せず3分猶予
-        _startTournamentDisconnectGrace(io, socket.id, roomId);
+        // 観戦者（_spectators に含まれる）は grace timer を発動しない
+        // 観戦者リストからの削除はすでに上で実施済み
+        const isSpectatorSocket = !roomId || !(_spectators.get(roomId)?.has(socket.id) === false && room);
+        // プレイヤーとして room.players に存在する場合のみ grace timer を開始
+        const { getOrCreateRoom: _gor } = require('./poker/gameManager');
+        const _room = _gor(roomId);
+        const isPlayer = _room?.players.some(p => p.id === socket.id);
+        if (isPlayer) {
+          // トーナメントテーブル: 即退室せず3分猶予
+          _startTournamentDisconnectGrace(io, socket.id, roomId);
+        }
+        // 観戦者の場合は何もしない（すでに _spectators から削除済み）
       } else {
         _handleLeave(io, socket, roomId);
       }
@@ -1107,6 +1194,8 @@ function _startTournamentScheduler(io) {
       const preBotCount = getPreBotCount(tournamentId);
       const totalExpected = entries.length + preBotCount;
       log(`[scheduler] ${tid}: entries=${entries.length} preBots=${preBotCount} lateReg=${lateRegMinutes}min`);
+      // キャンセル競合調査用: _launchTournament 時点のエントリー一覧（開発環境のみ）
+      logDev(`[scheduler-debug] ${tid}: entries at launch = [${entries.map(e => e.nickname ?? e.account_id?.slice(-8)).join(', ')}]`);
 
       if (totalExpected < 1 && lateRegMinutes <= 0) {
         log(`[scheduler] ${tid}: only ${entries.length} player(s), skip`);
@@ -1144,6 +1233,8 @@ function _startTournamentScheduler(io) {
         scheduleData:     safeParseArray(dbTournament.blind_levels),
         lateLevelCutoff:  dbTournament.blind_late_level_cutoff ?? 0,
         lateRegMinutes:   dbTournament.late_reg_minutes ?? 0,
+        isSitAndGo:       dbTournament.is_sit_and_go ?? false,
+        minPlayers:       dbTournament.min_players ?? 3,
       });
 
       if (!tournament) {
@@ -1217,6 +1308,9 @@ function _startTournamentScheduler(io) {
       console.error('[scheduler] scan error:', err.message);
     }
   }
+
+  // Sit & Go: 参加登録時に起動チェックできるよう _launchTournament を注入
+  tournamentManager.init(undefined, undefined, _launchTournament);
 
   _scan();
   setInterval(_scan, 60 * 1000);

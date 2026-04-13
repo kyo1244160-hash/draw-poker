@@ -14,8 +14,8 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === 'GET') {
     const limit  = Math.min(Number(req.query.limit  ?? 50), 200);
     const offset = Number(req.query.offset ?? 0);
-    const users  = await listUsers({ limit, offset });
-    return res.status(200).json({ users });
+    const { users, total } = await listUsers({ limit, offset });
+    return res.status(200).json({ users, total });
   }
 
   // POST: ニックネーム強制変更

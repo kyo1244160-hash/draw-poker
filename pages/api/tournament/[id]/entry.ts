@@ -54,6 +54,37 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             isEliminated = memT.eliminationOrder?.includes(accountId) ?? false;
           }
         } catch { /* 取得できない場合は null のまま */ }
+        // webpack バンドル境界で require が別インスタンスになる場合の補完:
+        // global.__pastisLateRegClosed を Express サーバーが書き込み、ここで読む
+        if (lateRegOpen === null || lateRegOpen === true) {
+          const g = global as Record<string, unknown>;
+          const closed = g.__pastisLateRegClosed as Set<string> | undefined;
+          if (closed?.has(tournamentId)) {
+            lateRegOpen = false; // グローバル経由で終了を確認
+          }
+        }
+        // それでも null の場合の判定:
+        // 1. 通常トーナメント（scheduled_start_at が過去）: 経過時間で計算
+        // 2. SNG（scheduled_start_at = 2099年）: __pastisLateRegClosed に入っていなければ開放中とみなす
+        //    （サーバーが lateReg を閉じたとき必ず Set に追加するので、入っていない = まだ開放中）
+        if (lateRegOpen === null && tournament.late_reg_minutes && tournament.late_reg_minutes > 0) {
+          const startedAt = new Date(tournament.scheduled_start_at).getTime();
+          if (startedAt < Date.now()) {
+            // 通常トーナメント: 経過時間で判断
+            const elapsedMin = (Date.now() - startedAt) / 60000;
+            lateRegOpen = elapsedMin <= tournament.late_reg_minutes;
+          } else {
+            // SNG（scheduled_start_at = 2099年）:
+            // global に closed マークがない = まだ開放中（楽観的）
+            // 実際の開閉はサーバーの registerEntry が正確に検証するので安全
+            lateRegOpen = true;
+          }
+        }
+        // 最終フォールバック: null のまま残った場合は楽観的に開放中とみなす
+        // （memT が取れない場合など。サーバー側で実際の登録可否を検証する）
+        if (lateRegOpen === null) {
+          lateRegOpen = true;
+        }
       }
       const tournamentWithLateReg = tournament
         ? { ...tournament, late_reg_open: lateRegOpen }
@@ -66,11 +97,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (req.method === 'POST') {
       await tournamentDb.registerEntry(tournamentId, accountId);
       const entries = await tournamentDb.getEntries(tournamentId);
+
+      // Sit & Go: 最小人数に達したら自動起動チェック（fire & forget）
+      try {
+        const tm = require('../../../../server/tournament/tournamentManager');
+        // キャンセル競合調査用: 登録時刻とエントリー数をログ（開発環境のみ）
+        if (process.env.NODE_ENV !== 'production') {
+          console.log(`[SNG-debug][POST] tournamentId=${tournamentId} accountId=${accountId} entries=${entries.length} time=${new Date().toISOString()}`);
+        }
+        tm.triggerSitAndGoCheck(tournamentId).catch(() => {});
+      } catch { /* サーバー環境以外（テスト等）では無視 */ }
+
       return res.status(200).json({ ok: true, entries });
     }
 
     // DELETE: キャンセル
     if (req.method === 'DELETE') {
+      // キャンセル競合調査用（開発環境のみ）
+      if (process.env.NODE_ENV !== 'production') {
+        console.log(`[SNG-debug][DELETE] tournamentId=${tournamentId} accountId=${accountId} time=${new Date().toISOString()}`);
+      }
       const row = await tournamentDb.cancelEntry(tournamentId, accountId);
       if (!row) return res.status(404).json({ error: '登録が見つかりません' });
       const entries = await tournamentDb.getEntries(tournamentId);

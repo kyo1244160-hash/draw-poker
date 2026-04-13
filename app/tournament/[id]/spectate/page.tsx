@@ -104,7 +104,7 @@ export default function SpectatePage() {
       blind={blind}
       status={status}
       timer={timer}
-      onLeave={() => router.push('/')}
+      onLeave={() => { window.location.href = '/'; }}
     />
   );
 }

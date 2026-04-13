@@ -45,22 +45,27 @@ export const isAdmin: (accountId: string) => Promise<boolean>
   = adminDb.isAdmin;
 
 export const listUsers: (opts?: { limit?: number; offset?: number }) => Promise<{
-  id: string; email: string; google_name: string | null;
-  created_at: Date; nickname: string | null; change_count: number | null;
-  nickname_updated_at: Date | null; total_points: number | null;
-}[]> = adminDb.listUsers;
+  users: {
+    id: string; email: string; google_name: string | null;
+    created_at: Date; nickname: string | null; change_count: number | null;
+    nickname_updated_at: Date | null; total_points: number | null;
+  }[];
+  total: number;
+}> = adminDb.listUsers;
 
 export const listTournaments: (opts?: { limit?: number; offset?: number }) => Promise<{
   id: string; name: string; mode: string; scheduled_start_at: Date;
   status: string; starting_chips: number; max_players: number | null;
   blind_schedule_name: string | null; entry_count: number;
   is_test: boolean; created_by: string;
+  is_sit_and_go: boolean; min_players: number;
 }[]> = adminDb.listTournaments;
 
 export const createTournament: (params: {
   id: string; name: string; mode: string; scheduledStartAt: Date;
   startingChips: number; maxPlayers?: number; blindScheduleId?: string;
   isTest?: boolean; lateRegMinutes?: number; createdBy: string;
+  isSitAndGo?: boolean; minPlayers?: number;
 }) => Promise<Record<string, unknown>> = adminDb.createTournament;
 
 export const updateTournamentStatus: (

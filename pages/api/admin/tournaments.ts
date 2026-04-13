@@ -99,13 +99,16 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
     const {
       name, mode, scheduledStartAt,
       startingChips, maxPlayers, blindScheduleId, isTest, lateRegMinutes,
+      isSitAndGo, minPlayers,
     } = req.body as {
       name?: string; mode?: string; scheduledStartAt?: string;
       startingChips?: number; maxPlayers?: number;
       blindScheduleId?: string; isTest?: boolean; lateRegMinutes?: number;
+      isSitAndGo?: boolean; minPlayers?: number;
     };
 
-    if (!name?.trim() || !mode || !scheduledStartAt || !startingChips) {
+    // SNG は scheduledStartAt 不要（自動で遠い未来に設定）
+    if (!name?.trim() || !mode || (!isSitAndGo && !scheduledStartAt) || !startingChips) {
       return res.status(400).json({ error: 'name / mode / scheduledStartAt / startingChips は必須です' });
     }
 
@@ -118,17 +121,24 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
       return res.status(400).json({ error: 'startingChips は 100〜1,000,000 の範囲で設定してください' });
     }
 
+    // SNG: scheduled_start_at は遠い未来（スケジューラーが絶対に自動起動しない）
+    const resolvedStartAt = isSitAndGo
+      ? new Date('2099-01-01T00:00:00Z')
+      : new Date(scheduledStartAt!);
+
     const tournament = await createTournament({
       id:               randomUUID(),
       name:             name.trim(),
       mode,
-      scheduledStartAt: new Date(scheduledStartAt),
+      scheduledStartAt: resolvedStartAt,
       startingChips,
       maxPlayers,
       blindScheduleId,
       isTest:           isTest ?? false,
       lateRegMinutes:   lateRegMinutes ?? 0,
       createdBy:        session!.user!.accountId!,
+      isSitAndGo:       isSitAndGo ?? false,
+      minPlayers:       isSitAndGo ? (minPlayers ?? 3) : undefined,
     });
     return res.status(201).json({ tournament });
   }

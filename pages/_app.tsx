@@ -25,8 +25,12 @@ function TournamentStartWatcher() {
         const res = await fetch(`/api/tournament/${tournamentId}/entry`);
         if (!res.ok) return;
         const data = await res.json();
-        // isEliminated=true の場合は draw ページへ遷移しない（観戦ボタンで手動移動）
-        if (data.registered && !data.isEliminated) {
+        // isEliminated: サーバーメモリ参照が失敗した場合のフォールバックとして
+        // 進行中トーナメントで結果エントリ(myEntry)が存在すれば脱落済みとみなす
+        const isEliminated =
+          (data.isEliminated === true) ||
+          (data.tournament?.status === 'running' && !!data.myEntry);
+        if (data.registered && !isEliminated) {
           router.push(`/tournament/${tournamentId}/draw`);
         }
       } catch {

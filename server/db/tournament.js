@@ -95,6 +95,51 @@ async function registerEntry(tournamentId, accountId) {
     }
   }
 
+  // 重複参加チェック（BOT は除外）
+  // 現在 registering または running 状態の他のトーナメントに、
+  // キャンセルしていない・脱落していないエントリーがある場合は登録不可
+  if (!isBot) {
+    const activeEntries = await sql`
+      SELECT e.tournament_id
+      FROM tournament_entries e
+      JOIN tournaments t ON t.id = e.tournament_id
+      WHERE e.account_id    = ${accountId}
+        AND e.tournament_id != ${tournamentId}
+        AND e.cancelled_at  IS NULL
+        AND t.status        IN ('registering', 'running')
+    `;
+    // メモリ上で脱落済みかチェック（running 中で脱落している場合は OK）
+    const activeTournamentIds = activeEntries
+      .map(r => r.tournament_id)
+      .filter(tid => {
+        try {
+          const tm = require('../tournament/tournamentManager');
+          const memT = tm.getTournament(tid);
+          // メモリにない（サーバー再起動直後またはトーナメント終了済み）
+          // → finished の場合はブロック不要なので false を返す
+          if (!memT) {
+            // DB の status を再確認（finished なら問題なし）
+            // 非同期にできないので楽観的に「終了済み = 参加可能」とみなす
+            return false;
+          }
+          // 脱落済みなら参加中とみなさない
+          if (memT.eliminationOrder?.includes(accountId)) {
+            if (process.env.NODE_ENV !== 'production') {
+              console.log(`[duplicate-check] ${accountId} is eliminated in ${tid.slice(-8)} → allow`);
+            }
+            return false;
+          }
+          return true;
+        } catch {
+          // require 失敗等 → 楽観的に許可
+          return false;
+        }
+      });
+    if (activeTournamentIds.length > 0) {
+      throw new Error('すでに別のトーナメントに参加中です。終了または脱落後に参加できます。');
+    }
+  }
+
   // 満員チェック
   if (tournament.max_players) {
     const [{ cnt }] = await sql`

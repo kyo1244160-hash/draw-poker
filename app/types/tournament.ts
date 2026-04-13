@@ -97,4 +97,6 @@ export interface TournamentInfo {
   starting_chips: number;
   max_players: number | null;
   entry_count: number;
+  is_sit_and_go?: boolean;
+  min_players?: number;
 }

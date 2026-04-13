@@ -36,6 +36,8 @@ interface Tournament {
   blind_schedule_name: string | null;
   entry_count: number;
   is_test: boolean;
+  is_sit_and_go: boolean;
+  min_players: number;
 }
 
 interface TournamentResult {
@@ -72,6 +74,9 @@ export default function AdminPage() {
 
   const [tab,           setTab]           = useState<Tab>('users');
   const [users,         setUsers]         = useState<User[]>([]);
+  const [usersTotal,    setUsersTotal]    = useState(0);   // 全件数（タブ表示用）
+  const [userPage,      setUserPage]      = useState(0);   // 現在のページ（0始まり）
+  const USER_PAGE_SIZE = 50;
   const [tournaments,   setTournaments]   = useState<Tournament[]>([]);
   const [schedules,     setSchedules]     = useState<BlindSchedule[]>([]);
   const [loading,       setLoading]       = useState(true);
@@ -97,6 +102,8 @@ export default function AdminPage() {
     blindScheduleId:  '',
     isTest:           false,
     lateRegMinutes:   0,
+    isSitAndGo:       false,
+    minPlayers:       3,
   });
   // 結果登録
   const [resultTournamentId, setResultTournamentId] = useState('');
@@ -330,8 +337,31 @@ export default function AdminPage() {
       const d = await res.json();
       if (res.ok) {
         setTBotMsg(`✅ BOT ${d.added.length}体 事前予約 → 合計 ${d.totalBots}体（開始時に配置）`);
+        // SNG: BOT 追加によってトーナメントが即起動する場合があるため
+        // トーナメント一覧を再取得して status を更新する
+        fetch('/api/admin/tournaments').then(r => r.json()).then(t => {
+          setTournaments(t.tournaments ?? []);
+        }).catch(() => {});
+      } else if (d.error === 'ALREADY_RUNNING') {
+        // SNG が既に起動済み → /add エンドポイントで追加し直す
+        setTBotMsg('');
+        const res2 = await authFetch(`/api/admin/monitor/tournament-bots/${tournamentId}/add`, {
+          method: 'POST', body: JSON.stringify({ count: tBotCount }),
+        });
+        const d2 = await res2.json();
+        if (res2.ok) {
+          setTBotMsg(`✅ BOT ${d2.added.length}体 追加（トーナメント進行中）`);
+          fetchTBots(tournamentId);
+          // 一覧も更新
+          fetch('/api/admin/tournaments').then(r => r.json()).then(t => {
+            setTournaments(t.tournaments ?? []);
+          }).catch(() => {});
+        } else {
+          setTBotMsg(`❌ ${d2.error}`);
+        }
+      } else {
+        setTBotMsg(`❌ ${d.error}: ${d.hint ?? ''}`);
       }
-      else setTBotMsg(`❌ ${d.error}: ${d.hint ?? ''}`);
     } catch { setTBotMsg('❌ エラー'); }
   };
 
@@ -403,6 +433,7 @@ export default function AdminPage() {
       fetch('/api/admin/tournaments?type=schedules').then((r) => r.json()),
     ]).then(([u, t, s]) => {
       setUsers(u.users ?? []);
+      setUsersTotal(u.total ?? u.users?.length ?? 0);
       setTournaments(t.tournaments ?? []);
       setSchedules(s.schedules ?? []);
       setLoading(false);
@@ -411,8 +442,8 @@ export default function AdminPage() {
 
   // ===== トーナメント作成 =====
   const handleCreate = async () => {
-    if (!form.name.trim() || !form.scheduledStartAt) {
-      setCreateMsg('名前と開始日時は必須です');
+    if (!form.name.trim() || (!form.isSitAndGo && !form.scheduledStartAt)) {
+      setCreateMsg('名前と開始日時は必須です（Sit & Go の場合は開始日時不要）');
       return;
     }
     setCreating(true);
@@ -424,19 +455,21 @@ export default function AdminPage() {
         body: JSON.stringify({
           name:             form.name.trim(),
           mode:             form.mode,
-          scheduledStartAt: new Date(form.scheduledStartAt).toISOString(),
+          scheduledStartAt: form.isSitAndGo ? undefined : new Date(form.scheduledStartAt).toISOString(),
           startingChips:    Number(form.startingChips),
           maxPlayers:       form.maxPlayers ? Number(form.maxPlayers) : undefined,
           blindScheduleId:  form.blindScheduleId || undefined,
           isTest:           form.isTest,
           lateRegMinutes:   form.lateRegMinutes,
+          isSitAndGo:       form.isSitAndGo,
+          minPlayers:       form.isSitAndGo ? form.minPlayers : undefined,
         }),
       });
       const data = await res.json();
       if (!res.ok) { setCreateMsg(data.error ?? '作成失敗'); return; }
       setTournaments((prev) => [data.tournament, ...prev]);
       setCreateMsg('✅ トーナメントを作成しました');
-      setForm({ name: '', mode: '27', scheduledStartAt: '', startingChips: 5000, maxPlayers: '', blindScheduleId: '', isTest: false, lateRegMinutes: 0 });
+      setForm({ name: '', mode: '27', scheduledStartAt: '', startingChips: 5000, maxPlayers: '', blindScheduleId: '', isTest: false, lateRegMinutes: 0, isSitAndGo: false, minPlayers: 3 });
     } catch {
       setCreateMsg('通信エラーが発生しました');
     } finally {
@@ -526,7 +559,7 @@ export default function AdminPage() {
         <div style={S.tabs}>
           {(['users', 'tournaments', 'bots', 'blinds'] as Tab[]).map((t) => (
             <button key={t} style={{ ...S.tab, ...(tab === t ? S.tabActive : {}) }} onClick={() => setTab(t)}>
-              {t === 'users' ? `👥 ユーザー (${users.length})`
+              {t === 'users' ? `👥 ユーザー (${usersTotal})`
                 : t === 'tournaments' ? `🏆 トーナメント (${tournaments.length})`
                 : t === 'bots' ? `🤖 ボット (${bots.length})`
                 : `🎚 ブラインド設定`}
@@ -537,6 +570,34 @@ export default function AdminPage() {
         {/* ===== ユーザー管理 ===== */}
         {tab === 'users' && (
           <div style={S.section}>
+            {/* ページネーション上部 */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+              <span style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--cream-dim)' }}>
+                {userPage * USER_PAGE_SIZE + 1}〜{Math.min((userPage + 1) * USER_PAGE_SIZE, usersTotal)} 件 / 全 {usersTotal} 件
+              </span>
+              <button
+                style={{ ...S.createBtn, padding: '4px 12px', fontSize: 12, opacity: userPage === 0 ? 0.4 : 1 }}
+                disabled={userPage === 0}
+                onClick={() => {
+                  const newPage = userPage - 1;
+                  setUserPage(newPage);
+                  fetch(`/api/admin/users?offset=${newPage * USER_PAGE_SIZE}&limit=${USER_PAGE_SIZE}`)
+                    .then(r => r.json())
+                    .then(d => { setUsers(d.users ?? []); setUsersTotal(d.total ?? usersTotal); });
+                }}
+              >← 前へ</button>
+              <button
+                style={{ ...S.createBtn, padding: '4px 12px', fontSize: 12, opacity: (userPage + 1) * USER_PAGE_SIZE >= usersTotal ? 0.4 : 1 }}
+                disabled={(userPage + 1) * USER_PAGE_SIZE >= usersTotal}
+                onClick={() => {
+                  const newPage = userPage + 1;
+                  setUserPage(newPage);
+                  fetch(`/api/admin/users?offset=${newPage * USER_PAGE_SIZE}&limit=${USER_PAGE_SIZE}`)
+                    .then(r => r.json())
+                    .then(d => { setUsers(d.users ?? []); setUsersTotal(d.total ?? usersTotal); });
+                }}
+              >次へ →</button>
+            </div>
             <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
             <table style={S.table}>
               <thead>
@@ -584,10 +645,25 @@ export default function AdminPage() {
                     <option value="mix">Mix</option>
                   </select>
                 </label>
-                <label style={S.label}>
-                  開始日時 *
-                  <input style={S.input} type="datetime-local" value={form.scheduledStartAt} onChange={(e) => setForm((f) => ({ ...f, scheduledStartAt: e.target.value }))} />
+                {/* Sit & Go チェックボックス */}
+                <label style={{ ...S.label, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <input type="checkbox" checked={form.isSitAndGo} onChange={(e) => setForm((f) => ({ ...f, isSitAndGo: e.target.checked }))} />
+                  🎰 Sit & Go（人数が集まったら即開始）
                 </label>
+
+                {/* SNG: 最小人数 / 通常: 開始日時 */}
+                {form.isSitAndGo ? (
+                  <label style={S.label}>
+                    最小参加人数（この人数で即開始）
+                    <input style={S.input} type="number" value={form.minPlayers} min={3} max={100} onChange={(e) => setForm((f) => ({ ...f, minPlayers: Number(e.target.value) }))} />
+                  </label>
+                ) : (
+                  <label style={S.label}>
+                    開始日時 *
+                    <input style={S.input} type="datetime-local" value={form.scheduledStartAt} onChange={(e) => setForm((f) => ({ ...f, scheduledStartAt: e.target.value }))} />
+                  </label>
+                )}
+
                 <label style={S.label}>
                   開始チップ
                   <input style={S.input} type="number" value={form.startingChips} min={100} max={1000000} onChange={(e) => setForm((f) => ({ ...f, startingChips: Number(e.target.value) }))} />
@@ -683,7 +759,10 @@ export default function AdminPage() {
                     <td style={S.td}>
                       <span style={{ ...S.badge, color: statusColor(t.status) }}>{statusLabel(t.status)}</span>
                     </td>
-                    <td style={{ ...S.td, textAlign: 'center' }}>{t.entry_count} {t.max_players ? `/ ${t.max_players}` : ''}</td>
+                    <td style={{ ...S.td, textAlign: 'center' }}>
+                      {t.entry_count} {t.max_players ? `/ ${t.max_players}` : ''}
+                      {t.is_sit_and_go && <span style={{ marginLeft: 4, fontSize: 10, color: '#c088ff', border: '1px solid #6644aa', borderRadius: 4, padding: '1px 4px' }}>SNG</span>}
+                    </td>
                     <td style={{ ...S.td, textAlign: 'right' }}>{t.starting_chips.toLocaleString()}</td>
                     <td style={{ ...S.td, textAlign: 'center' }}>{t.is_test ? '✓' : ''}</td>
                     <td style={S.td}>
@@ -791,8 +870,8 @@ export default function AdminPage() {
                               ))}
                             </select>
                             <input
-                              type="number" min={1} max={30}
-                              style={{ ...S.input, padding: '4px 8px', fontSize: 12, width: 64 }}
+                              type="number" min={1} max={500}
+                              style={{ ...S.input, padding: '4px 8px', fontSize: 12, width: 80 }}
                               value={tBotCount}
                               onChange={(e) => setTBotCount(Number(e.target.value))}
                             />
