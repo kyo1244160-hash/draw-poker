@@ -359,6 +359,37 @@ function applyPendingLevelUp(tournamentId) {
         _io.to(tableId).emit('t:lateRegClosed', { tournamentId: t.id });
       }
     }
+    // SNG: レベルベースのlateReg終了時に次のトーナメントを作成する
+    // （時間ベースはタイマー内で作成済み。レベルベースはここで初めて作成）
+    if (t.isSitAndGo) {
+      (async () => {
+        try {
+          const { createTournament } = require('../db/admin');
+          const { getTournament: getTournamentDB } = require('../db/tournament');
+          const dbT = await getTournamentDB(tournamentId);
+          if (dbT) {
+            const newId = require('crypto').randomUUID();
+            await createTournament({
+              id:               newId,
+              name:             dbT.name,
+              mode:             dbT.mode,
+              scheduledStartAt: new Date('2099-01-01').toISOString(),
+              startingChips:    dbT.starting_chips,
+              maxPlayers:       dbT.max_players ?? null,
+              blindScheduleId:  dbT.blind_schedule_id,
+              isTest:           dbT.is_test ?? false,
+              lateRegMinutes:   dbT.late_reg_minutes ?? 0,
+              createdBy:        dbT.created_by,
+              isSitAndGo:       true,
+              minPlayers:       dbT.min_players ?? 3,
+            });
+            log(`[SNG] auto-recreated on lateReg close (level-based): ${newId.slice(-8)} (copy of ${tournamentId.slice(-8)})`);
+          }
+        } catch (e) {
+          console.error('[SNG] auto-recreate error (level-based):', e.message);
+        }
+      })();
+    }
   }
 
   // 全テーブルのブラインドを更新
@@ -579,7 +610,7 @@ function _finishTournament(tournament) {
       }
       // 通知送信後にテーブルをメモリから削除（通知前に削除するとgameStateが届かなくなる）
       _cleanupTables(tournament);
-    }, 5000);
+    }, 7000);
   } else {
     // IOなし（テスト等）は即削除
     _cleanupTables(tournament);
@@ -800,6 +831,8 @@ function getCurrentBlindPayload(tournamentId) {
     lateRegSecondsRemaining: (t.lateRegEndAt && t.lateRegOpen)
       ? Math.max(0, Math.round((t.lateRegEndAt - Date.now()) / 1000))
       : null,
+    // 再接続時に pendingLevelUp 状態を正確に伝えるために追加
+    pendingLevelUp:     t.pendingLevelUp ?? false,
   };
 }
 
@@ -824,10 +857,19 @@ function handleForcedLeave(tableId, playerId, reason) {
   const player = room?.players.find(p => p.id === playerId);
 
   if (player) {
-    log(`[TM] ${tournamentId}: forced leave ${player.name} (${reason})`);
-    _eliminatePlayer(t, tableId, player);
-    const remaining = _countRemaining(t);
-    if (remaining <= 1) _finishTournament(t);
+    log(`[TM] ${tournamentId}: forced leave ${player.name} (${reason}) chips=${player.chips}`);
+    if (player.chips > 0) {
+      // チップがある = 切断しただけで脱落ではない -> sittingOut に留める
+      // 再接続時に t:getMyTable でテーブルを特定してチップを引き継いで復帰させる
+      player.sittingOut   = true;
+      player.disconnected = true;
+      log(`[TM] ${tournamentId}: ${player.name} sittingOut (chips=${player.chips} preserved)`);
+    } else {
+      // チップ0 = 本当に脱落（ショーダウンで負けた後など）
+      _eliminatePlayer(t, tableId, player);
+      const remaining = _countRemaining(t);
+      if (remaining <= 1) _finishTournament(t);
+    }
   } else {
     leaveRoom(tableId, playerId);
   }

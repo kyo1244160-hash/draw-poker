@@ -420,8 +420,8 @@ export default function TournamentTable({
           {(self?.toCall??0)>0?`コール: ${self?.toCall}`:'チェック or ベット'}
           <span style={{fontSize:11,opacity:0.65,display:'block'}}>単位:{self?.betSize} Bet {raiseCount}/5</span>
         </div>
-        {/* オールイン（chips=0）の場合はチェックのみ表示 */}
-        {!self?.isAllIn && <button style={btnStyle('red',compact)} onClick={()=>onBetAction('fold')}>フォールド</button>}
+        {/* オールイン or チェック可能な場合はフォールドボタンを非表示 */}
+        {!self?.isAllIn && !self?.canCheck && <button style={btnStyle('red',compact)} onClick={()=>onBetAction('fold')}>フォールド</button>}
         {self?.canCheck
           ? <button style={btnStyle('gray',compact)} onClick={()=>onBetAction('check')}>{self?.isAllIn?'オールイン中（待機）':'チェック'}</button>
           : <button style={btnStyle('gray',compact)} onClick={()=>onBetAction('call')}>コール ({self?.toCall})</button>
@@ -982,7 +982,7 @@ export default function TournamentTable({
           )}
           {!isSpectator&&isBetPhase&&isMyTurn&&!self?.isAllIn&&(
             <div style={{display:'flex',gap:6}}>
-              {<button style={{...btnStyle('red',true),flex:1}} onClick={()=>onBetAction('fold')}>フォールド</button>}
+              {!self?.canCheck&&<button style={{...btnStyle('red',true),flex:1}} onClick={()=>onBetAction('fold')}>フォールド</button>}
               {self?.canCheck
                 ?<button style={{...btnStyle('gray',true),flex:1}} onClick={()=>onBetAction('check')}>チェック</button>
                 :<button style={{...btnStyle('gray',true),flex:1}} onClick={()=>onBetAction('call')}>コール({self?.toCall})</button>

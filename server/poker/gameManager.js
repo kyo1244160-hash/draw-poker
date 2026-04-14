@@ -513,6 +513,8 @@ function betAction(roomId, socketId, action) {
   const toCall = room.currentBet - player.bet;
 
   if (action === 'fold') {
+    // ⚠️ チェック可能な場面（toCall=0）でのフォールドは禁止（RRoP準拠）
+    if (toCall === 0) return null;
     player.folded = true; player.acted = true;
 
   } else if (action === 'check') {

@@ -110,13 +110,22 @@ export default function TournamentDrawPage() {
         // eliminatedRef.current = true を先にセットして再入を防ぐ。
         const isShowdownPhase = m?.phase === 'showdown';
         if (selfPlayer.chips === 0 && isShowdownPhase && !eliminatedRef.current) {
-          eliminatedRef.current = true;          // ← 先にロックして再入を防ぐ
-          if (eliminatedTimerRef.current) clearTimeout(eliminatedTimerRef.current);
-          eliminatedTimerRef.current = setTimeout(() => {
-            // t:eliminated が届いて実際の rank で上書きされる場合もある。
-            // showdown を確認できる時間を確保するため 5 秒後に発動
-            setEliminated({ rank: 0, total: 0 });
-          }, 5000);
+          // 自分が chips=0 でも相手も chips=0（引き分けオールイン）または
+          // 自分以外の全員が chips=0（＝自分が優勝）の場合はフォールバックを起動しない
+          const activePlayers = pl?.filter((p: PlayerState) => !p.folded && !p.sittingOut) ?? [];
+          const otherPlayersExist = activePlayers.some((p: PlayerState) => !p.isSelf && p.chips > 0);
+          const iAmOnlyOneLeft = activePlayers.length <= 1 || !otherPlayersExist;
+          if (iAmOnlyOneLeft) {
+            // 自分が最後の1人 = 優勝確定 → フォールバック不要（t:tournamentFinished を待つ）
+          } else {
+            eliminatedRef.current = true;          // ← 先にロックして再入を防ぐ
+            if (eliminatedTimerRef.current) clearTimeout(eliminatedTimerRef.current);
+            eliminatedTimerRef.current = setTimeout(() => {
+              // t:eliminated が届いて実際の rank で上書きされる場合もある。
+              // showdown を確認できる時間を確保するため 5 秒後に発動
+              setEliminated({ rank: 0, total: 0 });
+            }, 5000);
+          }
         }
       } else if (lastSelfChipsRef.current === 0 && !eliminatedRef.current) {
         // chips=0 の後に自分が players から消えた = 脱落
@@ -248,11 +257,13 @@ export default function TournamentDrawPage() {
 
     // トーナメント終了
     socket.on('t:tournamentFinished', ({ rankings }: { rankings: TournamentRankEntry[] }) => {
-      // eliminatedオーバーレイより終了カウントダウンを優先
+      // フォールバックタイマー・eliminatedRef を全てリセット
+      // （オールイン優勝時に chips=0フォールバックが先に走って脱落オーバーレイが出るバグ対策）
       if (eliminatedTimerRef.current) {
         clearTimeout(eliminatedTimerRef.current);
         eliminatedTimerRef.current = null;
       }
+      eliminatedRef.current = false; // ← フォールバックロックを解除
       setEliminated(null);
       setFinished(rankings);
       // 自分が1位かチェック（accountIdRef と rankings の accountId を比較）

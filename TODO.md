@@ -1,20 +1,24 @@
 # TODO.md — タスク・優先順位・既知の問題
 
-最終更新: 2026-04-12
+最終更新: 2026-04-13 (Vol.3)
 
 ---
 
 ## 🔴 優先度: 高（バグ・本番影響あり）
 
+### 「あなたの番ではない」エラーの根本原因
+- バランシング後に古い socket.id が `room.currentPlayer.id` に残り、新しい socket.id でのアクションが拒否される
+- **調査ポイント**: `_dissolveTable` → `jr()` 時の `p.id` が古い socket.id のまま
+- **デバッグ方法**: サーバーログ `[getTableForPlayer]` を確認（nickname フォールバックスキャン追加済み）
+- **対策済み**: エラー時はトーストで表示し gameState を自動再取得（ゲームを継続可能に）
+
+### カードチェンジ時「あなたの番ではない」→ロビー戻り＋チップリセット
+- 上記と同根。`fix-reconnect-chips.zip` で二重配置は防止済みだが根本未解決
+
 ### 観戦モード自動遷移（残存リスク）
 - `_app.tsx` の `TournamentStartWatcher` が spectate ページ（App Router）では動作しない
 - **対策済み**: `_eliminatePlayer` で `socket.leave(tableId)` 追加・`isEliminated` フォールバック強化
 - **要確認**: 本番でまだ再現するか監視
-
-### 「そのアクションはできません」エラーの根本原因
-- レイトレジスト参加直後に socket.id の不整合でアクションが拒否されることがある
-- **対策済み**: エラー時はトーストで表示し gameState を自動再取得（ゲームを継続可能に）
-- **根本原因**: 調査中（開発環境では `[betAction] rejected:` ログで確認可能）
 
 ---
 

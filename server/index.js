@@ -287,6 +287,11 @@ app.prepare().then(async () => {
             _cancelTournamentDisconnectGrace(activePlayer.id);
             activePlayer.id = socket.id;
             activePlayer.disconnected = false;
+            // グレース期間でsittingOutになっていた場合は復帰させる
+            if (activePlayer.sittingOut) {
+              activePlayer.sittingOut = false;
+              log(`[t:getMyTable] ${user.nickname}: restored from sittingOut (chips=${activePlayer.chips})`);
+            }
             logDev(`[t:getMyTable] ${user.nickname}: player.id updated → ${socket.id}`);
           }
           socket.join(tableId);
@@ -378,17 +383,42 @@ app.prepare().then(async () => {
           // レイトレジスト期間中: 最も人数が少ないテーブルに配置する
           const { getOrCreateRoom, canAutoStart } = require('./poker/gameManager');
 
-          // 配置直前に既存テーブルを再確認する。
-          // リトライ中のタイミング問題で getTableForPlayer が null を返した場合でも
-          // ここで見つかれば fresh chips での二重登録を防ぐ。
-          const existingTidFinal = tournamentManager.getTableForPlayer(tournamentId, user.accountId);
+          // 配置直前に既存テーブルを再確認する（accountId + nickname 両方で検索）
+          // グレース期間で sittingOut になったプレイヤーもここで復帰させる
+          const getOrCreateRoomLocal = getOrCreateRoom;
+          let existingTidFinal = tournamentManager.getTableForPlayer(tournamentId, user.accountId);
+          // accountId で見つからない場合は nickname でフォールバック検索
+          if (!existingTidFinal && user.nickname) {
+            const _t2 = tournamentManager.getTournament(tournamentId);
+            if (_t2) {
+              for (const _tid2 of _t2.tableIds) {
+                const _r2 = getOrCreateRoomLocal(_tid2);
+                if (!_r2) continue;
+                const _fp2 = [..._r2.players, ..._r2.pendingPlayers].find(p => p.name === user.nickname);
+                if (_fp2) {
+                  if (!_fp2.accountId && user.accountId) _fp2.accountId = user.accountId;
+                  existingTidFinal = _tid2;
+                  log(`[lateReg] ${user.nickname}: found by nickname on ${_tid2.slice(-8)} (accountId補完)`);
+                  break;
+                }
+              }
+            }
+          }
           if (existingTidFinal) {
             const _nickname = user.nickname ?? user.accountId.slice(0, 8);
             log(`[lateReg] ${_nickname} already on ${existingTidFinal.slice(-8)} → reconnect (skip fresh placement)`);
             const existingRoom = getOrCreateRoom(existingTidFinal);
-            const existingPlayer = existingRoom?.players.find(p => p.accountId === user.accountId)
-                                ?? existingRoom?.pendingPlayers?.find(p => p.accountId === user.accountId);
-            if (existingPlayer) existingPlayer.id = socket.id; // socket.id を更新
+            const existingPlayer = existingRoom?.players.find(p => p.accountId === user.accountId || p.name === user.nickname)
+                                ?? existingRoom?.pendingPlayers?.find(p => p.accountId === user.accountId || p.name === user.nickname);
+            if (existingPlayer) {
+              existingPlayer.id = socket.id; // socket.id を更新
+              existingPlayer.disconnected = false;
+              // グレース期間でsittingOutになっていた場合は復帰
+              if (existingPlayer.sittingOut) {
+                existingPlayer.sittingOut = false;
+                log(`[lateReg] ${_nickname}: restored from sittingOut (chips=${existingPlayer.chips})`);
+              }
+            }
             socket.join(existingTidFinal);
             const statusPayloadF = tournamentManager.getTournamentStatusPayload(tournamentId);
             if (statusPayloadF) socket.emit('t:tournamentStatus', statusPayloadF);

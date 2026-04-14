@@ -2,7 +2,7 @@
 // app/tournament/[id]/result/page.tsx
 // トーナメント結果ページ
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 
@@ -27,6 +27,8 @@ export default function TournamentResultPage() {
   const [loading,  setLoading]    = useState(true);
   const [error,    setError]      = useState<string | null>(null);
   const [myRank,   setMyRank]     = useState<RankEntry | null>(null);
+  const [shareMsg, setShareMsg]   = useState<string | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
     fetch(`/api/tournament/${params.id}/entry`)
@@ -41,6 +43,85 @@ export default function TournamentResultPage() {
       .catch(e => setError(e.message))
       .finally(() => setLoading(false));
   }, [params.id]);
+
+  // ── X シェア ───────────────────────────────────────────────
+  async function handleShare() {
+    if (!myRank) return;
+
+    const medal = MEDAL[myRank.rank] ?? '🃏';
+    const pts   = POINT_TABLE[myRank.rank] ?? 0;
+    const total = rankings.length || '?';
+
+    // 1) Canvas に結果カードを描画
+    const canvas = canvasRef.current!;
+    canvas.width  = 600;
+    canvas.height = 300;
+    const ctx = canvas.getContext('2d')!;
+
+    // 背景
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0, 0, 600, 300);
+
+    // ゴールドのアクセントライン
+    ctx.strokeStyle = '#eab308';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(2, 2, 596, 296);
+
+    // タイトル
+    ctx.fillStyle = '#eab308';
+    ctx.font = 'bold 22px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('🃏 Poker Room Pastis', 300, 50);
+
+    // 順位（大きく）
+    ctx.font = 'bold 80px sans-serif';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(`${medal} ${myRank.rank}位`, 300, 165);
+
+    // サブ情報
+    ctx.font = '20px sans-serif';
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText(`${total}名中 / Tournament #${params.id.slice(0, 8)}`, 300, 210);
+
+    if (pts > 0) {
+      ctx.fillStyle = '#eab308';
+      ctx.font = 'bold 22px sans-serif';
+      ctx.fillText(`+${pts} pt 獲得`, 300, 248);
+    }
+
+    // URL
+    ctx.fillStyle = '#64748b';
+    ctx.font = '15px sans-serif';
+    ctx.fillText('https://draw-poker.onrender.com', 300, 280);
+
+    // 2) クリップボードにコピー
+    try {
+      const blob = await new Promise<Blob>((res, rej) =>
+        canvas.toBlob(b => b ? res(b) : rej(new Error('blob null')), 'image/png')
+      );
+      await navigator.clipboard.write([
+        new ClipboardItem({ 'image/png': blob }),
+      ]);
+      setShareMsg('copied');
+    } catch {
+      // クリップボードAPIが使えない環境はテキストのみで進む
+      setShareMsg('text');
+    }
+
+    // 3) X の投稿画面を開く
+    const text = [
+      `${medal} ${myRank.rank}位 / ${total}名中`,
+      `🃏 Poker Room Pastis`,
+      pts > 0 ? `+${pts}pt 獲得` : '',
+      `#PastisPoker`,
+      `https://draw-poker.onrender.com`,
+    ].filter(Boolean).join('\n');
+
+    window.open(
+      `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}`,
+      '_blank'
+    );
+  }
 
   if (loading) {
     return (
@@ -137,6 +218,33 @@ export default function TournamentResultPage() {
             })}
           </div>
         </div>
+
+        {/* X シェアボタン */}
+        {myRank && (
+          <button
+            onClick={handleShare}
+            className="w-full py-3 mb-3 rounded-lg text-sm font-medium transition-colors bg-black hover:bg-gray-900 border border-gray-700 flex items-center justify-center gap-2"
+          >
+            <span className="font-bold text-white">𝕏</span>
+            <span className="text-white">結果をポスト</span>
+            <span className="text-gray-400 text-xs">（画像をコピー → X に貼り付け）</span>
+          </button>
+        )}
+
+        {/* クリップボードコピー完了トースト */}
+        {shareMsg === 'copied' && (
+          <p className="text-center text-green-400 text-xs mb-3">
+            ✅ 画像をコピーしました！X の投稿画面で Ctrl+V（または長押し）で貼り付けてください
+          </p>
+        )}
+        {shareMsg === 'text' && (
+          <p className="text-center text-yellow-400 text-xs mb-3">
+            ⚠️ 画像コピーは非対応ブラウザです。テキストで投稿できます
+          </p>
+        )}
+
+        {/* 非表示の Canvas（画像生成用） */}
+        <canvas ref={canvasRef} style={{ display: 'none' }} />
 
         {/* フッターボタン */}
         <div className="flex gap-3 mt-6">
