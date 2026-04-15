@@ -287,13 +287,9 @@ app.prepare().then(async () => {
             _cancelTournamentDisconnectGrace(activePlayer.id);
             activePlayer.id = socket.id;
             activePlayer.disconnected = false;
-            // グレース期間でsittingOutになっていた場合は復帰させる
-            if (activePlayer.sittingOut) {
-              activePlayer.sittingOut = false;
-              log(`[t:getMyTable] ${user.nickname}: restored from sittingOut (chips=${activePlayer.chips})`);
-            }
             logDev(`[t:getMyTable] ${user.nickname}: player.id updated → ${socket.id}`);
           }
+          // _disconnectedChips に退避されたチップを復元（leaveRoom済みプレイヤーは activePlayer=null になるため別途処理）
           socket.join(tableId);
           currentRoom = { name: user.nickname ?? '', roomId: tableId };
           socket.emit('t:tournamentStarting', { tournamentId, tableId });
@@ -379,12 +375,44 @@ app.prepare().then(async () => {
             return;
           }
           log(`[t:getMyTable] ${user.nickname}: retry exhausted, status=${t.status} lateRegOpen=${t.lateRegOpen}`);
+
+          // _disconnectedChips に退避済みの場合: チップを復元して再配置
+          const _dcMap = tournamentManager.getDisconnectedChips();
+          const _dcEntry = _dcMap.get(user.accountId);
+          if (_dcEntry) {
+            const { getOrCreateRoom: _gcr2, canAutoStart: _cas2 } = require('./poker/gameManager');
+            _dcMap.delete(user.accountId);
+            log(`[t:getMyTable] ${user.nickname}: restoring from disconnectedChips chips=${_dcEntry.chips}`);
+            // 退避時のテーブルが生きているか確認
+            const _restoreRoom = _gcr2(_dcEntry.tableId);
+            const _stillValid  = t.tableIds.includes(_dcEntry.tableId) && _restoreRoom;
+            const _destTid2    = _stillValid
+              ? _dcEntry.tableId
+              : (t.tableIds.find(tid => { const r = _gcr2(tid); return r && r.players.length < 6; }) ?? null);
+            if (_destTid2) {
+              const { joinRoom: _jr2 } = require('./poker/gameManager');
+              const _nick2 = user.nickname ?? user.accountId.slice(0, 8);
+              _jr2(_destTid2, socket.id, _nick2, { accountId: user.accountId, existingChips: _dcEntry.chips });
+              socket.join(_destTid2);
+              socket.emit('t:tournamentStarting', { tournamentId, tableId: _destTid2 });
+              const _sp2 = tournamentManager.getTournamentStatusPayload(tournamentId);
+              if (_sp2) socket.emit('t:tournamentStatus', _sp2);
+              const _bp2 = tournamentManager.getCurrentBlindPayload(tournamentId);
+              if (_bp2) socket.emit('t:blindUpdate', _bp2);
+              const { _broadcast: _bc2 } = require('./poker/gameManager');
+              // _broadcast は index.js スコープ関数なので直接呼ぶ
+              _broadcast(io, _destTid2);
+              if (_cas2(_destTid2)) _tryAutoStart(io, _destTid2);
+              log(`[lateReg] ${_nick2} restored to ${_destTid2.slice(-8)} (chips=${_dcEntry.chips})`);
+              return;
+            }
+          }
+
           if (t.lateRegOpen) {
           // レイトレジスト期間中: 最も人数が少ないテーブルに配置する
           const { getOrCreateRoom, canAutoStart } = require('./poker/gameManager');
 
           // 配置直前に既存テーブルを再確認する（accountId + nickname 両方で検索）
-          // グレース期間で sittingOut になったプレイヤーもここで復帰させる
           const getOrCreateRoomLocal = getOrCreateRoom;
           let existingTidFinal = tournamentManager.getTableForPlayer(tournamentId, user.accountId);
           // accountId で見つからない場合は nickname でフォールバック検索
@@ -411,13 +439,8 @@ app.prepare().then(async () => {
             const existingPlayer = existingRoom?.players.find(p => p.accountId === user.accountId || p.name === user.nickname)
                                 ?? existingRoom?.pendingPlayers?.find(p => p.accountId === user.accountId || p.name === user.nickname);
             if (existingPlayer) {
-              existingPlayer.id = socket.id; // socket.id を更新
+              existingPlayer.id = socket.id;
               existingPlayer.disconnected = false;
-              // グレース期間でsittingOutになっていた場合は復帰
-              if (existingPlayer.sittingOut) {
-                existingPlayer.sittingOut = false;
-                log(`[lateReg] ${_nickname}: restored from sittingOut (chips=${existingPlayer.chips})`);
-              }
             }
             socket.join(existingTidFinal);
             const statusPayloadF = tournamentManager.getTournamentStatusPayload(tournamentId);
@@ -629,6 +652,7 @@ app.prepare().then(async () => {
     socket.on('drawCards', ({ roomId, indices }) => {
       if (!roomId || typeof roomId !== 'string' || roomId.length > 64) return;
       if (!Array.isArray(indices) || indices.length > 5) return;
+      if (!getRoom(roomId)) return;  // 存在しないroomIdは無視（空ルーム生成防止）
       const room = drawCards(roomId, socket.id, indices);
       if (!room) { socket.emit('error', { message: 'ドローできません（あなたのターンではありません）' }); return; }
       resetTimeout(roomId, socket.id);  // アクション成功 → タイムアウトカウントリセット
@@ -655,6 +679,7 @@ app.prepare().then(async () => {
     socket.on('betAction', ({ roomId, action }) => {
       if (!roomId || typeof roomId !== 'string' || roomId.length > 64) return;
       if (!action || !VALID_ACTIONS.has(action)) return;
+      if (!getRoom(roomId)) return;  // 存在しないroomIdは無視（空ルーム生成防止）
       // アクション前のプレイヤー名を記録
       const roomBefore = getRoom(roomId);
       const actingPlayer = roomBefore
@@ -712,13 +737,30 @@ app.prepare().then(async () => {
     socket.on('spectate', ({ tableId: rawTableId, tournamentId }) => {
       // tableId 未指定の場合は tournamentId からアクティブなテーブルを自動解決
       let tableId = rawTableId;
-      if (!tableId && tournamentId) {
-        const t = tournamentManager.getTournament(tournamentId);
+      const _specTid = tournamentId; // tournamentId を後続処理でも参照
+      if (!tableId && _specTid) {
+        const t = tournamentManager.getTournament(_specTid);
+        if (!t) {
+          // トーナメントがメモリにない（終了済み等）
+          socket.emit('t:tournamentNotFound', { tournamentId: _specTid });
+          return;
+        }
+        if (t.status === 'finished') {
+          // 終了済み → 結果ページへ誘導
+          socket.emit('t:tournamentFinished', { rankings: [] });
+          return;
+        }
         tableId = t?.tableIds?.[0] ?? null;
       }
-      if (!tableId || typeof tableId !== 'string' || tableId.length > 64) return;
+      if (!tableId || typeof tableId !== 'string' || tableId.length > 64) {
+        // tableId が解決できない場合（トーナメントが起動前等）は静かに待機
+        logDev(`[spectate] tableId unresolved for tournamentId=${tournamentId}`);
+        return;
+      }
       if (!tournamentManager.isTournamentTable(tableId)) {
-        socket.emit('error', { message: 'この部屋は観戦できません' });
+        // roomToTournament に登録されていない（tableIds と不整合）
+        // エラーは出さず静かに戻す（クライアントは t:tournamentStarting を待つ）
+        logDev(`[spectate] ${tableId} not in roomToTournament`);
         return;
       }
       // 既存の観戦を解除
@@ -849,7 +891,12 @@ function _makeTimeoutHandler(io, roomId) {
       const indices = room._selectedIndices[playerId] ?? [];
       acted = !!drawCards(rid, playerId, indices);
     } else if (phase.startsWith('bet')) {
+      // fold を試み、チェック可能な場面（toCall=0）では check にフォールバック
       acted = !!betAction(rid, playerId, 'fold');
+      if (!acted) {
+        acted = !!betAction(rid, playerId, 'check');
+        if (acted) log(`[timeout] ${playerId}: fold rejected (checkable) → check`);
+      }
     }
 
     if (!acted) {

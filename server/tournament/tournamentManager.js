@@ -36,6 +36,10 @@ function _clearLateRegState(tournamentId) {
 // roomId → tournamentId （どのトーナメントのテーブルかを逆引き）
 const roomToTournament = new Map();
 
+// 切断中プレイヤーのチップ保持 Map: accountId → { chips, tableId }
+// handleForcedLeave で chips>0 の場合に保存し、再接続時に復元する
+const _disconnectedChips = new Map();
+
 // Socket.IO の io インスタンス（init で設定）
 let _io = null;
 // タイムアウトハンドラファクトリ（index.js から注入）
@@ -250,6 +254,7 @@ function startTournament(opts) {
                 isSitAndGo:       true,
                 minPlayers:       dbT.min_players ?? 3,
               });
+              t._sngRecreated = true;  // _finishTournament での二重作成を防ぐ
               log(`[SNG] auto-recreated on lateReg close: ${newId.slice(-8)} (copy of ${id.slice(-8)})`);
             }
           } catch (e) {
@@ -383,6 +388,7 @@ function applyPendingLevelUp(tournamentId) {
               isSitAndGo:       true,
               minPlayers:       dbT.min_players ?? 3,
             });
+            t._sngRecreated = true;  // _finishTournament での二重作成を防ぐ
             log(`[SNG] auto-recreated on lateReg close (level-based): ${newId.slice(-8)} (copy of ${tournamentId.slice(-8)})`);
           }
         } catch (e) {
@@ -571,9 +577,10 @@ function _finishTournament(tournament) {
         await recordTournamentResults(tournament.id, dbResults);
       }
 
-      // Sit & Go: lateRegMinutes=0（レベルベース）の場合のみ終了時に次を作成。
-      // lateRegMinutes>0（時間ベース）の場合はレイトレジスト終了タイマー内で既に作成済み。
-      if (tournament.isSitAndGo && (tournament.lateRegMinutes ?? 0) === 0) {
+      // Sit & Go: lateReg終了時に再作成済み（_sngRecreated=true）の場合はスキップ。
+      // レベルベース（lateRegMinutes=0）の再作成は applyPendingLevelUp で実施済み。
+      // 時間ベース（lateRegMinutes>0）の再作成はレイトレジスト終了タイマーで実施済み。
+      if (tournament.isSitAndGo && !tournament._sngRecreated) {
         const { getTournament: getTournamentDB } = require('../db/tournament');
         const dbT = await getTournamentDB(tournament.id);
         if (dbT) {
@@ -859,13 +866,16 @@ function handleForcedLeave(tableId, playerId, reason) {
   if (player) {
     log(`[TM] ${tournamentId}: forced leave ${player.name} (${reason}) chips=${player.chips}`);
     if (player.chips > 0) {
-      // チップがある = 切断しただけで脱落ではない -> sittingOut に留める
-      // 再接続時に t:getMyTable でテーブルを特定してチップを引き継いで復帰させる
-      player.sittingOut   = true;
-      player.disconnected = true;
-      log(`[TM] ${tournamentId}: ${player.name} sittingOut (chips=${player.chips} preserved)`);
+      // チップがある = 切断しただけで脱落ではない
+      // チップを _disconnectedChips に退避してから leaveRoom する。
+      // sittingOut=true を使うと startGame のリセットで毎ハンド上書きされるため使わない。
+      const accountId = player.accountId ?? player.id;
+      _disconnectedChips.set(accountId, { chips: player.chips, tableId });
+      log(`[TM] ${tournamentId}: ${player.name} chips=${player.chips} preserved (disconnected)`);
+      leaveRoom(tableId, playerId);
     } else {
       // チップ0 = 本当に脱落（ショーダウンで負けた後など）
+      _disconnectedChips.delete(player.accountId ?? player.id);
       _eliminatePlayer(t, tableId, player);
       const remaining = _countRemaining(t);
       if (remaining <= 1) _finishTournament(t);
@@ -1267,6 +1277,7 @@ module.exports = {
   getTournamentByTable,
   getTournament,
   getTableForPlayer,
+  getDisconnectedChips: () => _disconnectedChips,
   getCurrentBlindPayload,
   broadcastTableState,
   _broadcastTournamentStatus,

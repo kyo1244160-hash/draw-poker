@@ -193,8 +193,8 @@ export default function TournamentLobby() {
   // レイトレジスト中:
   //   late_reg_open の値:
   //     true  → 開放中（global.__pastisLateRegClosed 経由で Express から正確に取得）
-  //     false → 終了済み
-  //     null  → 不明（サーバー再起動直後等）→ 安全側に倒してボタン非表示
+  //     false → 終了済み（または不明）→ 観戦ボタンを表示する
+  //     null  → entry.ts で false に統一済み（安全側）
   const lateRegOpenResolved = tournament.late_reg_open === true;
   const isLateReg      = tournament.status === 'running' && lateRegOpenResolved;
   const isFull         = tournament.max_players !== null && entries.length >= tournament.max_players;

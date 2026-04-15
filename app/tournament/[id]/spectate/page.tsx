@@ -65,6 +65,11 @@ export default function SpectatePage() {
       router.push(`/tournament/${params.id}/result`);
     });
 
+    // トーナメントが見つからない（終了・未起動）→ 登録ページへ
+    socket.on('t:tournamentNotFound', () => {
+      router.replace(`/tournament/${params.id}`);
+    });
+
     // 観戦中テーブルがバランシングで解体された → 新テーブルへ切り替え
     socket.on('t:tableClosed', ({ tournamentId, newTableId }: { tournamentId: string; newTableId: string }) => {
       if (tournamentId !== params.id) return;
@@ -81,6 +86,7 @@ export default function SpectatePage() {
       socket.off('t:tournamentStatus');
       socket.off('t:tournamentStarting');
       socket.off('t:tournamentFinished');
+      socket.off('t:tournamentNotFound');
       socket.off('t:tableClosed');
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
