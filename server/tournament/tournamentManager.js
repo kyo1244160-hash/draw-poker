@@ -293,9 +293,15 @@ function _startLevelTimer(tournament) {
 
   const remaining = Math.max(0, ms - pendingElapsed);
   if (remaining <= 0) {
-    // すでに次レベルの時間を超過している → breakなら即解除してから即pending
+    // すでに次レベルの時間を超過している場合:
+    // setTimeout(..., 0) で即 _pendingLevelUp を呼ぶと、
+    // applyPendingLevelUp の _broadcastBlindUpdate(pendingLevelUp=false) より後に
+    // pendingLevelUp=true が上書きされ「次のハンドでブラインドアップ」が消えないバグになる。
+    // → pendingLevelUp フラグだけ立てて次の手でまた applyPendingLevelUp を呼ばせる。
     if (lv.isBreak) tournament.isOnBreak = false;
-    setTimeout(() => _pendingLevelUp(tournament.id), 0);
+    tournament.pendingLevelUp    = true;
+    tournament.pendingLevelUpAt  = Date.now();
+    logDev(`[TM] ${tournament.id}: level elapsed during hand → pendingLevelUp immediately (no broadcast here)`);
     return;
   }
 
