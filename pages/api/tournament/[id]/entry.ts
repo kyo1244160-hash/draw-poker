@@ -70,20 +70,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (lateRegOpen === null && tournament.late_reg_minutes && tournament.late_reg_minutes > 0) {
           const startedAt = new Date(tournament.scheduled_start_at).getTime();
           if (startedAt < Date.now()) {
-            // 通常トーナメント: 経過時間で判断
+            // 通常トーナメント（scheduled_start_at が過去）: 経過時間で判断
             const elapsedMin = (Date.now() - startedAt) / 60000;
             lateRegOpen = elapsedMin <= tournament.late_reg_minutes;
           } else {
             // SNG（scheduled_start_at = 2099年）:
-            // global に closed マークがなく memT も取れない場合は安全側に倒して false
-            // → 観戦ボタンを表示する（誤って参加登録されてチップリセットされるより安全）
-            lateRegOpen = false;
+            // global に closed マークがない = まだ開放中（楽観的）
+            // 実際の登録可否はサーバーの registerEntry が正確に検証するので安全
+            lateRegOpen = true;
           }
         }
-        // 最終フォールバック: null のまま（memT も global も取れない場合）は安全側に false
-        // lateReg が本当に開いているなら memT か global から必ず取得できるはず
+        // 最終フォールバック: null のまま残った場合
+        // SNG（2099年）なら楽観的に開放中とみなす。通常トーナメントなら安全側に false。
         if (lateRegOpen === null) {
-          lateRegOpen = false;
+          const _startedAt = new Date(tournament.scheduled_start_at).getTime();
+          lateRegOpen = _startedAt > Date.now() ? true : false;
         }
       }
       const tournamentWithLateReg = tournament
