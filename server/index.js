@@ -1099,10 +1099,17 @@ function _tryAutoStart(io, roomId) {
   const room = startGame(roomId, onTimeout);
   if (room) {
     const _room = getOrCreateRoom(roomId);
-  const _allBots = _room?.players.every(p => p.id.startsWith('tbot::')) ?? false;
-  logDev(`[auto-start] ${roomId.slice(-8)} players=${_room?.players.length} allBots=${_allBots} phase=${_room?.phase}`);
+    const _allBots = _room?.players.every(p => p.id.startsWith('tbot::')) ?? false;
+    logDev(`[auto-start] ${roomId.slice(-8)} players=${_room?.players.length} allBots=${_allBots} phase=${_room?.phase}`);
     _broadcast(io, roomId);
     io.to(roomId).emit('gameStarted');
+    // ハンド開始時に毎回ブラインド情報を再送してクライアントの表示を同期する。
+    // applyPendingLevelUp の有無に関わらず常に送信することで
+    // 「次のハンドでブラインドアップ」が消えない／レベルが更新されないバグを防ぐ。
+    if (tournamentManager.isTournamentTable(roomId)) {
+      const _tSync = tournamentManager.getTournamentByTable(roomId);
+      if (_tSync) tournamentManager.broadcastBlind(_tSync.id);
+    }
   } else if (tournamentManager.isTournamentTable(roomId)) {
     // startGame が null を返した場合（_waitZoneSkip プレイヤーが多く active < 2）:
     // startGame 内で _waitZoneSkip がクリアされたため、1秒後に再試行すると全員 sittingOut=false になり成功する

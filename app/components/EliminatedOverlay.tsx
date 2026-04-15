@@ -6,6 +6,8 @@ interface Props {
   rank: number;
   totalPlayers: number;
   onClose: () => void;
+  onShare?: () => void;
+  shareMsg?: 'copied' | 'error' | null;
 }
 
 const POINT_TABLE: Record<number, number> = {
@@ -16,7 +18,7 @@ function ordinal(n: number) {
   return `${n}位`;
 }
 
-export default function EliminatedOverlay({ rank, totalPlayers, onClose }: Props) {
+export default function EliminatedOverlay({ rank, totalPlayers, onClose, onShare, shareMsg }: Props) {
   const points = POINT_TABLE[rank] ?? 0;
   // rank=0 はフォールバック検出（t:eliminated 未受信）の場合
   const rankUnknown = rank === 0;
@@ -63,6 +65,26 @@ export default function EliminatedOverlay({ rank, totalPlayers, onClose }: Props
             : 'お疲れさまでした！また挑戦してください。'}
         </p>
 
+        {/* シェアボタン */}
+        {onShare && (
+          <button
+            onClick={onShare}
+            className="w-full py-3 mb-3 rounded-lg font-semibold transition-colors bg-black hover:bg-gray-900 border border-gray-600 text-white flex items-center justify-center gap-2"
+          >
+            <span className="font-bold">𝕏</span>
+            <span>結果をコピーして投稿</span>
+          </button>
+        )}
+        {shareMsg === 'copied' && (
+          <p className="text-green-400 text-xs mb-3 text-center">
+            ✅ 画像をコピーしました！X の投稿画面で貼り付けてください
+          </p>
+        )}
+        {shareMsg === 'error' && (
+          <p className="text-yellow-400 text-xs mb-3 text-center">
+            ⚠️ クリップボードコピー非対応です（ブラウザの制限）
+          </p>
+        )}
         {/* ボタン */}
         <button
           onClick={onClose}

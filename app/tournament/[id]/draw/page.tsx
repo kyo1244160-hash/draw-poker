@@ -40,6 +40,8 @@ export default function TournamentDrawPage() {
   const [finished,   setFinished]   = useState<TournamentRankEntry[] | null>(null);
   const [finishCountdown, setFinishCountdown] = useState<number | null>(null);
   const [isWinner, setIsWinner] = useState(false);
+  const [shareMsg, setShareMsg] = useState<'copied' | 'error' | null>(null);
+  const shareCanvasRef = useRef<HTMLCanvasElement>(null);
   const eliminatedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // フォールバック用: 自分が最後に確認したチップ数を記録
   // t:eliminated が届かなかった場合でも gameState から脱落を検出するために使用
@@ -342,6 +344,84 @@ export default function TournamentDrawPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ===== シェア（クリップボードコピー）=====
+  async function handleShareCopy(rank: number, total: number) {
+    const POINT_TABLE: Record<number, number> = { 1:100, 2:60, 3:40, 4:25, 5:15 };
+    const pts   = POINT_TABLE[rank] ?? 0;
+    const medal = rank === 1 ? '🏆' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : '💀';
+
+    const canvas = shareCanvasRef.current;
+    if (!canvas) return;
+    canvas.width  = 600;
+    canvas.height = 300;
+    const ctx = canvas.getContext('2d')!;
+
+    // 背景
+    const bg = rank === 1
+      ? 'rgba(40,28,0,0.97)'
+      : rank <= 3
+        ? 'rgba(14,20,30,0.97)'
+        : 'rgba(10,10,18,0.97)';
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, 600, 300);
+
+    // 枠線
+    ctx.strokeStyle = rank === 1 ? '#c9a84c' : rank <= 3 ? '#7ab3e0' : '#555';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(2, 2, 596, 296);
+
+    // タイトル
+    ctx.fillStyle = rank === 1 ? '#eab308' : '#94a3b8';
+    ctx.font = 'bold 20px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('🃏 Poker Room Pastis', 300, 48);
+
+    // 順位（大）
+    ctx.fillStyle = rank === 1 ? '#fde68a' : '#ffffff';
+    ctx.font = 'bold 76px sans-serif';
+    ctx.fillText(`${medal} ${rank}位`, 300, 162);
+
+    // 参加人数
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '20px sans-serif';
+    ctx.fillText(`${total}名中`, 300, 206);
+
+    // ポイント
+    if (pts > 0) {
+      ctx.fillStyle = '#eab308';
+      ctx.font = 'bold 22px sans-serif';
+      ctx.fillText(`+${pts} pt 獲得`, 300, 248);
+    }
+
+    // URL
+    ctx.fillStyle = '#64748b';
+    ctx.font = '14px sans-serif';
+    ctx.fillText('https://draw-poker.onrender.com', 300, 280);
+
+    // クリップボードにコピー
+    try {
+      const blob = await new Promise<Blob>((res, rej) =>
+        canvas.toBlob(b => b ? res(b) : rej(new Error('blob null')), 'image/png')
+      );
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      setShareMsg('copied');
+    } catch {
+      setShareMsg('error');
+    }
+    // X の投稿画面を開く（定型文）
+    const shareText = [
+      '🃏 Poker Room Pastis でトーナメントに参加しました！',
+      '#PastisPoker',
+      'https://draw-poker.onrender.com',
+    ].join('\n');
+    window.open(
+      `https://twitter.com/intent/tweet?text=${encodeURIComponent(shareText)}`,
+      '_blank'
+    );
+
+    setTimeout(() => setShareMsg(null), 6000);
+  }
+
   // ===== アクションハンドラ =====
   function handleBetAction(action: string) {
     if (!tableIdRef.current) return;
@@ -527,6 +607,8 @@ export default function TournamentDrawPage() {
           rank={eliminated.rank}
           totalPlayers={eliminated.total}
           onClose={handleEliminatedClose}
+          onShare={() => handleShareCopy(eliminated.rank, eliminated.total)}
+          shareMsg={shareMsg}
         />
       )}
 
@@ -587,6 +669,29 @@ export default function TournamentDrawPage() {
             <div style={{ fontFamily: 'var(--font-body)', fontSize: 16, color: 'var(--cream)', marginBottom: 4 }}>
               おめでとうございます！
             </div>
+            {/* シェアボタン */}
+            <button
+              onClick={() => handleShareCopy(1, finished?.length ?? 1)}
+              style={{
+                marginTop: 20, width: '100%', padding: '10px 0',
+                background: '#000', border: '1px solid #555', borderRadius: 8,
+                color: '#fff', fontSize: 14, fontWeight: 700, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+              }}
+            >
+              <span style={{ fontWeight: 900 }}>𝕏</span>
+              <span>結果をコピーして投稿</span>
+            </button>
+            {shareMsg === 'copied' && (
+              <p style={{ color: '#4ade80', fontSize: 12, marginTop: 8, fontFamily: 'var(--font-body)' }}>
+                ✅ 画像をコピーしました！X の投稿画面で貼り付けてください
+              </p>
+            )}
+            {shareMsg === 'error' && (
+              <p style={{ color: '#facc15', fontSize: 12, marginTop: 8, fontFamily: 'var(--font-body)' }}>
+                ⚠️ クリップボードコピー非対応です（ブラウザの制限）
+              </p>
+            )}
             {finishCountdown !== null && (
               <div style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--cream-dim)', marginTop: 12 }}>
                 {finishCountdown}秒後に結果ページへ移動します
@@ -595,6 +700,8 @@ export default function TournamentDrawPage() {
           </div>
         </>
       )}
+      {/* 非表示Canvas（シェア画像生成用）*/}
+      <canvas ref={shareCanvasRef} style={{ display: 'none' }} />
     </div>
   );
 }

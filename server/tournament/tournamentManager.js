@@ -952,6 +952,19 @@ function balanceTables(tournamentId) {
       if (_io) {
         const sock = _io.sockets.sockets.get(p.id);
         if (sock) {
+          // jr() は古い p.id でプレイヤーを登録するが、実際の socket.id は sock.id。
+          // バランシング直後に次のハンドが始まると socket.id 不一致でアクションが全拒否されるため
+          // ここで即時に room.players の id を最新 socket.id に更新する。
+          if (sock.id !== p.id) {
+            const { getOrCreateRoom: _gcr } = require('../poker/gameManager');
+            const _destRoom = _gcr(dest.id);
+            const _movedPlayer = _destRoom?.players.find(pp => pp.accountId === accId || pp.name === name)
+                              ?? _destRoom?.pendingPlayers?.find(pp => pp.accountId === accId || pp.name === name);
+            if (_movedPlayer && _movedPlayer.id !== sock.id) {
+              logDev(`[TM] balance: update socket.id ${_movedPlayer.id.slice(-8)} → ${sock.id.slice(-8)} for ${name}`);
+              _movedPlayer.id = sock.id;
+            }
+          }
           sock.emit('t:tableTransfer', { fromTableId: tid, toTableId: dest.id });
           sock.leave(tid);
           sock.join(dest.id);
@@ -1117,6 +1130,17 @@ function balanceTables(tournamentId) {
     if (_io) {
       const sock = _io.sockets.sockets.get(candidate.id);
       if (sock) {
+        // jr() は古い candidate.id で登録するため、最新 socket.id に即時更新する
+        if (sock.id !== candidate.id) {
+          const { getOrCreateRoom: _gcr2 } = require('../poker/gameManager');
+          const _destRoom2 = _gcr2(minT.tid);
+          const _movedPlayer2 = _destRoom2?.players.find(pp => pp.accountId === accId || pp.name === name)
+                             ?? _destRoom2?.pendingPlayers?.find(pp => pp.accountId === accId || pp.name === name);
+          if (_movedPlayer2 && _movedPlayer2.id !== sock.id) {
+            logDev(`[TM] balance: update socket.id ${_movedPlayer2.id.slice(-8)} → ${sock.id.slice(-8)} for ${name}`);
+            _movedPlayer2.id = sock.id;
+          }
+        }
         sock.emit('t:tableTransfer', { fromTableId: maxT.tid, toTableId: minT.tid });
         sock.leave(maxT.tid);
         sock.join(minT.tid);
