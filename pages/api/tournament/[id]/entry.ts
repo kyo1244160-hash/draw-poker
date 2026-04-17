@@ -64,9 +64,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           }
         }
         // それでも null の場合の判定:
-        // 1. 通常トーナメント（scheduled_start_at が過去）: 経過時間で計算
-        // 2. SNG（scheduled_start_at = 2099年）: __pastisLateRegClosed に入っていなければ開放中とみなす
-        //    （サーバーが lateReg を閉じたとき必ず Set に追加するので、入っていない = まだ開放中）
+        // 1. 時間ベース（late_reg_minutes > 0）: scheduled_start_at からの経過時間で計算
+        // 2. レベルベース（late_reg_minutes = 0）: メモリなしでは判定不可 → 楽観的に true
+        //    （実際の登録可否は registerEntry が正確に検証するので安全）
+        // 3. SNG（scheduled_start_at = 2099年）: __pastisLateRegClosed に入っていなければ開放中
         if (lateRegOpen === null && tournament.late_reg_minutes && tournament.late_reg_minutes > 0) {
           const startedAt = new Date(tournament.scheduled_start_at).getTime();
           if (startedAt < Date.now()) {
@@ -81,10 +82,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           }
         }
         // 最終フォールバック: null のまま残った場合
-        // SNG（2099年）なら楽観的に開放中とみなす。通常トーナメントなら安全側に false。
+        // ここに来るのは「メモリ取得失敗 + __pastisLateRegClosed に未登録」のケースのみ。
+        // lateReg が終了したときは必ず _markLateRegClosed() が Set に追加するため、
+        // Set にない = まだ終了していない = 開放中が確定。よって true が正しい。
+        // （レベルベース・時間ベース・SNG すべてで _markLateRegClosed は必ず呼ばれる）
         if (lateRegOpen === null) {
-          const _startedAt = new Date(tournament.scheduled_start_at).getTime();
-          lateRegOpen = _startedAt > Date.now() ? true : false;
+          lateRegOpen = true;
         }
       }
       const tournamentWithLateReg = tournament
