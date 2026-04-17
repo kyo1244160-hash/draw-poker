@@ -405,22 +405,46 @@ export default function TournamentDrawPage() {
     ctx.font = '14px sans-serif';
     ctx.fillText('https://draw-poker.onrender.com', 300, 280);
 
-    // クリップボードにコピー
+    // 画像 Blob を生成
+    let blob: Blob;
     try {
-      const blob = await new Promise<Blob>((res, rej) =>
+      blob = await new Promise<Blob>((res, rej) =>
         canvas.toBlob(b => b ? res(b) : rej(new Error('blob null')), 'image/png')
       );
-      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-      setShareMsg('copied');
     } catch {
       setShareMsg('error');
+      setTimeout(() => setShareMsg(null), 6000);
+      return;
     }
-    // X の投稿画面を開く（定型文）
+
     const shareText = [
       '🃏 Poker Room Pastis でトーナメントに参加しました！',
       '#PastisPoker',
       'https://draw-poker.onrender.com',
     ].join('\n');
+
+    // モバイル: Web Share API で画像ファイルをシェアシートに渡す
+    // iOS 15+ / Android Chrome 対応。シェアシートから X を選ぶと画像つきで投稿できる。
+    const imageFile = new File([blob], 'pastis-result.png', { type: 'image/png' });
+    if (typeof navigator.share === 'function' && navigator.canShare?.({ files: [imageFile] })) {
+      try {
+        await navigator.share({ files: [imageFile], text: shareText });
+        setShareMsg('copied');
+      } catch (e: unknown) {
+        // ユーザーがキャンセルした場合（AbortError）はエラー扱いしない
+        if (e instanceof Error && e.name !== 'AbortError') setShareMsg('error');
+      }
+      setTimeout(() => setShareMsg(null), 6000);
+      return;
+    }
+
+    // デスクトップ: クリップボードに画像をコピー → X 投稿画面を開く
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      setShareMsg('copied');
+    } catch {
+      setShareMsg('error');
+    }
     window.open(
       `https://twitter.com/intent/tweet?text=${encodeURIComponent(shareText)}`,
       '_blank'

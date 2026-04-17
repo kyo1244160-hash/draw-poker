@@ -94,21 +94,17 @@ export default function TournamentResultPage() {
     ctx.font = '15px sans-serif';
     ctx.fillText('https://draw-poker.onrender.com', 300, 280);
 
-    // 2) クリップボードにコピー
+    // 2) 画像 Blob を生成
+    let blob: Blob;
     try {
-      const blob = await new Promise<Blob>((res, rej) =>
+      blob = await new Promise<Blob>((res, rej) =>
         canvas.toBlob(b => b ? res(b) : rej(new Error('blob null')), 'image/png')
       );
-      await navigator.clipboard.write([
-        new ClipboardItem({ 'image/png': blob }),
-      ]);
-      setShareMsg('copied');
     } catch {
-      // クリップボードAPIが使えない環境はテキストのみで進む
       setShareMsg('text');
+      return;
     }
 
-    // 3) X の投稿画面を開く
     const text = [
       `${medal} ${myRank.rank}位 / ${total}名中`,
       `🃏 Poker Room Pastis`,
@@ -117,6 +113,30 @@ export default function TournamentResultPage() {
       `https://draw-poker.onrender.com`,
     ].filter(Boolean).join('\n');
 
+    // 3) モバイル: Web Share API で画像ファイルをシェアシートに渡す
+    // iOS 15+ / Android Chrome 対応。シェアシートから X を選ぶと画像つきで投稿できる。
+    const imageFile = new File([blob], 'pastis-result.png', { type: 'image/png' });
+    if (typeof navigator.share === 'function' && navigator.canShare?.({ files: [imageFile] })) {
+      try {
+        await navigator.share({ files: [imageFile], text });
+        setShareMsg('copied');
+      } catch (e: unknown) {
+        // ユーザーがキャンセルした場合（AbortError）はエラー扱いしない
+        if (e instanceof Error && e.name !== 'AbortError') setShareMsg('text');
+      }
+      return;
+    }
+
+    // デスクトップ: クリップボードに画像をコピー → X 投稿画面を開く
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      setShareMsg('copied');
+    } catch {
+      // クリップボードAPIが使えない環境はテキストのみで進む
+      setShareMsg('text');
+    }
+
+    // 4) X の投稿画面を開く
     window.open(
       `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}`,
       '_blank'
