@@ -115,8 +115,9 @@ export default function TournamentResultPage() {
 
     // 3) モバイル: Web Share API で画像ファイルをシェアシートに渡す
     // iOS 15+ / Android Chrome 対応。シェアシートから X を選ぶと画像つきで投稿できる。
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
     const imageFile = new File([blob], 'pastis-result.png', { type: 'image/png' });
-    if (typeof navigator.share === 'function' && navigator.canShare?.({ files: [imageFile] })) {
+    if (isMobile && typeof navigator.share === 'function' && navigator.canShare?.({ files: [imageFile] })) {
       try {
         await navigator.share({ files: [imageFile], text });
         setShareMsg('copied');
