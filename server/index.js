@@ -690,7 +690,14 @@ app.prepare().then(async () => {
         // 原因をログ（開発環境のみ）
         const { getOrCreateRoom: _gorBet } = require('./poker/gameManager');
         const _r = _gorBet(roomId);
-        logDev(`[betAction] rejected: roomId=${roomId?.slice(-8)} socketId=${socket.id.slice(-8)} action=${action} user=${user?.nickname} phase=${_r?.phase ?? 'no-room'} actionIdx=${_r?.actionIndex} currentPlayer=${_r?.players[_r?.actionIndex]?.id?.slice(-8)}`);
+        // socket.id と currentPlayer.id の不一致が最も多い原因（テーブル移動後）
+        const _curPlayer = _r?.players[_r?.actionIndex];
+        const _idMatch = _curPlayer?.id === socket.id;
+        log(`[betAction-debug] REJECTED user=${user?.nickname} action=${action}`);
+        log(`[betAction-debug]   roomId=${roomId?.slice(-8)} socketId=${socket.id.slice(-8)}`);
+        log(`[betAction-debug]   phase=${_r?.phase ?? 'no-room'} actionIdx=${_r?.actionIndex}`);
+        log(`[betAction-debug]   currentPlayer=${_curPlayer?.name}(id=${_curPlayer?.id?.slice(-8)}) idMatch=${_idMatch}`);
+        log(`[betAction-debug]   allPlayers=[${_r?.players?.map(p => `${p.name}:${p.id.slice(-8)}`).join(',')}]`);
         socket.emit('error', { message: 'そのアクションはできません' }); return;
       }
       resetTimeout(roomId, socket.id);
@@ -1083,8 +1090,19 @@ function _tryAutoStart(io, roomId) {
       return;
     }
     // pendingLevelUp があれば次ハンド開始前に適用
+    // 複数レベルが期限切れになっている場合はループして一括適用する。
+    // 1レベルずつ適用すると毎ハンド「次のハンドでブラインドアップ」が表示され続ける。
+    log(`[blind-debug] _tryAutoStart roomId=${roomId.slice(-8)} pendingLevelUp=${t?.pendingLevelUp} currentLevelIdx=${t?.currentLevelIdx}`);
     if (t?.pendingLevelUp) {
-      tournamentManager.applyPendingLevelUp(t.id);
+      let _loopT = t;
+      let _maxLevels = 20; // 安全制限
+      while (_loopT?.pendingLevelUp && !_loopT?.isOnBreak && _maxLevels-- > 0) {
+        const applied = tournamentManager.applyPendingLevelUp(_loopT.id);
+        _loopT = tournamentManager.getTournamentByTable(roomId);
+        log(`[blind-debug] applyPendingLevelUp applied=${applied} pendingLevelUp_after=${_loopT?.pendingLevelUp} currentLevelIdx=${_loopT?.currentLevelIdx}`);
+        if (!applied || !_loopT) break;
+      }
+      log(`[blind-debug] applyPendingLevelUp loop done: pendingLevelUp=${_loopT?.pendingLevelUp} currentLevelIdx=${_loopT?.currentLevelIdx}`);
     }
     // applyPendingLevelUp でブレイクに入った場合はゲームを開始しない
     const tAfter = tournamentManager.getTournamentByTable(roomId);
@@ -1100,7 +1118,7 @@ function _tryAutoStart(io, roomId) {
   if (room) {
     const _room = getOrCreateRoom(roomId);
     const _allBots = _room?.players.every(p => p.id.startsWith('tbot::')) ?? false;
-    logDev(`[auto-start] ${roomId.slice(-8)} players=${_room?.players.length} allBots=${_allBots} phase=${_room?.phase}`);
+    log(`[stuck-debug] startGame SUCCESS roomId=${roomId.slice(-8)} players=${_room?.players.length} pendingPlayers=${_room?.pendingPlayers?.length} allBots=${_allBots} phase=${_room?.phase}`);
     _broadcast(io, roomId);
     io.to(roomId).emit('gameStarted');
     // ハンド開始時に毎回ブラインド情報を再送してクライアントの表示を同期する。
@@ -1108,15 +1126,20 @@ function _tryAutoStart(io, roomId) {
     // 「次のハンドでブラインドアップ」が消えない／レベルが更新されないバグを防ぐ。
     if (tournamentManager.isTournamentTable(roomId)) {
       const _tSync = tournamentManager.getTournamentByTable(roomId);
-      if (_tSync) tournamentManager.broadcastBlind(_tSync.id);
+      if (_tSync) {
+        log(`[blind-debug] broadcastBlind after startGame: pendingLevelUp=${_tSync.pendingLevelUp} level=${_tSync.currentLevelIdx}`);
+        tournamentManager.broadcastBlind(_tSync.id);
+      }
     }
   } else if (tournamentManager.isTournamentTable(roomId)) {
     // startGame が null を返した場合（_waitZoneSkip プレイヤーが多く active < 2）:
     // startGame 内で _waitZoneSkip がクリアされたため、1秒後に再試行すると全員 sittingOut=false になり成功する
-    logDev(`[auto-start] ${roomId.slice(-8)} startGame=null → retry in 1s (waitZone recovery)`);
+    const _rNull = getOrCreateRoom(roomId);
+    log(`[stuck-debug] startGame NULL roomId=${roomId.slice(-8)} players=${_rNull?.players.map(p => `${p.name}(sittingOut=${p.sittingOut},waitZone=${p._waitZoneSkip})`).join(',')}`);
     setTimeout(() => {
       const r = getOrCreateRoom(roomId);
       if (r && (r.phase === 'waiting' || r.phase === 'showdown') && canAutoStart(roomId)) {
+        log(`[stuck-debug] startGame retry for ${roomId.slice(-8)}`);
         _tryAutoStart(io, roomId);
       }
     }, 1000);

@@ -51,10 +51,13 @@ let _launchCallback = null;
 let _getSocketByAccountId = null;
 
 function init(io, makeTimeoutHandler, launchTournamentCallback, getSocketByAccountId) {
-  _io = io;
-  _makeTimeoutHandler = makeTimeoutHandler ?? null;
-  _launchCallback = launchTournamentCallback ?? null;
-  _getSocketByAccountId = getSocketByAccountId ?? null;
+  // undefined を渡した引数は既存値を保持する（部分更新に対応）
+  // 例: tournamentManager.init(undefined, undefined, _launchTournament) で
+  //     _io が null に上書きされ kickstart が発火しないバグを防ぐ。
+  if (io !== undefined)                     _io                    = io;
+  if (makeTimeoutHandler !== undefined)     _makeTimeoutHandler    = makeTimeoutHandler ?? null;
+  if (launchTournamentCallback !== undefined) _launchCallback      = launchTournamentCallback ?? null;
+  if (getSocketByAccountId !== undefined)   _getSocketByAccountId = getSocketByAccountId ?? null;
 }
 
 // ===== Tournament オブジェクト構造 =====
@@ -301,7 +304,7 @@ function _startLevelTimer(tournament) {
     if (lv.isBreak) tournament.isOnBreak = false;
     tournament.pendingLevelUp    = true;
     tournament.pendingLevelUpAt  = Date.now();
-    logDev(`[TM] ${tournament.id}: level elapsed during hand → pendingLevelUp immediately (no broadcast here)`);
+    log(`[blind-debug] _startLevelTimer: remaining=0, set pendingLevelUp=true directly (no broadcast) tournamentId=${tournament.id.slice(-8)}`);
     return;
   }
 
@@ -329,9 +332,42 @@ function _pendingLevelUp(tournamentId) {
 
   t.pendingLevelUp = true;
   t.pendingLevelUpAt = Date.now(); // ← pending開始時刻を記録
-  logDev(`[TM] ${tournamentId}: blind level-up pending`);
+  log(`[blind-debug] _pendingLevelUp set: tournamentId=${tournamentId.slice(-8)} pendingLevelUp=true`);
   // タイマー0をクライアントに即通知（表示が止まって見えるのを防ぐ）
   _broadcastBlindUpdate(t);
+
+  // waiting 状態で詰まっているテーブルを kickstart する。
+  // balanceTables の繰り返しで BOT が出入りし startGame が null のまま
+  // 放置されるケースに対するフォールセーフ。
+  if (_io && _tryAutoStartFn) {
+    const { canAutoStart } = require('../poker/gameManager');
+    log(`[stuck-debug] _pendingLevelUp kickstart check: tables=[${t.tableIds.map(id => id.slice(-8)).join(',')}]`);
+    for (const tableId of t.tableIds) {
+      const room = getOrCreateRoom(tableId);
+      const canStart = canAutoStart(tableId);
+      log(`[stuck-debug] table=${tableId.slice(-8)} phase=${room?.phase} players=${room?.players.length} pending=${room?.pendingPlayers?.length} canAutoStart=${canStart}`);
+      if (room && room.phase === 'waiting' && canStart) {
+        log(`[TM] _pendingLevelUp kickstart stuck table ${tableId.slice(-8)}`);
+        _tryAutoStartFn(_io, tableId);
+      }
+    }
+    // 3秒後に再チェック: 全テーブルが進行中で kickstart できなかったケースの取りこぼし防止
+    const _tid = t.id;
+    setTimeout(() => {
+      const _t2 = tournaments.get(_tid);
+      if (!_t2 || !_t2.pendingLevelUp) return; // 既に解消済み
+      log(`[stuck-debug] _pendingLevelUp retry kickstart after 3s: tournamentId=${_tid.slice(-8)}`);
+      for (const tableId of _t2.tableIds) {
+        const room = getOrCreateRoom(tableId);
+        if (room && room.phase === 'waiting' && canAutoStart(tableId)) {
+          log(`[TM] _pendingLevelUp retry kickstart table ${tableId.slice(-8)}`);
+          _tryAutoStartFn(_io, tableId);
+        }
+      }
+    }, 3000);
+  } else {
+    log(`[stuck-debug] _pendingLevelUp: _io=${!!_io} _tryAutoStartFn=${!!_tryAutoStartFn} (injection missing?)`);
+  }
 }
 
 /**
@@ -340,6 +376,7 @@ function _pendingLevelUp(tournamentId) {
  */
 function applyPendingLevelUp(tournamentId) {
   const t = tournaments.get(tournamentId);
+  log(`[blind-debug] applyPendingLevelUp called: tournamentId=${tournamentId.slice(-8)} pendingLevelUp=${t?.pendingLevelUp} status=${t?.status}`);
   if (!t || !t.pendingLevelUp || t.status !== 'running') return false;
 
   t.pendingLevelUp  = false;
@@ -427,7 +464,7 @@ function applyPendingLevelUp(tournamentId) {
   // 次レベルのタイマー開始
   _startLevelTimer(t);
 
-  // 全クライアントへブラインド更新通知
+  // 全クライアントへブラインド更新通知（pendingLevelUp=false を確実に届ける）
   _broadcastBlindUpdate(t);
 
   return true;
@@ -712,6 +749,7 @@ function _broadcastBlindUpdate(tournament) {
   };
   tournament._notifyBlindUpdate = null;  // 一度送ったらリセット
 
+  log(`[blind-debug] _broadcastBlindUpdate: tournamentId=${tournament.id.slice(-8)} pendingLevelUp=${payload.pendingLevelUp} level=${payload.level} secondsToNext=${payload.secondsToNextLevel}`);
   for (const tableId of tournament.tableIds) {
     _io.to(tableId).emit('t:blindUpdate', payload);
   }
@@ -753,14 +791,23 @@ function _kickstartAfterBalance(tableId) {
     // フォールバック: _broadcastFn 未注入の場合は gameState のみ送信
     broadcastTableState(tableId);
   }
-  // バランシング後に移動先テーブルが自動開始できる状態なら開始を試みる
-  // （_waitZoneSkip プレイヤーがいて startGame が null を返す場合は
-  //   _tryAutoStart 内のリトライが 1 秒後に再試行する）
+  // バランシング後に移動先テーブルが自動開始できる状態なら開始を試みる。
+  // 300ms 後のチェック時に別バランシングでプレイヤーが移動していると
+  // canAutoStart=false になり _tryAutoStart が発火しないため、
+  // 300ms / 1s / 3s / 7s と多段リトライしてテーブルが詰まらないようにする。
   if (_io && _tryAutoStartFn) {
-    if (canAutoStart(tableId)) {
+    const _room = getOrCreateRoom(tableId);
+    const _canStart = canAutoStart(tableId);
+    log(`[stuck-debug] _kickstartAfterBalance table=${tableId.slice(-8)} phase=${_room?.phase} players=${_room?.players.length} pendingPlayers=${_room?.pendingPlayers?.length} canAutoStart=${_canStart}`);
+    const _retryDelays = [300, 1000, 3000, 7000];
+    for (const delay of _retryDelays) {
       setTimeout(() => {
-        if (canAutoStart(tableId)) _tryAutoStartFn(_io, tableId);
-      }, 300);
+        const r = getOrCreateRoom(tableId);
+        if (r && r.phase === 'waiting' && canAutoStart(tableId)) {
+          log(`[stuck-debug] _kickstartAfterBalance retry table=${tableId.slice(-8)} delay=${delay}`);
+          _tryAutoStartFn(_io, tableId);
+        }
+      }, delay);
     }
   }
 }
@@ -952,10 +999,9 @@ function balanceTables(tournamentId) {
       if (_io) {
         const sock = _io.sockets.sockets.get(p.id);
         if (sock) {
-          // jr() は古い p.id でプレイヤーを登録するが、実際の socket.id は sock.id。
-          // バランシング直後に次のハンドが始まると socket.id 不一致でアクションが全拒否されるため
-          // ここで即時に room.players の id を最新 socket.id に更新する。
-          if (sock.id !== p.id) {
+          // jr() が登録する id（p.id）と実際の sock.id が一致しているか関係なく
+          // 常に最新の sock.id に更新する。これにより移動後のアクション拒否を防ぐ。
+          {
             const { getOrCreateRoom: _gcr } = require('../poker/gameManager');
             const _destRoom = _gcr(dest.id);
             const _movedPlayer = _destRoom?.players.find(pp => pp.accountId === accId || pp.name === name)
@@ -965,18 +1011,27 @@ function balanceTables(tournamentId) {
               _movedPlayer.id = sock.id;
             }
           }
-          sock.emit('t:tableTransfer', { fromTableId: tid, toTableId: dest.id });
+          // Socket.IO ルームの切り替えは即時（遅らせるとゲーム開始後にgameStateが届かずタイムアウトするバグになる）
+          // showdown 結果確認のための遅延は t:tableTransfer 通知のみに適用する
           sock.leave(tid);
           sock.join(dest.id);
-          // pendingPlayersに入った場合（dest.id進行中テーブル）は待機通知を送る
-          const destRoom = getRoom(dest.id);
-          const isPending = destRoom?.pendingPlayers?.some(pp => pp.id === p.id);
-          if (isPending) {
-            sock.emit('t:pendingTableTransfer', {
-              tableId: dest.id,
-              message: '次のハンドから参加します',
-            });
-          }
+          // t:tableJoin を即時送信: クライアントの tableIdRef を即座に更新して
+          // アクションが旧テーブルに送られるバグを防ぐ（t:tableTransfer は3秒後に送る）
+          sock.emit('t:tableJoin', { toTableId: dest.id });
+          const _sock = sock;
+          const _fromTid = tid, _toTid = dest.id, _pId = p.id;
+          setTimeout(() => {
+            _sock.emit('t:tableTransfer', { fromTableId: _fromTid, toTableId: _toTid });
+            // pendingPlayersに入った場合（dest.id進行中テーブル）は待機通知を送る
+            const destRoom = getRoom(_toTid);
+            const isPending = destRoom?.pendingPlayers?.some(pp => pp.id === _pId || pp.id === _sock.id);
+            if (isPending) {
+              _sock.emit('t:pendingTableTransfer', {
+                tableId: _toTid,
+                message: '次のハンドから参加します',
+              });
+            }
+          }, 3000);
         }
         _io.to(dest.id).emit('t:playerArrived', { playerName: name });
         // 移動先テーブルにBOTのターンが来ていたらアクションを起動
@@ -1130,8 +1185,8 @@ function balanceTables(tournamentId) {
     if (_io) {
       const sock = _io.sockets.sockets.get(candidate.id);
       if (sock) {
-        // jr() は古い candidate.id で登録するため、最新 socket.id に即時更新する
-        if (sock.id !== candidate.id) {
+        // jr() が登録する id に関係なく常に最新の sock.id に更新する
+        {
           const { getOrCreateRoom: _gcr2 } = require('../poker/gameManager');
           const _destRoom2 = _gcr2(minT.tid);
           const _movedPlayer2 = _destRoom2?.players.find(pp => pp.accountId === accId || pp.name === name)
@@ -1141,11 +1196,17 @@ function balanceTables(tournamentId) {
             _movedPlayer2.id = sock.id;
           }
         }
-        sock.emit('t:tableTransfer', { fromTableId: maxT.tid, toTableId: minT.tid });
+        // Socket.IO ルームは即時切り替え、t:tableTransfer 通知のみ 3 秒遅延
         sock.leave(maxT.tid);
         sock.join(minT.tid);
-        // join後に確実にgameStateが届くよう500ms後に再broadcast
-        setTimeout(() => { _kickstartAfterBalance(minT.tid); }, 500);
+        // t:tableJoin を即時送信して tableIdRef を即更新
+        sock.emit('t:tableJoin', { toTableId: minT.tid });
+        const _sock2 = sock;
+        const _fromTid2 = maxT.tid, _toTid2 = minT.tid;
+        setTimeout(() => {
+          _sock2.emit('t:tableTransfer', { fromTableId: _fromTid2, toTableId: _toTid2 });
+          setTimeout(() => { _kickstartAfterBalance(_toTid2); }, 500);
+        }, 3000);
       }
       _io.to(minT.tid).emit('t:playerArrived', { playerName: name });
     }

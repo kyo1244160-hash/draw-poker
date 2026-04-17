@@ -165,7 +165,10 @@ function joinRoom(roomId, socketId, name, opts = {}) {
   // showdown・waiting いずれのフェーズでも適用（waitingはdealer/SBを前ハンドから引き継ぐ）
   // ヘッズアップ（2人以下）はBTN=SBのため待機ゾーンなし
   // レイトレジストプレイヤーもバランシング移動と同じRRoP Rule 16を適用
-  if (room.dealerIndex >= 0 && room.players.length > 2) {
+  // BOT（tbot::プレフィックス）は RRoP Rule 16 を適用しない。
+  // BOT が waitZone になると startGame が null を返し続けてゲームが開始しないため。
+  const _isBot = typeof socketId === 'string' && socketId.startsWith('tbot::');
+  if (!_isBot && room.dealerIndex >= 0 && room.players.length > 2) {
     const n         = room.players.length;
     const myIdx     = n - 1;
     // ハンド中（showdown含む）は固定ポジションを使用。waiting中はdealerIndexから算出

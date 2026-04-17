@@ -82,13 +82,11 @@ export default function TournamentDrawPage() {
       if (cancelled) return;
       if (!ok) { router.push('/'); return; }
       setConnected(true);
-      if (tableIdRef.current) {
-        // 再接続: 既知のテーブルに joinRoom を送り新しい socket ID でプレイヤー情報を更新
-        socket.emit('joinRoom', { roomId: tableIdRef.current });
-      } else {
-        // 初回接続: テーブルを問い合わせ
-        socket.emit('t:getMyTable', { tournamentId });
-      }
+      // 初回・再接続どちらも t:getMyTable を使う。
+      // joinRoom は ring game 用で t:blindUpdate を再送しないため
+      // 再接続後にブラインド表示が更新されないバグが起きる。
+      // t:getMyTable は socket.id 更新 + t:blindUpdate + t:tournamentStatus を一括送信する。
+      socket.emit('t:getMyTable', { tournamentId });
     });
 
     // 接続済みの場合も問い合わせ
@@ -124,9 +122,10 @@ export default function TournamentDrawPage() {
             if (eliminatedTimerRef.current) clearTimeout(eliminatedTimerRef.current);
             eliminatedTimerRef.current = setTimeout(() => {
               // t:eliminated が届いて実際の rank で上書きされる場合もある。
-              // showdown を確認できる時間を確保するため 5 秒後に発動
+              // t:eliminated はサーバーが showdown 後 1 秒で送信するため
+              // 8 秒待てば通常は正確な rank が届いているはず
               setEliminated({ rank: 0, total: 0 });
-            }, 5000);
+            }, 8000);
           }
         }
       } else if (lastSelfChipsRef.current === 0 && !eliminatedRef.current) {
@@ -201,6 +200,12 @@ export default function TournamentDrawPage() {
     // ステータス更新
     socket.on('t:tournamentStatus', (payload: TournamentStatus) => {
       setStatus(payload);
+    });
+
+    // テーブル移動: 即時通知（tableIdRefのみ更新・画面は切り替えない）
+    // t:tableTransfer（3秒後）が来るまでの間もアクションが正しいテーブルに送られるようにする
+    socket.on('t:tableJoin', ({ toTableId }: { toTableId: string }) => {
+      tableIdRef.current = toTableId;
     });
 
     // テーブル移動（バランシング）
@@ -331,6 +336,7 @@ export default function TournamentDrawPage() {
       socket.off('t:playerArrived');
       socket.off('t:blindUpdate');
       socket.off('t:tournamentStatus');
+      socket.off('t:tableJoin');
       socket.off('t:tableTransfer');
       socket.off('t:pendingTableTransfer');
       socket.off('showdown');
@@ -348,6 +354,7 @@ export default function TournamentDrawPage() {
   async function handleShareCopy(rank: number, total: number) {
     const POINT_TABLE: Record<number, number> = { 1:100, 2:60, 3:40, 4:25, 5:15 };
     const pts   = POINT_TABLE[rank] ?? 0;
+    const rankUnknown = rank === 0 || total === 0;
     const medal = rank === 1 ? '🏆' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : '💀';
 
     const canvas = shareCanvasRef.current;
@@ -379,12 +386,12 @@ export default function TournamentDrawPage() {
     // 順位（大）
     ctx.fillStyle = rank === 1 ? '#fde68a' : '#ffffff';
     ctx.font = 'bold 76px sans-serif';
-    ctx.fillText(`${medal} ${rank}位`, 300, 162);
+    ctx.fillText(rankUnknown ? `${medal} 脱落` : `${medal} ${rank}位`, 300, 162);
 
     // 参加人数
     ctx.fillStyle = '#94a3b8';
     ctx.font = '20px sans-serif';
-    ctx.fillText(`${total}名中`, 300, 206);
+    ctx.fillText(rankUnknown ? '集計中...' : `${total}名中`, 300, 206);
 
     // ポイント
     if (pts > 0) {
