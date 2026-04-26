@@ -668,12 +668,22 @@ function _finishTournament(tournament) {
 }
 
 function _cleanupTables(tournament) {
-  const { rooms } = require('../poker/gameManager');
+  const { deleteRoom } = require('../poker/gameManager');
+  const { removeBots }  = require('./tournamentBotManager');
   for (const tableId of tournament.tableIds) {
     roomToTournament.delete(tableId);
-    if (rooms) rooms.delete(tableId);
+    deleteRoom(tableId);   // 公開関数経由で削除（内部 Map への直接参照を避ける）
+    removeBots(tableId);   // _bots / _tableBots Map もクリーンアップ
   }
   tournament.tableIds = [];
+  // tournaments Map 自体も遅延削除（通知送信後に呼ばれるため即削除で問題なし）
+  setTimeout(() => {
+    tournaments.delete(tournament.id);
+    // 当該トーナメントに紐づく disconnectedChips もクリーンアップ
+    for (const [accountId, v] of _disconnectedChips.entries()) {
+      if (v.tournamentId === tournament.id) _disconnectedChips.delete(accountId);
+    }
+  }, 5000);
 }
 
 // ===== ステータス通知 =====
@@ -923,7 +933,7 @@ function handleForcedLeave(tableId, playerId, reason) {
       // チップを _disconnectedChips に退避してから leaveRoom する。
       // sittingOut=true を使うと startGame のリセットで毎ハンド上書きされるため使わない。
       const accountId = player.accountId ?? player.id;
-      _disconnectedChips.set(accountId, { chips: player.chips, tableId });
+      _disconnectedChips.set(accountId, { chips: player.chips, tableId, tournamentId });
       log(`[TM] ${tournamentId}: ${player.name} chips=${player.chips} preserved (disconnected)`);
       leaveRoom(tableId, playerId);
     } else {

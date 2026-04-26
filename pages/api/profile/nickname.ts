@@ -61,19 +61,43 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   // ── 重複チェック ────────────────────────────────
-  const taken = await isNicknameTaken(trimmed);
-  if (taken) {
-    return res.status(409).json({ error: 'そのニックネームは既に使われています' });
+  try {
+    const taken = await isNicknameTaken(trimmed);
+    if (taken) {
+      return res.status(409).json({ error: 'そのニックネームは既に使われています' });
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'DBエラー';
+    console.error('[nickname API] isNicknameTaken error:', msg);
+    return res.status(500).json({ error: 'サーバーエラーが発生しました' });
   }
 
   // ── 初回設定 or 変更 ────────────────────────────
   const accountId = session.user.accountId;
-  const profile   = await getProfile(accountId);
+
+  let profile;
+  try {
+    profile = await getProfile(accountId);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'DBエラー';
+    console.error('[nickname API] getProfile error:', msg);
+    return res.status(500).json({ error: 'サーバーエラーが発生しました' });
+  }
 
   if (!profile) {
     // 初回設定（change_count はカウントしない）
-    await setNicknameFirst(accountId, trimmed);
-    return res.status(201).json({ nickname: trimmed });
+    try {
+      await setNicknameFirst(accountId, trimmed);
+      return res.status(201).json({ nickname: trimmed });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '';
+      // UNIQUE 制約違反（重複チェック後の競合）
+      if (msg.includes('unique') || msg.includes('duplicate') || msg.includes('23505')) {
+        return res.status(409).json({ error: 'そのニックネームは既に使われています' });
+      }
+      console.error('[nickname API] setNicknameFirst error:', msg);
+      return res.status(500).json({ error: 'サーバーエラーが発生しました' });
+    }
   }
 
   // 変更: 30日制限チェック
@@ -87,6 +111,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     });
   }
 
-  const updated = await updateNickname(accountId, trimmed);
-  return res.status(200).json({ nickname: updated.nickname });
+  try {
+    const updated = await updateNickname(accountId, trimmed);
+    return res.status(200).json({ nickname: updated.nickname });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : '';
+    if (msg.includes('unique') || msg.includes('duplicate') || msg.includes('23505')) {
+      return res.status(409).json({ error: 'そのニックネームは既に使われています' });
+    }
+    console.error('[nickname API] updateNickname error:', msg);
+    return res.status(500).json({ error: 'サーバーエラーが発生しました' });
+  }
 }

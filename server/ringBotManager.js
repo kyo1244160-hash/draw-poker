@@ -7,7 +7,7 @@
  */
 
 const { io } = require('socket.io-client');
-const { decideBotDraw, decideBotBetAction } = require('./poker/botManager');
+const { decideBotDraw, decideBotBetAction, decideDraw27Fallback, decideBadugiDrawFallback } = require('./poker/botManager');
 
 // BOT_SERVER 環境変数が未設定の場合、NEXTAUTH_URL または ALLOWED_ORIGIN から自動解決する
 // Render 本番環境では NEXTAUTH_URL=https://draw-poker.onrender.com が設定されているため
@@ -68,23 +68,23 @@ class RingBot {
 
       const phase = meta?.phase ?? '';
 
+      const capturedRoomId = this.roomId;  // タイマー発火時にroomIdが変わっていても正しいroomへ送る
       if (phase.startsWith('draw')) {
-        setTimeout(() => {
-          const indices = decideBotDraw(this.hand, this.mode);
-          s.emit('drawCards', { roomId: this.roomId, indices });
+        setTimeout(async () => {
+          if (!capturedRoomId) return;
+          const indices = await decideBotDraw(this.hand, this.mode);  // await追加
+          s.emit('drawCards', { roomId: capturedRoomId, indices });
         }, 500 + Math.random() * 1000);
       } else if (phase.startsWith('bet')) {
-        setTimeout(() => {
-          // meta を room 相当、me を botPlayer 相当として渡す
+        setTimeout(async () => {
+          if (!capturedRoomId) return;
           const fakeRoom = {
             currentBet: meta?.currentBet ?? 0,
             raiseCount: meta?.raiseCount ?? 0,
           };
-          const fakePlayer = {
-            bet: me.bet ?? 0,
-          };
-          const action = decideBotBetAction(fakeRoom, fakePlayer);
-          s.emit('betAction', { roomId: this.roomId, action });
+          const fakePlayer = { bet: me.bet ?? 0 };
+          const action = await decideBotBetAction(fakeRoom, fakePlayer);  // await追加
+          s.emit('betAction', { roomId: capturedRoomId, action });
         }, 400 + Math.random() * 1200);
       }
     });
@@ -185,7 +185,7 @@ function renameBot(botId, newName) {
 // ■ FastFold（Zoom）ボット管理
 // ==========================================================
 
-const FAST_FOLD_RATE = 0.5; // 50%の確率でFastFold
+const FAST_FOLD_RATE = 0.25; // 25%の確率でFastFold（全員FF確率を下げてFujitaが遊べるように）
 
 // poolId → FastFoldBot[]
 const _ffRooms = new Map();
@@ -244,28 +244,37 @@ class FastFoldBot {
       if (meta?.currentMode) this.mode = meta.currentMode;
       if (!me || me.folded || !me.isMyTurn) return;
 
-      const phase = meta?.phase ?? '';
+      const phase    = meta?.phase ?? '';
+      const tableNow = this.currentTable;  // 受信時点のテーブル（即使用）
+      if (!tableNow) return;
 
       if (phase.startsWith('draw')) {
+        // ドロー: ルールベースフォールバックで決定
+        const hand    = this.hand || [];
+        const nm      = (this.mode === 'badugi') ? 'badugi' : '27';
+        const indices = nm === 'badugi' ? decideBadugiDrawFallback(hand) : decideDraw27Fallback(hand);
         setTimeout(() => {
-          if (!this.currentTable) return;
-          const indices = decideBotDraw(this.hand, this.mode);
-          s.emit('drawCards', { roomId: this.currentTable, indices });
-        }, 500 + Math.random() * 1000);
+          if (this.currentTable !== tableNow) return;
+          s.emit('drawCards', { roomId: tableNow, indices });
+        }, 800 + Math.random() * 1200);  // 0.8-2.0秒（人間が見やすい速度）
+
       } else if (phase.startsWith('bet')) {
-        setTimeout(() => {
-          if (!this.currentTable) return;
-          // FastFold判定
-          if (!this.hasFastFolded && Math.random() < FAST_FOLD_RATE) {
-            this.hasFastFolded = true;
-            s.emit('z:fastFold', { poolId: this.poolId });
-          } else {
-            const fakeRoom   = { currentBet: meta?.currentBet ?? 0, raiseCount: meta?.raiseCount ?? 0 };
-            const fakePlayer = { bet: me.bet ?? 0 };
-            const action = decideBotBetAction(fakeRoom, fakePlayer);
-            s.emit('betAction', { roomId: this.currentTable, action });
-          }
-        }, 400 + Math.random() * 1200);
+        // bet0のみFastFold判定（遅延付き → Fujitaが先に操作できる時間を確保）
+        if (!this.hasFastFolded && phase === 'bet0' && Math.random() < FAST_FOLD_RATE) {
+          this.hasFastFolded = true;
+          setTimeout(() => {
+            if (this.currentTable !== tableNow) return;
+            s.emit('z:fastFold', { poolId: this.poolId, roomId: tableNow });
+          }, 1000 + Math.random() * 1500);  // 1.0-2.5秒
+        } else {
+          // ルールベース判断（適度な遅延）
+          const toCall = Math.max(0, (meta?.currentBet ?? 0) - (me.bet ?? 0));
+          const action = toCall === 0 ? 'check' : (toCall > (me.chips ?? 1000) / 2 ? 'fold' : 'call');
+          setTimeout(() => {
+            if (this.currentTable !== tableNow) return;
+            s.emit('betAction', { roomId: tableNow, action });
+          }, 600 + Math.random() * 1000);  // 0.6-1.6秒
+        }
       }
     });
 

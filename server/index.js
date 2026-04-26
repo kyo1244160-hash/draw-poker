@@ -126,6 +126,16 @@ function getLobbyList() {
 // ■ サーバー起動
 // ==========================================================
 log('🔧 サーバー起動中...');
+
+// ===== 必須環境変数チェック =====
+const REQUIRED_ENV = ['NEXTAUTH_SECRET', 'DATABASE_URL'];
+for (const key of REQUIRED_ENV) {
+  if (!process.env[key]) {
+    console.error(`[startup] ❌ 必須環境変数 ${key} が未設定です。サーバーを終了します。`);
+    process.exit(1);
+  }
+}
+
 app.prepare().then(async () => {
   log('✓ Next.js 準備完了');
 
@@ -231,6 +241,10 @@ app.prepare().then(async () => {
   // _makeTimeoutHandler(io, roomId) をtournamentManager用にラップ
   tournamentManager.init(io, (roomId) => _makeTimeoutHandler(io, roomId), null, (accountId) => _connectedUsers.get(accountId) ?? null);
 
+  // BOT モデルのプリロード（起動時に全 ONNX セッションをメモリに展開）
+  const { preloadAll: preloadBotModels } = require('./poker/botModel');
+  preloadBotModels().catch(err => log(`[BotModel] preload error: ${err.message}`));
+
   io.on('connection', (socket) => {
     logDev(`[connect] ${socket.id}`);
     socket.emit('roomList', getLobbyList());
@@ -254,7 +268,9 @@ app.prepare().then(async () => {
             if (!r0) continue;
             const found0 = [...r0.players, ...r0.pendingPlayers].find(p => p.name === user.nickname);
             if (found0) {
-              // accountId を補完してから検索に使えるようにする
+              // accountId を補完: 再接続時にサーバー再起動でaccountIdが消えた場合の復元。
+              // found0 はゲームState内プレイヤーへの参照だが、accountIdの補完のみを行い
+              // ゲームロジックに影響する他フィールドは変更しないため副作用は限定的。
               if (!found0.accountId && user.accountId) found0.accountId = user.accountId;
               tableId = tid;
               logDev(`[t:getMyTable] ${user.nickname}: found by nickname on ${tid.slice(-8)} (accountId補完)`);
@@ -693,11 +709,11 @@ app.prepare().then(async () => {
         // socket.id と currentPlayer.id の不一致が最も多い原因（テーブル移動後）
         const _curPlayer = _r?.players[_r?.actionIndex];
         const _idMatch = _curPlayer?.id === socket.id;
-        log(`[betAction-debug] REJECTED user=${user?.nickname} action=${action}`);
-        log(`[betAction-debug]   roomId=${roomId?.slice(-8)} socketId=${socket.id.slice(-8)}`);
-        log(`[betAction-debug]   phase=${_r?.phase ?? 'no-room'} actionIdx=${_r?.actionIndex}`);
-        log(`[betAction-debug]   currentPlayer=${_curPlayer?.name}(id=${_curPlayer?.id?.slice(-8)}) idMatch=${_idMatch}`);
-        log(`[betAction-debug]   allPlayers=[${_r?.players?.map(p => `${p.name}:${p.id.slice(-8)}`).join(',')}]`);
+        logDev(`[betAction-debug] REJECTED user=${user?.nickname} action=${action}`);
+        logDev(`[betAction-debug]   roomId=${roomId?.slice(-8)} socketId=${socket.id.slice(-8)}`);
+        logDev(`[betAction-debug]   phase=${_r?.phase ?? 'no-room'} actionIdx=${_r?.actionIndex}`);
+        logDev(`[betAction-debug]   currentPlayer=${_curPlayer?.name}(id=${_curPlayer?.id?.slice(-8)}) idMatch=${_idMatch}`);
+        logDev(`[betAction-debug]   allPlayers=[${_r?.players?.map(p => `${p.name}:${p.id.slice(-8)}`).join(',')}]`);
         socket.emit('error', { message: 'そのアクションはできません' }); return;
       }
       resetTimeout(roomId, socket.id);

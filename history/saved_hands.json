@@ -1,0 +1,2832 @@
+[
+  {
+    "winner_ids": [
+      1
+    ],
+    "pot": 34.0,
+    "share": 34.0,
+    "hand_number": 1,
+    "game_type": 2,
+    "timestamp": "2026-03-29T18:49:46.360261",
+    "snapshots": [
+      {
+        "street": 0,
+        "pot": 1.5,
+        "players": [
+          {
+            "player_id": 0,
+            "is_human": true,
+            "stack": 100.0,
+            "hand": [
+              {
+                "rank": 12,
+                "suit": 1
+              },
+              {
+                "rank": 14,
+                "suit": 3
+              },
+              {
+                "rank": 7,
+                "suit": 3
+              },
+              {
+                "rank": 3,
+                "suit": 2
+              }
+            ],
+            "position": 0,
+            "folded": false,
+            "draw_counts": [
+              2,
+              2
+            ]
+          },
+          {
+            "player_id": 1,
+            "is_human": false,
+            "stack": 99.5,
+            "hand": [
+              {
+                "rank": 6,
+                "suit": 3
+              },
+              {
+                "rank": 7,
+                "suit": 0
+              },
+              {
+                "rank": 11,
+                "suit": 2
+              },
+              {
+                "rank": 3,
+                "suit": 3
+              }
+            ],
+            "position": 1,
+            "folded": false,
+            "draw_counts": [
+              1,
+              0,
+              0
+            ]
+          },
+          {
+            "player_id": 2,
+            "is_human": false,
+            "stack": 99.0,
+            "hand": [
+              {
+                "rank": 3,
+                "suit": 0
+              },
+              {
+                "rank": 9,
+                "suit": 0
+              },
+              {
+                "rank": 13,
+                "suit": 1
+              },
+              {
+                "rank": 2,
+                "suit": 2
+              }
+            ],
+            "position": 2,
+            "folded": false,
+            "draw_counts": [
+              1,
+              1,
+              1
+            ]
+          },
+          {
+            "player_id": 3,
+            "is_human": false,
+            "stack": 100.0,
+            "hand": [
+              {
+                "rank": 5,
+                "suit": 0
+              },
+              {
+                "rank": 10,
+                "suit": 3
+              },
+              {
+                "rank": 8,
+                "suit": 2
+              },
+              {
+                "rank": 14,
+                "suit": 2
+              }
+            ],
+            "position": 3,
+            "folded": false,
+            "draw_counts": []
+          },
+          {
+            "player_id": 4,
+            "is_human": false,
+            "stack": 100.0,
+            "hand": [
+              {
+                "rank": 9,
+                "suit": 3
+              },
+              {
+                "rank": 5,
+                "suit": 1
+              },
+              {
+                "rank": 8,
+                "suit": 0
+              },
+              {
+                "rank": 6,
+                "suit": 1
+              }
+            ],
+            "position": 4,
+            "folded": false,
+            "draw_counts": [
+              1,
+              1,
+              1
+            ]
+          },
+          {
+            "player_id": 5,
+            "is_human": false,
+            "stack": 100.0,
+            "hand": [
+              {
+                "rank": 4,
+                "suit": 0
+              },
+              {
+                "rank": 2,
+                "suit": 0
+              },
+              {
+                "rank": 5,
+                "suit": 2
+              },
+              {
+                "rank": 12,
+                "suit": 2
+              }
+            ],
+            "position": 5,
+            "folded": false,
+            "draw_counts": [
+              2,
+              1,
+              1
+            ]
+          }
+        ],
+        "action_history": []
+      },
+      {
+        "street": 1,
+        "pot": 11.0,
+        "players": [
+          {
+            "player_id": 0,
+            "is_human": true,
+            "stack": 98.0,
+            "hand": [
+              {
+                "rank": 6,
+                "suit": 2
+              },
+              {
+                "rank": 14,
+                "suit": 3
+              },
+              {
+                "rank": 13,
+                "suit": 0
+              },
+              {
+                "rank": 3,
+                "suit": 2
+              }
+            ],
+            "position": 0,
+            "folded": false,
+            "draw_counts": [
+              2,
+              2
+            ]
+          },
+          {
+            "player_id": 1,
+            "is_human": false,
+            "stack": 97.0,
+            "hand": [
+              {
+                "rank": 2,
+                "suit": 1
+              },
+              {
+                "rank": 7,
+                "suit": 0
+              },
+              {
+                "rank": 11,
+                "suit": 2
+              },
+              {
+                "rank": 3,
+                "suit": 3
+              }
+            ],
+            "position": 1,
+            "folded": false,
+            "draw_counts": [
+              1,
+              0,
+              0
+            ]
+          },
+          {
+            "player_id": 2,
+            "is_human": false,
+            "stack": 96.0,
+            "hand": [
+              {
+                "rank": 3,
+                "suit": 0
+              },
+              {
+                "rank": 7,
+                "suit": 1
+              },
+              {
+                "rank": 13,
+                "suit": 1
+              },
+              {
+                "rank": 2,
+                "suit": 2
+              }
+            ],
+            "position": 2,
+            "folded": false,
+            "draw_counts": [
+              1,
+              1,
+              1
+            ]
+          },
+          {
+            "player_id": 3,
+            "is_human": false,
+            "stack": 100.0,
+            "hand": [
+              {
+                "rank": 5,
+                "suit": 0
+              },
+              {
+                "rank": 10,
+                "suit": 3
+              },
+              {
+                "rank": 8,
+                "suit": 2
+              },
+              {
+                "rank": 14,
+                "suit": 2
+              }
+            ],
+            "position": 3,
+            "folded": true,
+            "draw_counts": []
+          },
+          {
+            "player_id": 4,
+            "is_human": false,
+            "stack": 99.0,
+            "hand": [
+              {
+                "rank": 9,
+                "suit": 3
+              },
+              {
+                "rank": 5,
+                "suit": 1
+              },
+              {
+                "rank": 8,
+                "suit": 0
+              },
+              {
+                "rank": 10,
+                "suit": 1
+              }
+            ],
+            "position": 4,
+            "folded": false,
+            "draw_counts": [
+              1,
+              1,
+              1
+            ]
+          },
+          {
+            "player_id": 5,
+            "is_human": false,
+            "stack": 99.0,
+            "hand": [
+              {
+                "rank": 8,
+                "suit": 3
+              },
+              {
+                "rank": 2,
+                "suit": 0
+              },
+              {
+                "rank": 5,
+                "suit": 2
+              },
+              {
+                "rank": 7,
+                "suit": 2
+              }
+            ],
+            "position": 5,
+            "folded": false,
+            "draw_counts": [
+              2,
+              1,
+              1
+            ]
+          }
+        ],
+        "action_history": [
+          {
+            "player_id": 3,
+            "street": 0,
+            "action": 0,
+            "amount": 0.0,
+            "discards": []
+          },
+          {
+            "player_id": 4,
+            "street": 0,
+            "action": 2,
+            "amount": 1.0,
+            "discards": []
+          },
+          {
+            "player_id": 5,
+            "street": 0,
+            "action": 2,
+            "amount": 1.0,
+            "discards": []
+          },
+          {
+            "player_id": 0,
+            "street": 0,
+            "action": 4,
+            "amount": 2.0,
+            "discards": []
+          },
+          {
+            "player_id": 1,
+            "street": 0,
+            "action": 4,
+            "amount": 2.5,
+            "discards": []
+          },
+          {
+            "player_id": 2,
+            "street": 0,
+            "action": 4,
+            "amount": 3.0,
+            "discards": []
+          },
+          {
+            "player_id": 0,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              0,
+              2
+            ]
+          },
+          {
+            "player_id": 1,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              0
+            ]
+          },
+          {
+            "player_id": 2,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              1
+            ]
+          },
+          {
+            "player_id": 4,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              3
+            ]
+          },
+          {
+            "player_id": 5,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              0,
+              3
+            ]
+          }
+        ]
+      },
+      {
+        "street": 2,
+        "pot": 18.0,
+        "players": [
+          {
+            "player_id": 0,
+            "is_human": true,
+            "stack": 96.0,
+            "hand": [
+              {
+                "rank": 12,
+                "suit": 3
+              },
+              {
+                "rank": 14,
+                "suit": 3
+              },
+              {
+                "rank": 9,
+                "suit": 1
+              },
+              {
+                "rank": 3,
+                "suit": 2
+              }
+            ],
+            "position": 0,
+            "folded": false,
+            "draw_counts": [
+              2,
+              2
+            ]
+          },
+          {
+            "player_id": 1,
+            "is_human": false,
+            "stack": 96.0,
+            "hand": [
+              {
+                "rank": 2,
+                "suit": 1
+              },
+              {
+                "rank": 7,
+                "suit": 0
+              },
+              {
+                "rank": 11,
+                "suit": 2
+              },
+              {
+                "rank": 3,
+                "suit": 3
+              }
+            ],
+            "position": 1,
+            "folded": false,
+            "draw_counts": [
+              1,
+              0,
+              0
+            ]
+          },
+          {
+            "player_id": 2,
+            "is_human": false,
+            "stack": 95.0,
+            "hand": [
+              {
+                "rank": 3,
+                "suit": 0
+              },
+              {
+                "rank": 7,
+                "suit": 1
+              },
+              {
+                "rank": 12,
+                "suit": 0
+              },
+              {
+                "rank": 2,
+                "suit": 2
+              }
+            ],
+            "position": 2,
+            "folded": false,
+            "draw_counts": [
+              1,
+              1,
+              1
+            ]
+          },
+          {
+            "player_id": 3,
+            "is_human": false,
+            "stack": 100.0,
+            "hand": [
+              {
+                "rank": 5,
+                "suit": 0
+              },
+              {
+                "rank": 10,
+                "suit": 3
+              },
+              {
+                "rank": 8,
+                "suit": 2
+              },
+              {
+                "rank": 14,
+                "suit": 2
+              }
+            ],
+            "position": 3,
+            "folded": true,
+            "draw_counts": []
+          },
+          {
+            "player_id": 4,
+            "is_human": false,
+            "stack": 98.0,
+            "hand": [
+              {
+                "rank": 9,
+                "suit": 3
+              },
+              {
+                "rank": 5,
+                "suit": 1
+              },
+              {
+                "rank": 8,
+                "suit": 0
+              },
+              {
+                "rank": 4,
+                "suit": 1
+              }
+            ],
+            "position": 4,
+            "folded": false,
+            "draw_counts": [
+              1,
+              1,
+              1
+            ]
+          },
+          {
+            "player_id": 5,
+            "is_human": false,
+            "stack": 97.0,
+            "hand": [
+              {
+                "rank": 8,
+                "suit": 3
+              },
+              {
+                "rank": 2,
+                "suit": 0
+              },
+              {
+                "rank": 5,
+                "suit": 2
+              },
+              {
+                "rank": 8,
+                "suit": 1
+              }
+            ],
+            "position": 5,
+            "folded": false,
+            "draw_counts": [
+              2,
+              1,
+              1
+            ]
+          }
+        ],
+        "action_history": [
+          {
+            "player_id": 3,
+            "street": 0,
+            "action": 0,
+            "amount": 0.0,
+            "discards": []
+          },
+          {
+            "player_id": 4,
+            "street": 0,
+            "action": 2,
+            "amount": 1.0,
+            "discards": []
+          },
+          {
+            "player_id": 5,
+            "street": 0,
+            "action": 2,
+            "amount": 1.0,
+            "discards": []
+          },
+          {
+            "player_id": 0,
+            "street": 0,
+            "action": 4,
+            "amount": 2.0,
+            "discards": []
+          },
+          {
+            "player_id": 1,
+            "street": 0,
+            "action": 4,
+            "amount": 2.5,
+            "discards": []
+          },
+          {
+            "player_id": 2,
+            "street": 0,
+            "action": 4,
+            "amount": 3.0,
+            "discards": []
+          },
+          {
+            "player_id": 0,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              0,
+              2
+            ]
+          },
+          {
+            "player_id": 1,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              0
+            ]
+          },
+          {
+            "player_id": 2,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              1
+            ]
+          },
+          {
+            "player_id": 4,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              3
+            ]
+          },
+          {
+            "player_id": 5,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              0,
+              3
+            ]
+          },
+          {
+            "player_id": 1,
+            "street": 1,
+            "action": 3,
+            "amount": 1.0,
+            "discards": []
+          },
+          {
+            "player_id": 2,
+            "street": 1,
+            "action": 2,
+            "amount": 1.0,
+            "discards": []
+          },
+          {
+            "player_id": 4,
+            "street": 1,
+            "action": 2,
+            "amount": 1.0,
+            "discards": []
+          },
+          {
+            "player_id": 5,
+            "street": 1,
+            "action": 4,
+            "amount": 2.0,
+            "discards": []
+          },
+          {
+            "player_id": 0,
+            "street": 1,
+            "action": 2,
+            "amount": 2.0,
+            "discards": []
+          },
+          {
+            "player_id": 0,
+            "street": 1,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              0,
+              2
+            ]
+          },
+          {
+            "player_id": 1,
+            "street": 1,
+            "action": 1,
+            "amount": 0,
+            "discards": []
+          },
+          {
+            "player_id": 2,
+            "street": 1,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              2
+            ]
+          },
+          {
+            "player_id": 4,
+            "street": 1,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              3
+            ]
+          },
+          {
+            "player_id": 5,
+            "street": 1,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              3
+            ]
+          }
+        ]
+      },
+      {
+        "street": 3,
+        "pot": 24.0,
+        "players": [
+          {
+            "player_id": 0,
+            "is_human": true,
+            "stack": 96.0,
+            "hand": [
+              {
+                "rank": 12,
+                "suit": 3
+              },
+              {
+                "rank": 14,
+                "suit": 3
+              },
+              {
+                "rank": 9,
+                "suit": 1
+              },
+              {
+                "rank": 3,
+                "suit": 2
+              }
+            ],
+            "position": 0,
+            "folded": true,
+            "draw_counts": [
+              2,
+              2
+            ]
+          },
+          {
+            "player_id": 1,
+            "is_human": false,
+            "stack": 96.0,
+            "hand": [
+              {
+                "rank": 2,
+                "suit": 1
+              },
+              {
+                "rank": 7,
+                "suit": 0
+              },
+              {
+                "rank": 11,
+                "suit": 2
+              },
+              {
+                "rank": 3,
+                "suit": 3
+              }
+            ],
+            "position": 1,
+            "folded": false,
+            "draw_counts": [
+              1,
+              0,
+              0
+            ]
+          },
+          {
+            "player_id": 2,
+            "is_human": false,
+            "stack": 93.0,
+            "hand": [
+              {
+                "rank": 3,
+                "suit": 0
+              },
+              {
+                "rank": 7,
+                "suit": 1
+              },
+              {
+                "rank": 14,
+                "suit": 1
+              },
+              {
+                "rank": 2,
+                "suit": 2
+              }
+            ],
+            "position": 2,
+            "folded": false,
+            "draw_counts": [
+              1,
+              1,
+              1
+            ]
+          },
+          {
+            "player_id": 3,
+            "is_human": false,
+            "stack": 100.0,
+            "hand": [
+              {
+                "rank": 5,
+                "suit": 0
+              },
+              {
+                "rank": 10,
+                "suit": 3
+              },
+              {
+                "rank": 8,
+                "suit": 2
+              },
+              {
+                "rank": 14,
+                "suit": 2
+              }
+            ],
+            "position": 3,
+            "folded": true,
+            "draw_counts": []
+          },
+          {
+            "player_id": 4,
+            "is_human": false,
+            "stack": 96.0,
+            "hand": [
+              {
+                "rank": 9,
+                "suit": 3
+              },
+              {
+                "rank": 4,
+                "suit": 2
+              },
+              {
+                "rank": 8,
+                "suit": 0
+              },
+              {
+                "rank": 4,
+                "suit": 1
+              }
+            ],
+            "position": 4,
+            "folded": false,
+            "draw_counts": [
+              1,
+              1,
+              1
+            ]
+          },
+          {
+            "player_id": 5,
+            "is_human": false,
+            "stack": 95.0,
+            "hand": [
+              {
+                "rank": 8,
+                "suit": 3
+              },
+              {
+                "rank": 2,
+                "suit": 0
+              },
+              {
+                "rank": 5,
+                "suit": 2
+              },
+              {
+                "rank": 13,
+                "suit": 3
+              }
+            ],
+            "position": 5,
+            "folded": false,
+            "draw_counts": [
+              2,
+              1,
+              1
+            ]
+          }
+        ],
+        "action_history": [
+          {
+            "player_id": 3,
+            "street": 0,
+            "action": 0,
+            "amount": 0.0,
+            "discards": []
+          },
+          {
+            "player_id": 4,
+            "street": 0,
+            "action": 2,
+            "amount": 1.0,
+            "discards": []
+          },
+          {
+            "player_id": 5,
+            "street": 0,
+            "action": 2,
+            "amount": 1.0,
+            "discards": []
+          },
+          {
+            "player_id": 0,
+            "street": 0,
+            "action": 4,
+            "amount": 2.0,
+            "discards": []
+          },
+          {
+            "player_id": 1,
+            "street": 0,
+            "action": 4,
+            "amount": 2.5,
+            "discards": []
+          },
+          {
+            "player_id": 2,
+            "street": 0,
+            "action": 4,
+            "amount": 3.0,
+            "discards": []
+          },
+          {
+            "player_id": 0,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              0,
+              2
+            ]
+          },
+          {
+            "player_id": 1,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              0
+            ]
+          },
+          {
+            "player_id": 2,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              1
+            ]
+          },
+          {
+            "player_id": 4,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              3
+            ]
+          },
+          {
+            "player_id": 5,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              0,
+              3
+            ]
+          },
+          {
+            "player_id": 1,
+            "street": 1,
+            "action": 3,
+            "amount": 1.0,
+            "discards": []
+          },
+          {
+            "player_id": 2,
+            "street": 1,
+            "action": 2,
+            "amount": 1.0,
+            "discards": []
+          },
+          {
+            "player_id": 4,
+            "street": 1,
+            "action": 2,
+            "amount": 1.0,
+            "discards": []
+          },
+          {
+            "player_id": 5,
+            "street": 1,
+            "action": 4,
+            "amount": 2.0,
+            "discards": []
+          },
+          {
+            "player_id": 0,
+            "street": 1,
+            "action": 2,
+            "amount": 2.0,
+            "discards": []
+          },
+          {
+            "player_id": 0,
+            "street": 1,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              0,
+              2
+            ]
+          },
+          {
+            "player_id": 1,
+            "street": 1,
+            "action": 1,
+            "amount": 0,
+            "discards": []
+          },
+          {
+            "player_id": 2,
+            "street": 1,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              2
+            ]
+          },
+          {
+            "player_id": 4,
+            "street": 1,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              3
+            ]
+          },
+          {
+            "player_id": 5,
+            "street": 1,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              3
+            ]
+          },
+          {
+            "player_id": 1,
+            "street": 2,
+            "action": 1,
+            "amount": 0.0,
+            "discards": []
+          },
+          {
+            "player_id": 2,
+            "street": 2,
+            "action": 3,
+            "amount": 2.0,
+            "discards": []
+          },
+          {
+            "player_id": 4,
+            "street": 2,
+            "action": 2,
+            "amount": 2.0,
+            "discards": []
+          },
+          {
+            "player_id": 5,
+            "street": 2,
+            "action": 2,
+            "amount": 2.0,
+            "discards": []
+          },
+          {
+            "player_id": 0,
+            "street": 2,
+            "action": 0,
+            "amount": 0.0,
+            "discards": []
+          },
+          {
+            "player_id": 1,
+            "street": 2,
+            "action": 1,
+            "amount": 0,
+            "discards": []
+          },
+          {
+            "player_id": 2,
+            "street": 2,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              2
+            ]
+          },
+          {
+            "player_id": 4,
+            "street": 2,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              1
+            ]
+          },
+          {
+            "player_id": 5,
+            "street": 2,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              3
+            ]
+          }
+        ]
+      }
+    ],
+    "players": [
+      {
+        "player_id": 0,
+        "is_human": true,
+        "stack": 96.0,
+        "hand": [
+          {
+            "rank": 12,
+            "suit": 3
+          },
+          {
+            "rank": 14,
+            "suit": 3
+          },
+          {
+            "rank": 9,
+            "suit": 1
+          },
+          {
+            "rank": 3,
+            "suit": 2
+          }
+        ],
+        "position": 0,
+        "folded": true,
+        "draw_counts": [
+          2,
+          2
+        ]
+      },
+      {
+        "player_id": 1,
+        "is_human": false,
+        "stack": 130.0,
+        "hand": [
+          {
+            "rank": 2,
+            "suit": 1
+          },
+          {
+            "rank": 7,
+            "suit": 0
+          },
+          {
+            "rank": 11,
+            "suit": 2
+          },
+          {
+            "rank": 3,
+            "suit": 3
+          }
+        ],
+        "position": 1,
+        "folded": false,
+        "draw_counts": [
+          1,
+          0,
+          0
+        ]
+      },
+      {
+        "player_id": 2,
+        "is_human": false,
+        "stack": 91.0,
+        "hand": [
+          {
+            "rank": 3,
+            "suit": 0
+          },
+          {
+            "rank": 7,
+            "suit": 1
+          },
+          {
+            "rank": 14,
+            "suit": 1
+          },
+          {
+            "rank": 2,
+            "suit": 2
+          }
+        ],
+        "position": 2,
+        "folded": false,
+        "draw_counts": [
+          1,
+          1,
+          1
+        ]
+      },
+      {
+        "player_id": 3,
+        "is_human": false,
+        "stack": 100.0,
+        "hand": [
+          {
+            "rank": 5,
+            "suit": 0
+          },
+          {
+            "rank": 10,
+            "suit": 3
+          },
+          {
+            "rank": 8,
+            "suit": 2
+          },
+          {
+            "rank": 14,
+            "suit": 2
+          }
+        ],
+        "position": 3,
+        "folded": true,
+        "draw_counts": []
+      },
+      {
+        "player_id": 4,
+        "is_human": false,
+        "stack": 92.0,
+        "hand": [
+          {
+            "rank": 9,
+            "suit": 3
+          },
+          {
+            "rank": 4,
+            "suit": 2
+          },
+          {
+            "rank": 8,
+            "suit": 0
+          },
+          {
+            "rank": 4,
+            "suit": 1
+          }
+        ],
+        "position": 4,
+        "folded": false,
+        "draw_counts": [
+          1,
+          1,
+          1
+        ]
+      },
+      {
+        "player_id": 5,
+        "is_human": false,
+        "stack": 91.0,
+        "hand": [
+          {
+            "rank": 8,
+            "suit": 3
+          },
+          {
+            "rank": 2,
+            "suit": 0
+          },
+          {
+            "rank": 5,
+            "suit": 2
+          },
+          {
+            "rank": 13,
+            "suit": 3
+          }
+        ],
+        "position": 5,
+        "folded": false,
+        "draw_counts": [
+          2,
+          1,
+          1
+        ]
+      }
+    ],
+    "is_saved": true
+  },
+  {
+    "winner_ids": [
+      1
+    ],
+    "pot": 34.0,
+    "share": 34.0,
+    "hand_number": 1,
+    "game_type": 2,
+    "timestamp": "2026-03-29T18:49:46.360261",
+    "snapshots": [
+      {
+        "street": 0,
+        "pot": 1.5,
+        "players": [
+          {
+            "player_id": 0,
+            "is_human": true,
+            "stack": 100.0,
+            "hand": [
+              {
+                "rank": 12,
+                "suit": 1
+              },
+              {
+                "rank": 14,
+                "suit": 3
+              },
+              {
+                "rank": 7,
+                "suit": 3
+              },
+              {
+                "rank": 3,
+                "suit": 2
+              }
+            ],
+            "position": 0,
+            "folded": false,
+            "draw_counts": [
+              2,
+              2
+            ]
+          },
+          {
+            "player_id": 1,
+            "is_human": false,
+            "stack": 99.5,
+            "hand": [
+              {
+                "rank": 6,
+                "suit": 3
+              },
+              {
+                "rank": 7,
+                "suit": 0
+              },
+              {
+                "rank": 11,
+                "suit": 2
+              },
+              {
+                "rank": 3,
+                "suit": 3
+              }
+            ],
+            "position": 1,
+            "folded": false,
+            "draw_counts": [
+              1,
+              0,
+              0
+            ]
+          },
+          {
+            "player_id": 2,
+            "is_human": false,
+            "stack": 99.0,
+            "hand": [
+              {
+                "rank": 3,
+                "suit": 0
+              },
+              {
+                "rank": 9,
+                "suit": 0
+              },
+              {
+                "rank": 13,
+                "suit": 1
+              },
+              {
+                "rank": 2,
+                "suit": 2
+              }
+            ],
+            "position": 2,
+            "folded": false,
+            "draw_counts": [
+              1,
+              1,
+              1
+            ]
+          },
+          {
+            "player_id": 3,
+            "is_human": false,
+            "stack": 100.0,
+            "hand": [
+              {
+                "rank": 5,
+                "suit": 0
+              },
+              {
+                "rank": 10,
+                "suit": 3
+              },
+              {
+                "rank": 8,
+                "suit": 2
+              },
+              {
+                "rank": 14,
+                "suit": 2
+              }
+            ],
+            "position": 3,
+            "folded": false,
+            "draw_counts": []
+          },
+          {
+            "player_id": 4,
+            "is_human": false,
+            "stack": 100.0,
+            "hand": [
+              {
+                "rank": 9,
+                "suit": 3
+              },
+              {
+                "rank": 5,
+                "suit": 1
+              },
+              {
+                "rank": 8,
+                "suit": 0
+              },
+              {
+                "rank": 6,
+                "suit": 1
+              }
+            ],
+            "position": 4,
+            "folded": false,
+            "draw_counts": [
+              1,
+              1,
+              1
+            ]
+          },
+          {
+            "player_id": 5,
+            "is_human": false,
+            "stack": 100.0,
+            "hand": [
+              {
+                "rank": 4,
+                "suit": 0
+              },
+              {
+                "rank": 2,
+                "suit": 0
+              },
+              {
+                "rank": 5,
+                "suit": 2
+              },
+              {
+                "rank": 12,
+                "suit": 2
+              }
+            ],
+            "position": 5,
+            "folded": false,
+            "draw_counts": [
+              2,
+              1,
+              1
+            ]
+          }
+        ],
+        "action_history": []
+      },
+      {
+        "street": 1,
+        "pot": 11.0,
+        "players": [
+          {
+            "player_id": 0,
+            "is_human": true,
+            "stack": 98.0,
+            "hand": [
+              {
+                "rank": 6,
+                "suit": 2
+              },
+              {
+                "rank": 14,
+                "suit": 3
+              },
+              {
+                "rank": 13,
+                "suit": 0
+              },
+              {
+                "rank": 3,
+                "suit": 2
+              }
+            ],
+            "position": 0,
+            "folded": false,
+            "draw_counts": [
+              2,
+              2
+            ]
+          },
+          {
+            "player_id": 1,
+            "is_human": false,
+            "stack": 97.0,
+            "hand": [
+              {
+                "rank": 2,
+                "suit": 1
+              },
+              {
+                "rank": 7,
+                "suit": 0
+              },
+              {
+                "rank": 11,
+                "suit": 2
+              },
+              {
+                "rank": 3,
+                "suit": 3
+              }
+            ],
+            "position": 1,
+            "folded": false,
+            "draw_counts": [
+              1,
+              0,
+              0
+            ]
+          },
+          {
+            "player_id": 2,
+            "is_human": false,
+            "stack": 96.0,
+            "hand": [
+              {
+                "rank": 3,
+                "suit": 0
+              },
+              {
+                "rank": 7,
+                "suit": 1
+              },
+              {
+                "rank": 13,
+                "suit": 1
+              },
+              {
+                "rank": 2,
+                "suit": 2
+              }
+            ],
+            "position": 2,
+            "folded": false,
+            "draw_counts": [
+              1,
+              1,
+              1
+            ]
+          },
+          {
+            "player_id": 3,
+            "is_human": false,
+            "stack": 100.0,
+            "hand": [
+              {
+                "rank": 5,
+                "suit": 0
+              },
+              {
+                "rank": 10,
+                "suit": 3
+              },
+              {
+                "rank": 8,
+                "suit": 2
+              },
+              {
+                "rank": 14,
+                "suit": 2
+              }
+            ],
+            "position": 3,
+            "folded": true,
+            "draw_counts": []
+          },
+          {
+            "player_id": 4,
+            "is_human": false,
+            "stack": 99.0,
+            "hand": [
+              {
+                "rank": 9,
+                "suit": 3
+              },
+              {
+                "rank": 5,
+                "suit": 1
+              },
+              {
+                "rank": 8,
+                "suit": 0
+              },
+              {
+                "rank": 10,
+                "suit": 1
+              }
+            ],
+            "position": 4,
+            "folded": false,
+            "draw_counts": [
+              1,
+              1,
+              1
+            ]
+          },
+          {
+            "player_id": 5,
+            "is_human": false,
+            "stack": 99.0,
+            "hand": [
+              {
+                "rank": 8,
+                "suit": 3
+              },
+              {
+                "rank": 2,
+                "suit": 0
+              },
+              {
+                "rank": 5,
+                "suit": 2
+              },
+              {
+                "rank": 7,
+                "suit": 2
+              }
+            ],
+            "position": 5,
+            "folded": false,
+            "draw_counts": [
+              2,
+              1,
+              1
+            ]
+          }
+        ],
+        "action_history": [
+          {
+            "player_id": 3,
+            "street": 0,
+            "action": 0,
+            "amount": 0.0,
+            "discards": []
+          },
+          {
+            "player_id": 4,
+            "street": 0,
+            "action": 2,
+            "amount": 1.0,
+            "discards": []
+          },
+          {
+            "player_id": 5,
+            "street": 0,
+            "action": 2,
+            "amount": 1.0,
+            "discards": []
+          },
+          {
+            "player_id": 0,
+            "street": 0,
+            "action": 4,
+            "amount": 2.0,
+            "discards": []
+          },
+          {
+            "player_id": 1,
+            "street": 0,
+            "action": 4,
+            "amount": 2.5,
+            "discards": []
+          },
+          {
+            "player_id": 2,
+            "street": 0,
+            "action": 4,
+            "amount": 3.0,
+            "discards": []
+          },
+          {
+            "player_id": 0,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              0,
+              2
+            ]
+          },
+          {
+            "player_id": 1,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              0
+            ]
+          },
+          {
+            "player_id": 2,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              1
+            ]
+          },
+          {
+            "player_id": 4,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              3
+            ]
+          },
+          {
+            "player_id": 5,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              0,
+              3
+            ]
+          }
+        ]
+      },
+      {
+        "street": 2,
+        "pot": 18.0,
+        "players": [
+          {
+            "player_id": 0,
+            "is_human": true,
+            "stack": 96.0,
+            "hand": [
+              {
+                "rank": 12,
+                "suit": 3
+              },
+              {
+                "rank": 14,
+                "suit": 3
+              },
+              {
+                "rank": 9,
+                "suit": 1
+              },
+              {
+                "rank": 3,
+                "suit": 2
+              }
+            ],
+            "position": 0,
+            "folded": false,
+            "draw_counts": [
+              2,
+              2
+            ]
+          },
+          {
+            "player_id": 1,
+            "is_human": false,
+            "stack": 96.0,
+            "hand": [
+              {
+                "rank": 2,
+                "suit": 1
+              },
+              {
+                "rank": 7,
+                "suit": 0
+              },
+              {
+                "rank": 11,
+                "suit": 2
+              },
+              {
+                "rank": 3,
+                "suit": 3
+              }
+            ],
+            "position": 1,
+            "folded": false,
+            "draw_counts": [
+              1,
+              0,
+              0
+            ]
+          },
+          {
+            "player_id": 2,
+            "is_human": false,
+            "stack": 95.0,
+            "hand": [
+              {
+                "rank": 3,
+                "suit": 0
+              },
+              {
+                "rank": 7,
+                "suit": 1
+              },
+              {
+                "rank": 12,
+                "suit": 0
+              },
+              {
+                "rank": 2,
+                "suit": 2
+              }
+            ],
+            "position": 2,
+            "folded": false,
+            "draw_counts": [
+              1,
+              1,
+              1
+            ]
+          },
+          {
+            "player_id": 3,
+            "is_human": false,
+            "stack": 100.0,
+            "hand": [
+              {
+                "rank": 5,
+                "suit": 0
+              },
+              {
+                "rank": 10,
+                "suit": 3
+              },
+              {
+                "rank": 8,
+                "suit": 2
+              },
+              {
+                "rank": 14,
+                "suit": 2
+              }
+            ],
+            "position": 3,
+            "folded": true,
+            "draw_counts": []
+          },
+          {
+            "player_id": 4,
+            "is_human": false,
+            "stack": 98.0,
+            "hand": [
+              {
+                "rank": 9,
+                "suit": 3
+              },
+              {
+                "rank": 5,
+                "suit": 1
+              },
+              {
+                "rank": 8,
+                "suit": 0
+              },
+              {
+                "rank": 4,
+                "suit": 1
+              }
+            ],
+            "position": 4,
+            "folded": false,
+            "draw_counts": [
+              1,
+              1,
+              1
+            ]
+          },
+          {
+            "player_id": 5,
+            "is_human": false,
+            "stack": 97.0,
+            "hand": [
+              {
+                "rank": 8,
+                "suit": 3
+              },
+              {
+                "rank": 2,
+                "suit": 0
+              },
+              {
+                "rank": 5,
+                "suit": 2
+              },
+              {
+                "rank": 8,
+                "suit": 1
+              }
+            ],
+            "position": 5,
+            "folded": false,
+            "draw_counts": [
+              2,
+              1,
+              1
+            ]
+          }
+        ],
+        "action_history": [
+          {
+            "player_id": 3,
+            "street": 0,
+            "action": 0,
+            "amount": 0.0,
+            "discards": []
+          },
+          {
+            "player_id": 4,
+            "street": 0,
+            "action": 2,
+            "amount": 1.0,
+            "discards": []
+          },
+          {
+            "player_id": 5,
+            "street": 0,
+            "action": 2,
+            "amount": 1.0,
+            "discards": []
+          },
+          {
+            "player_id": 0,
+            "street": 0,
+            "action": 4,
+            "amount": 2.0,
+            "discards": []
+          },
+          {
+            "player_id": 1,
+            "street": 0,
+            "action": 4,
+            "amount": 2.5,
+            "discards": []
+          },
+          {
+            "player_id": 2,
+            "street": 0,
+            "action": 4,
+            "amount": 3.0,
+            "discards": []
+          },
+          {
+            "player_id": 0,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              0,
+              2
+            ]
+          },
+          {
+            "player_id": 1,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              0
+            ]
+          },
+          {
+            "player_id": 2,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              1
+            ]
+          },
+          {
+            "player_id": 4,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              3
+            ]
+          },
+          {
+            "player_id": 5,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              0,
+              3
+            ]
+          },
+          {
+            "player_id": 1,
+            "street": 1,
+            "action": 3,
+            "amount": 1.0,
+            "discards": []
+          },
+          {
+            "player_id": 2,
+            "street": 1,
+            "action": 2,
+            "amount": 1.0,
+            "discards": []
+          },
+          {
+            "player_id": 4,
+            "street": 1,
+            "action": 2,
+            "amount": 1.0,
+            "discards": []
+          },
+          {
+            "player_id": 5,
+            "street": 1,
+            "action": 4,
+            "amount": 2.0,
+            "discards": []
+          },
+          {
+            "player_id": 0,
+            "street": 1,
+            "action": 2,
+            "amount": 2.0,
+            "discards": []
+          },
+          {
+            "player_id": 0,
+            "street": 1,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              0,
+              2
+            ]
+          },
+          {
+            "player_id": 1,
+            "street": 1,
+            "action": 1,
+            "amount": 0,
+            "discards": []
+          },
+          {
+            "player_id": 2,
+            "street": 1,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              2
+            ]
+          },
+          {
+            "player_id": 4,
+            "street": 1,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              3
+            ]
+          },
+          {
+            "player_id": 5,
+            "street": 1,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              3
+            ]
+          }
+        ]
+      },
+      {
+        "street": 3,
+        "pot": 24.0,
+        "players": [
+          {
+            "player_id": 0,
+            "is_human": true,
+            "stack": 96.0,
+            "hand": [
+              {
+                "rank": 12,
+                "suit": 3
+              },
+              {
+                "rank": 14,
+                "suit": 3
+              },
+              {
+                "rank": 9,
+                "suit": 1
+              },
+              {
+                "rank": 3,
+                "suit": 2
+              }
+            ],
+            "position": 0,
+            "folded": true,
+            "draw_counts": [
+              2,
+              2
+            ]
+          },
+          {
+            "player_id": 1,
+            "is_human": false,
+            "stack": 96.0,
+            "hand": [
+              {
+                "rank": 2,
+                "suit": 1
+              },
+              {
+                "rank": 7,
+                "suit": 0
+              },
+              {
+                "rank": 11,
+                "suit": 2
+              },
+              {
+                "rank": 3,
+                "suit": 3
+              }
+            ],
+            "position": 1,
+            "folded": false,
+            "draw_counts": [
+              1,
+              0,
+              0
+            ]
+          },
+          {
+            "player_id": 2,
+            "is_human": false,
+            "stack": 93.0,
+            "hand": [
+              {
+                "rank": 3,
+                "suit": 0
+              },
+              {
+                "rank": 7,
+                "suit": 1
+              },
+              {
+                "rank": 14,
+                "suit": 1
+              },
+              {
+                "rank": 2,
+                "suit": 2
+              }
+            ],
+            "position": 2,
+            "folded": false,
+            "draw_counts": [
+              1,
+              1,
+              1
+            ]
+          },
+          {
+            "player_id": 3,
+            "is_human": false,
+            "stack": 100.0,
+            "hand": [
+              {
+                "rank": 5,
+                "suit": 0
+              },
+              {
+                "rank": 10,
+                "suit": 3
+              },
+              {
+                "rank": 8,
+                "suit": 2
+              },
+              {
+                "rank": 14,
+                "suit": 2
+              }
+            ],
+            "position": 3,
+            "folded": true,
+            "draw_counts": []
+          },
+          {
+            "player_id": 4,
+            "is_human": false,
+            "stack": 96.0,
+            "hand": [
+              {
+                "rank": 9,
+                "suit": 3
+              },
+              {
+                "rank": 4,
+                "suit": 2
+              },
+              {
+                "rank": 8,
+                "suit": 0
+              },
+              {
+                "rank": 4,
+                "suit": 1
+              }
+            ],
+            "position": 4,
+            "folded": false,
+            "draw_counts": [
+              1,
+              1,
+              1
+            ]
+          },
+          {
+            "player_id": 5,
+            "is_human": false,
+            "stack": 95.0,
+            "hand": [
+              {
+                "rank": 8,
+                "suit": 3
+              },
+              {
+                "rank": 2,
+                "suit": 0
+              },
+              {
+                "rank": 5,
+                "suit": 2
+              },
+              {
+                "rank": 13,
+                "suit": 3
+              }
+            ],
+            "position": 5,
+            "folded": false,
+            "draw_counts": [
+              2,
+              1,
+              1
+            ]
+          }
+        ],
+        "action_history": [
+          {
+            "player_id": 3,
+            "street": 0,
+            "action": 0,
+            "amount": 0.0,
+            "discards": []
+          },
+          {
+            "player_id": 4,
+            "street": 0,
+            "action": 2,
+            "amount": 1.0,
+            "discards": []
+          },
+          {
+            "player_id": 5,
+            "street": 0,
+            "action": 2,
+            "amount": 1.0,
+            "discards": []
+          },
+          {
+            "player_id": 0,
+            "street": 0,
+            "action": 4,
+            "amount": 2.0,
+            "discards": []
+          },
+          {
+            "player_id": 1,
+            "street": 0,
+            "action": 4,
+            "amount": 2.5,
+            "discards": []
+          },
+          {
+            "player_id": 2,
+            "street": 0,
+            "action": 4,
+            "amount": 3.0,
+            "discards": []
+          },
+          {
+            "player_id": 0,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              0,
+              2
+            ]
+          },
+          {
+            "player_id": 1,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              0
+            ]
+          },
+          {
+            "player_id": 2,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              1
+            ]
+          },
+          {
+            "player_id": 4,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              3
+            ]
+          },
+          {
+            "player_id": 5,
+            "street": 0,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              0,
+              3
+            ]
+          },
+          {
+            "player_id": 1,
+            "street": 1,
+            "action": 3,
+            "amount": 1.0,
+            "discards": []
+          },
+          {
+            "player_id": 2,
+            "street": 1,
+            "action": 2,
+            "amount": 1.0,
+            "discards": []
+          },
+          {
+            "player_id": 4,
+            "street": 1,
+            "action": 2,
+            "amount": 1.0,
+            "discards": []
+          },
+          {
+            "player_id": 5,
+            "street": 1,
+            "action": 4,
+            "amount": 2.0,
+            "discards": []
+          },
+          {
+            "player_id": 0,
+            "street": 1,
+            "action": 2,
+            "amount": 2.0,
+            "discards": []
+          },
+          {
+            "player_id": 0,
+            "street": 1,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              0,
+              2
+            ]
+          },
+          {
+            "player_id": 1,
+            "street": 1,
+            "action": 1,
+            "amount": 0,
+            "discards": []
+          },
+          {
+            "player_id": 2,
+            "street": 1,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              2
+            ]
+          },
+          {
+            "player_id": 4,
+            "street": 1,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              3
+            ]
+          },
+          {
+            "player_id": 5,
+            "street": 1,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              3
+            ]
+          },
+          {
+            "player_id": 1,
+            "street": 2,
+            "action": 1,
+            "amount": 0.0,
+            "discards": []
+          },
+          {
+            "player_id": 2,
+            "street": 2,
+            "action": 3,
+            "amount": 2.0,
+            "discards": []
+          },
+          {
+            "player_id": 4,
+            "street": 2,
+            "action": 2,
+            "amount": 2.0,
+            "discards": []
+          },
+          {
+            "player_id": 5,
+            "street": 2,
+            "action": 2,
+            "amount": 2.0,
+            "discards": []
+          },
+          {
+            "player_id": 0,
+            "street": 2,
+            "action": 0,
+            "amount": 0.0,
+            "discards": []
+          },
+          {
+            "player_id": 1,
+            "street": 2,
+            "action": 1,
+            "amount": 0,
+            "discards": []
+          },
+          {
+            "player_id": 2,
+            "street": 2,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              2
+            ]
+          },
+          {
+            "player_id": 4,
+            "street": 2,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              1
+            ]
+          },
+          {
+            "player_id": 5,
+            "street": 2,
+            "action": 1,
+            "amount": 0,
+            "discards": [
+              3
+            ]
+          }
+        ]
+      }
+    ],
+    "players": [
+      {
+        "player_id": 0,
+        "is_human": true,
+        "stack": 96.0,
+        "hand": [
+          {
+            "rank": 12,
+            "suit": 3
+          },
+          {
+            "rank": 14,
+            "suit": 3
+          },
+          {
+            "rank": 9,
+            "suit": 1
+          },
+          {
+            "rank": 3,
+            "suit": 2
+          }
+        ],
+        "position": 0,
+        "folded": true,
+        "draw_counts": [
+          2,
+          2
+        ]
+      },
+      {
+        "player_id": 1,
+        "is_human": false,
+        "stack": 130.0,
+        "hand": [
+          {
+            "rank": 2,
+            "suit": 1
+          },
+          {
+            "rank": 7,
+            "suit": 0
+          },
+          {
+            "rank": 11,
+            "suit": 2
+          },
+          {
+            "rank": 3,
+            "suit": 3
+          }
+        ],
+        "position": 1,
+        "folded": false,
+        "draw_counts": [
+          1,
+          0,
+          0
+        ]
+      },
+      {
+        "player_id": 2,
+        "is_human": false,
+        "stack": 91.0,
+        "hand": [
+          {
+            "rank": 3,
+            "suit": 0
+          },
+          {
+            "rank": 7,
+            "suit": 1
+          },
+          {
+            "rank": 14,
+            "suit": 1
+          },
+          {
+            "rank": 2,
+            "suit": 2
+          }
+        ],
+        "position": 2,
+        "folded": false,
+        "draw_counts": [
+          1,
+          1,
+          1
+        ]
+      },
+      {
+        "player_id": 3,
+        "is_human": false,
+        "stack": 100.0,
+        "hand": [
+          {
+            "rank": 5,
+            "suit": 0
+          },
+          {
+            "rank": 10,
+            "suit": 3
+          },
+          {
+            "rank": 8,
+            "suit": 2
+          },
+          {
+            "rank": 14,
+            "suit": 2
+          }
+        ],
+        "position": 3,
+        "folded": true,
+        "draw_counts": []
+      },
+      {
+        "player_id": 4,
+        "is_human": false,
+        "stack": 92.0,
+        "hand": [
+          {
+            "rank": 9,
+            "suit": 3
+          },
+          {
+            "rank": 4,
+            "suit": 2
+          },
+          {
+            "rank": 8,
+            "suit": 0
+          },
+          {
+            "rank": 4,
+            "suit": 1
+          }
+        ],
+        "position": 4,
+        "folded": false,
+        "draw_counts": [
+          1,
+          1,
+          1
+        ]
+      },
+      {
+        "player_id": 5,
+        "is_human": false,
+        "stack": 91.0,
+        "hand": [
+          {
+            "rank": 8,
+            "suit": 3
+          },
+          {
+            "rank": 2,
+            "suit": 0
+          },
+          {
+            "rank": 5,
+            "suit": 2
+          },
+          {
+            "rank": 13,
+            "suit": 3
+          }
+        ],
+        "position": 5,
+        "folded": false,
+        "draw_counts": [
+          2,
+          1,
+          1
+        ]
+      }
+    ],
+    "is_saved": true
+  }
+]

@@ -37,7 +37,7 @@ interface Meta {
   pendingPlayers: string[]; playerCount: number; maxPlayers: number;
 }
 
-interface Props { roomId: string; name: string; mode: '27' | 'badugi' | 'mix'; onFastFold?: () => void; }
+interface Props { roomId: string; name: string; mode: '27' | 'badugi' | 'mix'; onFastFold?: () => void; onFoldStay?: () => void; }
 
 // ===== 定数 =====
 const PHASE_LABEL: Record<string,string> = {
@@ -48,7 +48,7 @@ const PHASE_LABEL: Record<string,string> = {
 const MODE_LABEL: Record<string,string> = { '27':'2-7 Triple Draw', badugi:'Badugi', mix:'Mix' };
 
 // ===== メインコンポーネント =====
-const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
+const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldStay }) => {
   const router = useRouter();
 
   const [players,       setPlayers]       = useState<Player[]>([]);
@@ -90,16 +90,23 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
       if (w >= 768) { setLayout('pc'); return; }
       setLayout(w < h ? 'portrait' : 'landscape');
     };
+    // orientationchange はアロー関数を変数に切り出してアンマウント時に削除できるようにする
+    const onOrientationChange = () => setTimeout(update, 100);
     update();
     window.addEventListener('resize', update);
-    window.addEventListener('orientationchange', () => setTimeout(update, 100));
-    return () => { window.removeEventListener('resize', update); };
+    window.addEventListener('orientationchange', onOrientationChange);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('orientationchange', onOrientationChange);
+    };
   }, []);
 
   // ===== Socket.IO =====
   useEffect(() => {
     const onConnect     = () => socket.emit('joinRoom', { roomId });
     const onGameState   = ({ players:pl, meta:m }: { players:Player[]; meta:Meta }) => {
+      // 別テーブルの gameState は無視（FastFold後に旧テーブルのbroadcastが届く対策）
+      if ((m as any).roomId && (m as any).roomId !== roomId) return;
       setMeta((prev) => { return m; });
       setPlayers(pl);
       // pending待機中にgameStateが届いた = ゲーム開始 or 自分が参加中 → メッセージ消去
@@ -324,14 +331,28 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
   const audioCtxRef = React.useRef<AudioContext | null>(null);
   const prevIsMyTurnRef = React.useRef<boolean>(false);
 
+  // AudioContext をページロード時に suspended 状態で生成し、
+  // 最初の pointerdown で resume() する。
+  // これにより「参加ボタンを押す = pointerdown」の時点で再生可能になり、
+  // ゲーム開始直後の最初のターンでも音が鳴る。
   React.useEffect(() => {
-    const init = () => {
-      if (!audioCtxRef.current) {
-        audioCtxRef.current = new (window.AudioContext || (window as unknown as Record<string,unknown>).webkitAudioContext as typeof AudioContext)();
+    if (typeof window === 'undefined') return;
+    const AudioContextClass = window.AudioContext
+      || (window as unknown as Record<string, unknown>).webkitAudioContext as typeof AudioContext;
+    if (!AudioContextClass) return;
+    // suspended 状態で作成（ブラウザの自動再生ポリシーに準拠）
+    audioCtxRef.current = new AudioContextClass();
+    const resume = () => {
+      if (audioCtxRef.current?.state === 'suspended') {
+        audioCtxRef.current.resume();
       }
     };
-    window.addEventListener('pointerdown', init, { once: true });
-    return () => window.removeEventListener('pointerdown', init);
+    window.addEventListener('pointerdown', resume);
+    return () => {
+      window.removeEventListener('pointerdown', resume);
+      audioCtxRef.current?.close();
+      audioCtxRef.current = null;
+    };
   }, []);
 
   React.useEffect(() => {
@@ -339,6 +360,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
     prevIsMyTurnRef.current = isMyTurn;
     if (!wasMyTurn && isMyTurn && audioCtxRef.current) {
       const ctx = audioCtxRef.current;
+      if (ctx.state === 'suspended') return; // まだユーザー操作前なら鳴らさない
       // 「ピピピッ」: 1000Hz の短いビープを 3 回（間隔 0.12秒）
       const freq = 1000;
       const dur  = 0.07;   // 1音の長さ
@@ -375,7 +397,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
     setMyDrew(true); setSelected([]);
   };
   const clearSelected = () => { setSelected([]); socket.emit('updateSelected',{roomId,indices:[]}); };
-  const handleBet   = (action:string) => socket.emit('betAction', {roomId, action});
+  const handleBet   = (action: string) => { socket.emit('betAction', { roomId, action }); };
   const handleLeave = () => { socket.emit('leaveRoom', {roomId}); router.push('/'); };
   const handleLeaveReserve = (type: 'afterHand'|'nextBB'|'cancel') => {
     socket.emit('reserveLeave', { roomId, type });
@@ -517,24 +539,20 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
           {(self.toCall!>0 ? ('コール: '+self.toCall) : 'チェック or ベット')}
           <span style={{fontSize:9,opacity:0.65,marginLeft:6}}>{'単位:'+self.betSize+' Bet '+raiseDisplay}</span>
         </div>
-        {/* 行1: フォールド | コール or チェック */}
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>
-          {btn(()=>handleBet('fold'),'フォールド','red')}
+        {/* 横1行レイアウト: bet0かつFastFold部屋の場合はFoldボタンを⚡次へ/📺観戦に置き換え */}
+        <div style={{display:'flex',gap:6}}>
+          {!self.canCheck && (onFastFold && onFoldStay && meta.phase==='bet0'
+            ? <>{btn(onFastFold,'⚡ 次へ','gold')}{btn(onFoldStay,'📺 観戦','red')}</>
+            : btn(()=>handleBet('fold'),'フォールド','red')
+          )}
           {self.canCheck
             ? btn(()=>handleBet('check'),'チェック','gray')
-            : btn(()=>handleBet('call'),'コール ('+self.toCall+')','gray')
+            : btn(()=>handleBet('call'),'コール('+self.toCall+')','gray')
           }
+          {self.canRaise&&btn(()=>handleBet(meta.currentBet===0?'bet':'raise'),
+            meta.currentBet===0?('BET+'+self.betSize):('RAISE+'+self.betSize),'gold')}
         </div>
-        {/* 行2: レイズ | 退室予約（横並び） */}
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,alignItems:'stretch'}}>
-          {self.canRaise
-            ? btn(()=>handleBet(meta.currentBet===0?'bet':'raise'),
-                meta.currentBet===0 ? ('ベット (+'+self.betSize+')') : ('レイズ (+'+self.betSize+')'),
-                'gold')
-            : <div />
-          }
-          <InlineLeave />
-        </div>
+        <InlineLeave />
       </div>
     );
 
@@ -543,7 +561,9 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
         <div style={{textAlign:'center',fontSize:11,color:'var(--cream-dim)',fontStyle:'italic',fontFamily:'var(--font-body)'}}>
           {curPlayer ? (curPlayer.name+' がアクション中...') : '待機中...'}
         </div>
-        {onFastFold && btn(onFastFold, '⚡ FastFold', 'gold')}
+        {onFastFold && meta.phase==='bet0' && (onFoldStay
+          ? <div style={{display:'flex',gap:6}}>{btn(onFastFold,'⚡ 次へ','gold')}{btn(onFoldStay,'📺 観戦フォールド','red')}</div>
+          : btn(onFastFold,'⚡ FastFold','gold'))}
         <InlineLeave />
       </div>
     );
@@ -560,7 +580,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
             </span>
           )}
         </div>
-        {onFastFold && btn(onFastFold, '⚡ FastFold', 'gold')}
+        {/* showdownではFastFoldボタン非表示（プリドローのみ） */}
         <InlineLeave />
       </div>
     );
@@ -632,7 +652,10 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
           {self.toCall!>0?`コール: ${self.toCall}`:'チェック or ベット'}
           <span style={{fontSize:fs-3,opacity:0.65,display:'block'}}>単位:{self.betSize} Bet {raiseDisplay}</span>
         </div>
-        {btn(()=>handleBet('fold'),'フォールド','red')}
+        {onFastFold && onFoldStay && meta.phase==='bet0'
+          ? <>{btn(onFastFold,'⚡ 次へ','gold')}{btn(onFoldStay,'📺 観戦','red')}</>
+          : btn(()=>handleBet('fold'),'フォールド','red')
+        }
         {self.canCheck
           ? btn(()=>handleBet('check'),'チェック','gray')
           : btn(()=>handleBet('call'),`コール (${self.toCall})`,'gray')
@@ -649,7 +672,9 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
     if (isBetPhase && !isMyTurn) return (
       <div style={actionColStyle}>
         <div style={infoStyle}>{curPlayer?`${curPlayer.name} がアクション中...`:'待機中...'}</div>
-        {onFastFold && btn(onFastFold, '⚡ FastFold', 'gold')}
+        {onFastFold && meta.phase==='bet0' && (onFoldStay
+          ? <div style={{display:'flex',gap:6,width:'100%'}}>{btn(onFastFold,'⚡ 次へ','gold')}{btn(onFoldStay,'📺 観戦フォールド','red')}</div>
+          : btn(onFastFold,'⚡ FastFold','gold'))}
       </div>
     );
 
@@ -666,7 +691,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
             </span>
           )}
         </div>
-        {onFastFold && btn(onFastFold, '⚡ FastFold', 'gold')}
+        {/* showdownではFastFoldボタン非表示（プリドローのみ） */}
       </div>
     );
 
@@ -686,9 +711,10 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
   const NavBar = ({compact=false}:{compact?:boolean}) => (
     <nav style={{
       display:'flex', alignItems:'center', justifyContent:'space-between',
-      padding: compact?'6px 10px':'14px 24px',
+      padding: compact?'3px 8px':'14px 24px',
       borderBottom:'1px solid var(--gold-dim)',
       background:'rgba(0,0,0,0.25)', flexShrink:0,
+      ...(compact ? { height:32, minHeight:32, maxHeight:32, overflow:'hidden' } : {}),
     }}>
       <div style={{display:'flex',alignItems:'center',gap:8}}>
         <img src="/icons/icon-72.png" alt="logo" style={{width:compact?24:32,height:compact?24:32,borderRadius:'50%'}} />
@@ -854,7 +880,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
 
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    const NAV_H  = 44;   // compact NavBar 高さ
+    const NAV_H  = 32;   // compact NavBar 高さ（トーナメントと統一）
     const POT_H  = meta.phase !== 'waiting' ? 32 : 0;
     const RULE_H = 16;
     const ACT_W  = 148;  // アクションカラム幅
@@ -872,10 +898,11 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
     }
     TW = Math.max(TW, 200); TH = Math.max(TH, 140);
 
-    // 楕円半径（プレイヤーが重ならないよう広め）
-    const RX = isPortrait ? TW * 0.42 : TW * 0.44;
-    const RY = isPortrait ? TH * 0.42 : TH * 0.40;
-    const CX = TW / 2;    const CY = TH / 2;
+    // 楕円半径（TournamentTableと統一）
+    const RX = isPortrait ? TW * 0.32 : TW * 0.44;
+    const RY = isPortrait ? TH * 0.36 : TH * 0.40;
+    const CX = TW / 2;
+    const CY = isPortrait ? TH * 0.54 : TH / 2;
 
     // 他プレイヤーbox幅: xs カード5枚(20px)+gap(1px)×4=104px が収まる最小値
     const OTH_BOX_W  = Math.max(138, Math.floor(Math.min(TW, TH) * 0.30));
@@ -887,26 +914,18 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold }) => {
     const SELF_CARD: 'sm'|'md' = 'sm';
     const OTH_CARD:  'xs'|'sm'|'md' = 'xs';
 
-    // portrait: 上部扇状、landscape: 左右対称
+    // portrait: 上部扇状、landscape: 左右対称（TournamentTableと統一）
     const SLOTS = isPortrait
-      ? [145, -145, -90, -35, 35]
+      ? [165, -155, -90, -25, 15]
       : [150, -150,  -90,  -30, 30];
 
     const getPosMobile = (p: Player) => {
       let ang: number;
-      let topOffset = 0;
+      const topOffset = 0;
       if (p.isSelf) { ang = 90; }
       else {
         const idx = others.findIndex((o) => o.id === p.id);
         ang = SLOTS[idx] ?? (-90 + 72 * (idx + 1));
-        // 縦表示: 自プレイヤー（90°）に隣接する左右プレイヤー（idx=0, idx=最後）を上にずらして重なりを防ぐ
-        if (isPortrait && (idx === 0 || idx === others.length - 1)) {
-          topOffset = -45;
-        }
-        // 縦表示: 上側3人（-145°,-90°,-35° → sin<0 = 上部）をタイトルバーから離すため下にずらす
-        if (isPortrait && idx >= 1 && idx <= 3) {
-          topOffset += 40;
-        }
       }
       const rad = (ang * Math.PI) / 180;
       const bw  = p.isSelf ? SELF_BOX_W : OTH_BOX_W;

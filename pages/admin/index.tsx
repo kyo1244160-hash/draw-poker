@@ -993,9 +993,9 @@ export default function AdminPage() {
                   </select>
                 </label>
                 <label style={S.label}>
-                  台数 (1〜6)
+                  台数 (1〜20)
                   <input
-                    type="number" min={1} max={6} style={S.input}
+                    type="number" min={1} max={20} style={S.input}
                     value={botCount}
                     onChange={(e) => setBotCount(Number(e.target.value))}
                   />
@@ -1090,8 +1090,8 @@ export default function AdminPage() {
                   </select>
                 </label>
                 <label style={S.label}>
-                  台数 (1〜6)
-                  <input type="number" min={1} max={6} style={S.input} value={ffCount} onChange={(e) => setFfCount(Number(e.target.value))} />
+                  台数 (1〜20)
+                  <input type="number" min={1} max={20} style={S.input} value={ffCount} onChange={(e) => setFfCount(Number(e.target.value))} />
                 </label>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>

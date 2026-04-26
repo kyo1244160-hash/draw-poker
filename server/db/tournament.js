@@ -140,18 +140,29 @@ async function registerEntry(tournamentId, accountId) {
     }
   }
 
-  // 満員チェック
+  // 満員チェック + upsert をアトミックに実行
+  // SELECT COUNT → INSERT の間に別リクエストが割り込んで定員オーバーになるのを防ぐ
   if (tournament.max_players) {
-    const [{ cnt }] = await sql`
-      SELECT COUNT(*)::int AS cnt
-      FROM tournament_entries
-      WHERE tournament_id = ${tournamentId}
-        AND cancelled_at IS NULL
+    // 満員の場合は INSERT をスキップして null を返すサブクエリ方式
+    const [row] = await sql`
+      INSERT INTO tournament_entries (tournament_id, account_id)
+      SELECT ${tournamentId}, ${accountId}
+      WHERE (
+        SELECT COUNT(*)::int
+        FROM tournament_entries
+        WHERE tournament_id = ${tournamentId}
+          AND cancelled_at IS NULL
+      ) < ${tournament.max_players}
+      ON CONFLICT (tournament_id, account_id) DO UPDATE
+        SET cancelled_at  = NULL,
+            registered_at = NOW()
+      RETURNING *
     `;
-    if (cnt >= tournament.max_players) throw new Error('定員に達しました');
+    if (!row) throw new Error('定員に達しました');
+    return row;
   }
 
-  // upsert（キャンセル済みなら再登録）
+  // max_players 無制限の場合は従来通り upsert
   const [row] = await sql`
     INSERT INTO tournament_entries (tournament_id, account_id)
     VALUES (${tournamentId}, ${accountId})

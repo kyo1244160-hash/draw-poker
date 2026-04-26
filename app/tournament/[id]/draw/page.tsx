@@ -347,6 +347,10 @@ export default function TournamentDrawPage() {
       socket.off('kicked');
       socket.off('error');
     };
+  // 依存配列を空にする意図:
+  // 全ソケットハンドラは tableIdRef / eliminatedRef / fetchReadyRef 等の Ref を経由して
+  // 最新の値を参照するため、初回マウント時の1回のみ登録で正しく動作する。
+  // router は Next.js の useRouter が安定した参照を返すため問題ない。
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -684,7 +688,7 @@ export default function TournamentDrawPage() {
             background: 'linear-gradient(135deg, rgba(18,12,0,0.97), rgba(40,28,0,0.97))',
             border: '3px solid var(--gold)',
             borderRadius: 20,
-            padding: '44px 64px',
+            padding: 'clamp(24px, 5vw, 44px) clamp(20px, 6vw, 48px)',
             textAlign: 'center' as const,
             zIndex: 100,
             animation: 'winnerPulse 1.8s ease-in-out infinite',
@@ -705,10 +709,11 @@ export default function TournamentDrawPage() {
             <button
               onClick={() => handleShareCopy(1, finished?.length ?? 1)}
               style={{
-                marginTop: 20, width: '100%', padding: '10px 0',
+                marginTop: 20, width: '100%', padding: '10px 16px',
                 background: '#000', border: '1px solid #555', borderRadius: 8,
                 color: '#fff', fontSize: 14, fontWeight: 700, cursor: 'pointer',
                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                whiteSpace: 'nowrap', boxSizing: 'border-box',
               }}
             >
               <span style={{ fontWeight: 900 }}>𝕏</span>

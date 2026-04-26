@@ -34,6 +34,10 @@ async function recordTournamentResults(tournamentId, results) {
     throw new Error('このトーナメントの結果はすでに登録されています');
   }
 
+  // トーナメント名を取得（point_history の reason に使用）
+  const [tRow] = await sql`SELECT name FROM tournaments WHERE id = ${tournamentId}`;
+  const tournamentName = tRow?.name ?? tournamentId.slice(-8);
+
   // トランザクションで一括処理
   await sql.begin(async (tx) => {
     // 1. tournament_results に挿入
@@ -56,13 +60,13 @@ async function recordTournamentResults(tournamentId, results) {
                 updated_at   = NOW()
         `;
 
-        // 3. point_history に記録
+        // 3. point_history に記録（トーナメント名を含めて可読性を向上）
         await tx`
           INSERT INTO point_history (account_id, points, reason)
           VALUES (
             ${r.accountId},
             ${points},
-            ${`トーナメント: ${tournamentId} / ${r.finalRank}位`}
+            ${`${tournamentName} / ${r.finalRank}位`}
           )
         `;
       }

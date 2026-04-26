@@ -3,8 +3,7 @@
  * ログ出力ユーティリティ
  *
  * dev(IS_DEV=true) : 全ログを出力
- * prod(IS_DEV=false): 重要ログのみ出力（[pot-display][deck][TBotM][broadcast]等は抑制）
- * ※ [pot]（精算）は本番・開発ともに出力（サイドポットバグ追跡のため）
+ * prod(IS_DEV=false): 重要ログのみ出力（[pot][betAction-debug][deck][TBotM][broadcast]等は抑制）
  *
  * 使い方:
  *   const { log, logDev, logPot } = require('./logger');

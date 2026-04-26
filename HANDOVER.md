@@ -1,4 +1,4 @@
-# Poker Room Pastis — 引き継ぎメモ Vol.5
+# Poker Room Pastis — 引き継ぎメモ Vol.8
 
 ## プロジェクト概要
 - **本番URL**: https://draw-poker.onrender.com
@@ -21,60 +21,58 @@
 
 ---
 
-## このセッション（Vol.5）で完了した修正
+## このセッション（Vol.8）で完了した作業
 
-### fix-v11: バランシング後 socket.id 不一致修正
-- `tournamentManager.js`: `_dissolveTable` と1対1移動で `jr()` 直後に `room.players` の id を最新 socket.id に常時上書き（条件チェック廃止）
+### コードレビュー指摘の全修正（fix-all.zip）
 
-### fix-v12: ハンド開始時ブラインド情報同期
-- `index.js`: `startGame` 成功時に毎回 `broadcastBlind` で `t:blindUpdate` を再送
+以下のファイルを修正済み（bot-model-impl.zip も含む）：
 
-### fix-v13/v14: 脱落・優勝オーバーレイに X シェア追加
-- `EliminatedOverlay.tsx`: `onShare` prop 追加、シェアボタン
-- `draw/page.tsx`: `handleShareCopy` 関数（Canvas 画像生成）、`shareCanvasRef`
-- 定型文: `🃏 Poker Room Pastis でトーナメントに参加しました！\n#PastisPoker\nhttps://draw-poker.onrender.com`
-- フロー: Canvas で結果カード生成 → クリップボードコピー → X 投稿画面が開く
+| ファイル | 修正内容 |
+|---|---|
+| `server/index.js` | 起動時必須ENV チェック・`[betAction-debug]` を `logDev` に・accountId補完コメント・BOTモデルプリロード追加 |
+| `server/logger.js` | `logPot` コメント修正（本番抑制を明記） |
+| `server/poker/deck.js` | `Math.random` → `crypto.randomInt`（暗号論的乱数） |
+| `server/poker/gameManager.js` | `[pot]` ログを `logPot` に・デッキ枯渇 null ハンドリング |
+| `server/tournament/tournamentManager.js` | `_cleanupTables` で `deleteRoom`/`removeBots` 使用・`tournaments` Map 削除・`_disconnectedChips` クリーンアップ・`tournamentId` 保存 |
+| `server/tournament/tournamentBotManager.js` | `'use strict'` 先頭に・`leaveRoom(botId)` 引数修正・phase チェック追加・`async` 化・`decideBotDrawWithRoom` に切り替え |
+| `server/db/tournament.js` | 定員チェックをアトミックなサブクエリに変更 |
+| `server/db/admin.js` | `sql.unsafe` の使用理由コメント追記 |
+| `server/db/points.js` | `point_history.reason` にトーナメント名を含める |
+| `pages/api/tournaments.ts` | `is_test` フィルタ追加 |
+| `pages/api/profile/nickname.ts` | 全 DB コールに try/catch 追加 |
+| `pages/room/[roomId].tsx` | `dynamic({ ssr: false })` で SSR 明示無効化 |
+| `pages/tournament/[id].tsx` | `t:lateRegClosed` 購読 → 即時 `fetchData()` |
+| `components/PokerTable.tsx` | `orientationchange` クリーンアップ・AudioContext `suspended/resume` 方式 |
+| `app/components/TournamentTable.tsx` | AudioContext `suspended/resume` 方式 |
+| `app/tournament/[id]/draw/page.tsx` | useEffect 空依存配列にコメント追加 |
+| `migrations/add_unique_tournament_results.sql` | `tournament_results` UNIQUE 制約（**Supabaseで要実行**） |
 
-### fix-v15〜v18: テーブル移動タイミング修正
-- `sock.leave/join` は即時実行、`t:tableTransfer` 通知のみ 3 秒遅延（showdown 確認時間確保）
-- `applyPendingLevelUp` 末尾の `broadcastBlind` 復活
+### AIモデルBOT統合（bot-model-impl.zip）
 
-### fix-v19: BOT waitZone スキップ + pendingLevelUp kickstart
-- `gameManager.js`: BOT（`tbot::` プレフィックス）は RRoP Rule 16 waitZone をスキップ
-- `tournamentManager.js`: `_pendingLevelUp` で waiting テーブルを kickstart
+| ファイル | 内容 |
+|---|---|
+| `scripts/convert_model.py` | `.pth` → `.onnx` 変換スクリプト（手動実行） |
+| `server/poker/botInfoState.js` | ゲーム状態 → 122次元ベクトル変換（学習コードを完全移植） |
+| `server/poker/botModel.js` | ONNX推論ラッパー（プリロード・フォールバック対応） |
+| `server/poker/botManager.js` | モデル推論優先・ルールベースフォールバック構成に全面改訂 |
+| `models/*.onnx` | 変換済み ONNX モデル 4ファイル（git管理） |
+| `BOT_MODEL_MANUAL.md` | 運用マニュアル |
 
-### fix-v20: t:tableJoin イベント追加
-- `tournamentManager.js`: バランシング時に `sock.join` 直後に即時 `t:tableJoin` を送信
-- `draw/page.tsx`: `t:tableJoin` ハンドラで `tableIdRef.current` を即時更新
-- **目的**: `t:tableTransfer`（3秒後）前に tableIdRef を更新しアクションが旧テーブルに送られるバグを防ぐ
-
-### fix-v21: 再接続時ブラインド情報未更新修正
-- `draw/page.tsx`: 再接続時に `joinRoom` ではなく `t:getMyTable` を使用
-- `joinRoom` は ring game 用で `t:blindUpdate` を再送しない
-
-### fix-v22: stuck デバッグログ追加
-- `[stuck-debug]` プレフィックスでゲームが始まらない原因調査用ログ
-
-### fix-v23: ブラインドアップ連続期限切れ修正
-- `index.js`: `applyPendingLevelUp` をループ化（複数レベルが期限切れの場合に一括適用）
-
-### fix-v23b: _kickstartAfterBalance 多段リトライ
-- `tournamentManager.js`: 300ms/1s/3s/7s の 4 段リトライ
-
-### fix-v24b: `_io=false` バグ修正（最重要・根本修正）
-- `tournamentManager.js`: `init()` で `undefined` 引数は既存値を保持するよう変更
-  - `tournamentManager.init(undefined, undefined, _launchTournament)` が `_io` を上書きしないように
-  - **これが「ゲームが始まらない」「ブラインドアップ表示が消えない」の根本原因だった**
-- `tournamentManager.js`: `_pendingLevelUp` に 3 秒後の再チェックを追加
-- `index.js`: `betAction` 拒否時に `[betAction-debug]` 詳細ログを追加
+**現在のモデル学習状況:**
+- Badugi: **233,536 steps**（変換・動作確認済み）
+- 27TD:   **73,704 steps**（変換・動作確認済み、学習途中）
 
 ---
 
-### fix-v25: 通常トーナメント開始直後にレイトレジスト参加ボタンが表示されない修正
-- `pages/api/tournament/[id]/entry.ts`: 最終フォールバックを `false` → `true`（楽観的）に変更
-- **原因**: レベルベース（`late_reg_minutes=0`）の通常トーナメントで、webpackバンドル境界により `tournamentManager` が別インスタンスになり `lateRegOpen` 取得失敗 → `scheduled_start_at` が過去 → `false` になっていた
-- **安全性**: `_markLateRegClosed()` は終了時に必ず `__pastisLateRegClosed` Set に追加するため、Set 未登録 = まだ開放中が確定。レイトレジスト終了後は正しく `false` が返る
-- **注意**: 同様の修正を Vol.4 で SNG 向けに実施済み（楽観的フォールバック）。今回は通常トーナメントのレベルベースが対象
+## 未デプロイ・未適用の作業
+
+| # | 内容 | ファイル |
+|---|---|---|
+| 1 | **fix-v25**: 通常トーナメント開始直後に参加ボタンが出ない | `pages/api/tournament/[id]/entry.ts` |
+| 2 | **fix-v26**: スマホXシェアの画像添付 / PCシェアシート誤表示 | `draw/page.tsx` `result/page.tsx` |
+| 3 | **fix-all**: コードレビュー全修正（18ファイル） | `fix-all.zip` |
+| 4 | **bot-model**: AIモデルBOT統合 | `bot-model-impl.zip` |
+| 5 | **Supabase UNIQUE 制約** | `migrations/add_unique_tournament_results.sql` を要実行 |
 
 ---
 
@@ -82,45 +80,84 @@
 
 ```
 server/
-  index.js                        — 全修正累積（fix-v11〜v24b）
+  index.js                         — 全修正累積（fix-all + bot preload）
+  logger.js                        — logPot コメント修正
   poker/
-    gameManager.js                — BOT waitZone スキップ（fix-v19）
+    deck.js                        — crypto.randomInt シャッフル
+    gameManager.js                 — pot ログ抑制・デッキ枯渇対策
+    botManager.js                  — モデル推論優先版（NEW）
+    botInfoState.js                — 122次元エンコーダ（NEW）
+    botModel.js                    — ONNX推論ラッパー（NEW）
   tournament/
-    tournamentManager.js          — init()undefined 保護、t:tableJoin、kickstart 多段リトライ
+    tournamentManager.js           — _cleanupTables 修正・Map クリーンアップ
+    tournamentBotManager.js        — async 化・leaveRoom 引数修正・phase ガード
+  db/
+    tournament.js                  — 定員チェック アトミック化
+    admin.js                       — sql.unsafe コメント追記
+    points.js                      — point_history にトーナメント名
 
 pages/
-  api/tournament/[id]/entry.ts    — lateRegOpen 楽観的フォールバック（SNG: Vol.4 / 通常レベルベース: fix-v25）
+  api/
+    tournaments.ts                 — is_test フィルタ
+    profile/nickname.ts            — try/catch 追加
+    tournament/[id]/entry.ts       — lateRegOpen 楽観的フォールバック（fix-v25）
+  room/[roomId].tsx                — SSR 明示無効化
+  tournament/[id].tsx              — t:lateRegClosed 購読
+
+components/
+  PokerTable.tsx                   — orientationchange クリーンアップ・AudioContext 修正
 
 app/
-  components/
-    EliminatedOverlay.tsx         — X シェアボタン（fix-v13）
-    TournamentTable.tsx           — フォールドボタン制御
+  components/TournamentTable.tsx   — AudioContext 修正
   tournament/[id]/
-    draw/page.tsx                 — 全修正累積（t:tableJoin、t:getMyTable 再接続、handleShareCopy）
-    result/page.tsx               — X シェアボタン
-    spectate/page.tsx             — t:tournamentNotFound 対応
+    draw/page.tsx                  — useEffect コメント追加・モバイルシェア（fix-v26）
+    result/page.tsx                — モバイルシェア（fix-v26）
+
+models/
+  model_badugi.pth / model_27td.pth           — 学習済みモデル（git管理）
+  model_badugi_strategy.onnx / _draw.onnx     — 変換済み（git管理）
+  model_27td_strategy.onnx / _draw.onnx       — 変換済み（git管理）
+  model_meta.json                              — steps・変換日時
+
+scripts/
+  convert_model.py                 — .pth → .onnx 変換（手動実行）
+
+BOT_MODEL_MANUAL.md                — AIモデルBOT 運用マニュアル
+migrations/
+  add_unique_tournament_results.sql — 要Supabase実行
 ```
+
+---
+
+## AIモデルBOT 更新フロー
+
+```
+学習完了
+  ↓
+.pth を models/ に上書きコピー
+  ↓
+python scripts/convert_model.py  ← ローカルで手動実行
+  ↓
+git add models/ && git commit -m "update models" && git push
+  ↓
+Render が自動デプロイ（npm install && npm run build のみ）
+```
+
+詳細は `BOT_MODEL_MANUAL.md` を参照。
 
 ---
 
 ## デバッグ方法
 
 ```bash
-# 確認すべきログキーワード
 [blind-debug]           — ブラインドレベルアップの流れ
 [stuck-debug]           — ゲームが始まらない原因調査
-[betAction-debug]       — レイズ等のボタンが効かない原因調査
-[TM] ... kickstart      — pendingLevelUp kickstart
-[lateReg]               — レイトレジスト配置
+[betAction-debug]       — レイズ等のボタンが効かない（本番では抑制済み）
+[lateReg]               — レイトレジスト管理
 [bot-chain] END         — BOT チェーン終了・人間のターン
+[BotModel]              — BOTモデルのロード・推論状況
+[BotManager]            — BOT行動決定ログ（開発環境のみ）
 [t:grace-start]         — 切断猶予タイマー開始
-```
-
-### betAction 拒否ログの読み方
-```
-[betAction-debug] REJECTED user=Fujita action=raise
-[betAction-debug]   roomId=e6ec59-4   ← 旧テーブルなら原因
-[betAction-debug]   currentPlayer=Dealer-Dan idMatch=false  ← falseなら socket.id 不一致
 ```
 
 ---
@@ -129,25 +166,15 @@ app/
 - `schema.sql` ✅
 - `migrations/add_tournament_entries.sql` ✅
 - `migrations/add_sit_and_go.sql` ✅
-
----
-
-## 未解決・要調査
-
-| 問題 | 優先度 | 状況 |
-|---|---|---|
-| テーブル移動後の最初のハンドに参加できない | 高 | t:tableJoin で tableIdRef は更新済みだが、waitZone で sittingOut になっている可能性あり |
-| ゲームが始まらない（稀に残存） | 中 | fix-v24b の多段リトライで改善見込み |
-| ブラインドアップ表示 | 中 | fix-v24b（_io=false修正）で根本解決済み。要最終確認 |
-| SNG 待機人数リアルタイム更新 | 低 | 30 秒ポーリング |
-| モバイル縦持ちレイアウト | 低 | 未対応 |
+- `migrations/add_unique_tournament_results.sql` ⏳ **未適用（Supabaseで要実行）**
 
 ---
 
 ## 環境変数
 ```
 DATABASE_URL=postgresql://postgres.xxxxx:[PW]@aws-1-ap-northeast-2.pooler.supabase.com:5432/postgres
-NEXTAUTH_URL=http://localhost:3000  # Render では https://draw-poker.onrender.com
-ALLOWED_ORIGIN=http://localhost:3000
+NEXTAUTH_URL=https://draw-poker.onrender.com
+NEXTAUTH_SECRET=（必須・未設定だとサーバーが起動しない）
+ALLOWED_ORIGIN=https://draw-poker.onrender.com
 BOT_SECRET=pastis-internal-bot
 ```

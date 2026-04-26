@@ -48,6 +48,7 @@ const ZoomTable: React.FC<Props> = ({ poolId, name, mode }) => {
       setCanFastFold(false);
     };
 
+
     const onAssigned = ({ roomId: rid }: { roomId: string }) => {
       if (leaveReservedRef.current) {
         socket.emit('z:leave', { poolId });
@@ -56,6 +57,10 @@ const ZoomTable: React.FC<Props> = ({ poolId, name, mode }) => {
       }
       setRoomId(rid);
       setWaiting(false);
+      // 500ms後サーバーがbroadcast → さらに700msでrequestGameState（二重保険）
+      setTimeout(() => {
+        socket.emit('z:requestGameState', { roomId: rid });
+      }, 1500);  // 1200ms後のbroadcastよりも後に届くように
     };
 
     const onLeaveReservation = ({ type }: { type: null|'afterHand'|'nextBB' }) => {
@@ -66,11 +71,14 @@ const ZoomTable: React.FC<Props> = ({ poolId, name, mode }) => {
       if (pid === poolId) { setWaitCount(waitingCount); setTotalCount(tc); }
     };
 
+    // タイムスタンプ付きデバッグログ
+    const _ts = () => { const n = new Date(); return `${String(n.getHours()).padStart(2,'0')}:${String(n.getMinutes()).padStart(2,'0')}:${String(n.getSeconds()).padStart(2,'0')}.${String(n.getMilliseconds()).padStart(3,'0')}`; };
     // ゲーム状態からFastFoldボタンの表示を制御
-    const onGameState = ({ meta }: { meta: { phase: string } }) => {
-      // ベットフェーズ中 or showdown中はFastFold可能
-      const phase = meta.phase;
+    const onGameState = (gs: { meta: { phase: string }, players?: any[] }) => {
+      const phase = gs.meta.phase;
       setCanFastFold(phase.startsWith('bet') || phase === 'showdown');
+      // デバッグログ
+      const me = gs.players?.find((p: any) => p.isSelf);
     };
 
     const onKicked = () => { router.push('/'); };
@@ -93,8 +101,15 @@ const ZoomTable: React.FC<Props> = ({ poolId, name, mode }) => {
     };
   }, [poolId, name]);
 
+  // タイムスタンプ付きクライアントログ
+  // ⚡ FastFold: 即フォールド → 次のテーブルへ移動
   const handleFastFold = () => {
-    socket.emit('z:fastFold', { poolId });
+    socket.emit('z:fastFold', { poolId, roomId });
+  };
+
+  // 📺 フォールドして観戦: フォールドするが現テーブルに留まりゲーム終了まで見る
+  const handleFoldStay = () => {
+    socket.emit('z:foldStay', { poolId });
   };
 
   const handleLeave = () => {
@@ -125,7 +140,7 @@ const ZoomTable: React.FC<Props> = ({ poolId, name, mode }) => {
   // ===== ゲーム中 =====
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
-      <PokerTable roomId={roomId} name={name} mode={mode} onFastFold={handleFastFold} />
+      <PokerTable key={roomId} roomId={roomId} name={name} mode={mode} onFastFold={handleFastFold} onFoldStay={handleFoldStay} />
     </div>
   );
 };

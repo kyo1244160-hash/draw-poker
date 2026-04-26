@@ -394,14 +394,22 @@ function _startTimer(room) {
   if (limitSec <= 0 || !room._onTimeout) return;
   room._timerStart = Date.now();
   room._timerLimit = limitSec;
+  const cur = room.players[room.actionIndex];
+  if (room.isZoomTable) {
+  }
   room._timer = setTimeout(() => {
-    const cur = room.players[room.actionIndex];
-    if (cur && room._onTimeout) room._onTimeout(room.id, room.phase, cur.id);
+    const cur2 = room.players[room.actionIndex];
+    if (cur2 && room._onTimeout) room._onTimeout(room.id, room.phase, cur2.id);
   }, limitSec * 1000);
 }
 
 function _clearTimer(room) {
-  if (room._timer) { clearTimeout(room._timer); room._timer = null; }
+  if (room._timer) {
+    clearTimeout(room._timer); room._timer = null;
+    if (room.isZoomTable) {
+      const cur = room.players?.[room.actionIndex];
+    }
+  }
   room._timerStart = null; room._timerLimit = 0;
 }
 
@@ -444,7 +452,21 @@ function drawCards(roomId, socketId, indices) {
   _discardCards(room, validIndices.map((i) => player.hand[i]));
   for (const i of validIndices) {
     const newCard = _drawFromDeck(room);
-    if (newCard) player.hand[i] = newCard;
+    if (newCard === null) {
+      // デッキ・捨て札ともに枯渇（6人×全枚数交換×3ラウンドの極端なケース）
+      // 交換前のカードはすでに捨て札に移っているため、そのスロットを '??' として保持
+      console.warn(`[deck] ⚠ ${player.name} のスロット${i}分のカードが不足 → 現手札維持`);
+      // 捨て札に追加してしまったカードを元に戻せないため、デッキを再生成して対処
+      room.deck = require('./deck').createShuffledDeck().filter(c => {
+        const inHands = room.players.flatMap(p => p.hand).filter(Boolean);
+        return !inHands.includes(c);
+      });
+      const retryCard = _drawFromDeck(room);
+      if (retryCard) player.hand[i] = retryCard;
+      // それでも取れない場合は既存の手札スロットをそのまま維持（'??' にしない）
+    } else {
+      player.hand[i] = newCard;
+    }
   }
   player.drewThisRound = true;
   player.drawCount     = validIndices.length;
@@ -683,10 +705,10 @@ function _awardPots(room, activePlayers) {
   const levels = [...new Set(allLevels)].sort((a, b) => a - b);
 
   // ===== ポット計算ログ =====
-  log(`[pot] ===== _awardPots START roomId=${room.id} pot=${room.pot} =====`);
-  log(`[pot] allPlayers: ${allPlayers.map(p => `${p.name}(chips=${p.chips},contrib=${p.totalContribution??0},folded=${p.folded})`).join(', ')}`);
-  log(`[pot] activePlayers: ${activePlayers.map(p => `${p.name}(contrib=${p.totalContribution??0})`).join(', ')}`);
-  log(`[pot] levels: [${levels.join(', ')}]`);
+  logPot(`[pot] ===== _awardPots START roomId=${room.id} pot=${room.pot} =====`);
+  logPot(`[pot] allPlayers: ${allPlayers.map(p => `${p.name}(chips=${p.chips},contrib=${p.totalContribution??0},folded=${p.folded})`).join(', ')}`);
+  logPot(`[pot] activePlayers: ${activePlayers.map(p => `${p.name}(contrib=${p.totalContribution??0})`).join(', ')}`);
+  logPot(`[pot] levels: [${levels.join(', ')}]`);
 
   // 奇数チップの端数はBTN左隣（SB位置）の勝者が受け取る（標準ポーカールール）
   // fixedDealerIdx が確定している場合はその左隣、未確定は players[0] を基点にする
@@ -740,7 +762,7 @@ function _awardPots(room, activePlayers) {
       const winners = findWinners(eligible, room.currentMode);
       winnerName = _splitPot(cappedPot, winners);
     }
-    log(`[pot] level=${level} potSize=${potSize} cappedPot=${cappedPot} contributors=${contributors} eligible=[${eligible.map(p=>p.name).join(',')}] winner=${winnerName}`);
+    logPot(`[pot] level=${level} potSize=${potSize} cappedPot=${cappedPot} contributors=${contributors} eligible=[${eligible.map(p=>p.name).join(',')}] winner=${winnerName}`);
     totalAwarded += cappedPot;
     prevLevel = level;
   }
@@ -749,11 +771,11 @@ function _awardPots(room, activePlayers) {
   if (remainder > 0 && activePlayers.length > 0) {
     const remWinners = findWinners(activePlayers, room.currentMode);
     const remName = _splitPot(remainder, remWinners);
-    log(`[pot] remainder=${remainder} → ${remName}`);
+    logPot(`[pot] remainder=${remainder} → ${remName}`);
   }
-  log(`[pot] totalAwarded=${totalAwarded} remainder=${remainder} pot_after=${0}`);
-  log(`[pot] chips_after: ${allPlayers.map(p => `${p.name}=${p.chips}`).join(', ')}`);
-  log(`[pot] ===== _awardPots END =====`);
+  logPot(`[pot] totalAwarded=${totalAwarded} remainder=${remainder} pot_after=${0}`);
+  logPot(`[pot] chips_after: ${allPlayers.map(p => `${p.name}=${p.chips}`).join(', ')}`);
+  logPot(`[pot] ===== _awardPots END =====`);
   room.pot = 0;
 }
 
@@ -912,6 +934,7 @@ function buildGameState(room, requesterId) {
     pendingPlayers: room.pendingPlayers.map((p) => p.name),
     playerCount:    room.players.length,
     maxPlayers:     MAX_PLAYERS,
+    roomId:         room.id,  // クライアント側でroomIdフィルタリングに使用
   };
 
   return [...playerStates, meta];
@@ -1006,15 +1029,23 @@ function removePlayer(socketId) { return leaveRoom(socketId); }
  * - ターン外なら folded フラグを立てた上で退室（手番を次に進める）
  * @returns {string|null} roomId or null
  */
-function fastFoldPlayer(socketId) {
+function fastFoldPlayer(socketId, targetRoomId = null) {
   for (const [roomId, room] of rooms.entries()) {
+    // ZoomTable: targetRoomId が指定されている場合はそのルームのみ処理
+    // （旧テーブルに folded=true が残っている場合のスキップ誤検知を防ぐ）
+    if (targetRoomId && roomId !== targetRoomId) continue;
+
     const idx = room.players.findIndex((p) => p.id === socketId);
     if (idx === -1) continue;
     const player = room.players[idx];
 
     const inBetPhase = room.phase.startsWith('bet');
-    if (!inBetPhase) return null;
-    if (player.folded) return null;
+    if (!inBetPhase) {
+      return null;
+    }
+    if (player.folded) {
+      return null;
+    }
 
     // 自分のターン中なら即フォールド
     if (room.actionIndex === idx) {
@@ -1025,8 +1056,16 @@ function fastFoldPlayer(socketId) {
       return roomId;
     }
 
-    // ターン外なら「ターンが来たら自動フォールド」フラグだけ立てる
-    // 他プレイヤーには通常のプレイヤーとして見える
+    // ZoomTable: ターン外でも即時フォールド（fastFoldPendingを使わない）
+    // fastFoldPendingを使うと「旧テーブルで後から自動フォールド」が発動して
+    // 新テーブルに移動済みのFujitaが「勝手にフォールド扱いにされる」バグが発生
+    if (room.isZoomTable) {
+        player.folded = true;
+      player.acted  = true;
+      // タイマーはそのまま（現在のアクションプレイヤーのタイマーを維持）
+      return roomId;
+    }
+    // 通常テーブル: 従来通りfastFoldPendingを使う
     player.fastFoldPending = true;
     return roomId;
   }

@@ -1,6 +1,5 @@
-const { log, logDev } = require('../logger');
-
 'use strict';
+const { log, logDev } = require('../logger');
 /**
  * tournamentBotManager.js
  * トーナメント専用サーバーサイドBOT管理
@@ -23,7 +22,7 @@ const {
   buildGameState,
 } = require('../poker/gameManager');
 
-const { decideBotDraw, decideBotBetAction } = require('../poker/botManager');
+const { decideBotDraw, decideBotDrawWithRoom, decideBotBetAction } = require('../poker/botManager');
 
 // ===== BOT ID 管理 =====
 const BOT_PREFIX = 'tbot::';
@@ -147,11 +146,19 @@ function triggerBotActions(tableId, onActionDone) {
 
   // リングBOT同等の遅延（500〜1500ms）
   const delay = 500 + Math.random() * 1000;
-  setTimeout(() => {
+  setTimeout(async () => {
     _pendingBotAction.delete(pendingKey);
 
     const room2 = getOrCreateRoom(tableId);
     if (!room2) { logDev(`[TBotM] ${tableId.slice(-8)} room gone`); return; }
+
+    // タイマー発火時にフェーズが進行中でない場合はスキップ
+    // （showdown / waiting に変わっていたら次のハンドで再トリガーされる）
+    if (room2.phase === 'waiting' || room2.phase === 'showdown') {
+      logDev(`[TBotM] ${tableId.slice(-8)} phase=${room2.phase} → skip (not actionable)`);
+      return;
+    }
+
     const cur = room2.players[room2.actionIndex];
     // ターンが変わっていたらスキップ
     if (!cur || cur.id !== botId) {
@@ -162,13 +169,17 @@ function triggerBotActions(tableId, onActionDone) {
     let acted = false;
     let doneAction = null;
     if (room2.phase.startsWith('draw')) {
-      const indices = decideBotDraw(cur.hand, room2.currentMode);
+      // モデル推論（room あり版）
+      const indices = await decideBotDrawWithRoom(room2, cur, room2.currentMode);
       acted = !!drawCards(tableId, botId, indices);
+      log(`[BOT-DEBUG] ${cur.name}(${room2.currentMode}) DRAW hand=[${(cur.hand||[]).join(',')}] discard=[${indices.join(',')}] phase=${room2.phase}`);
       logDev(`[TBotM] ${tableId.slice(-8)} ${cur.name} draw ${indices.length}枚 acted=${acted}`);
     } else if (room2.phase.startsWith('bet')) {
-      const action = decideBotBetAction(room2, cur);
+      // モデル推論（async）
+      const action = await decideBotBetAction(room2, cur);
       acted = !!betAction(tableId, botId, action);
       if (acted) doneAction = action;
+      log(`[BOT-DEBUG] ${cur.name}(${room2.currentMode}) BET action=${action} hand=[${(cur.hand||[]).join(',')}] chips=${cur.chips} pot=${room2.pot} currentBet=${room2.currentBet} phase=${room2.phase}`);
       logDev(`[TBotM] ${tableId.slice(-8)} ${cur.name} ${action} acted=${acted} chips=${cur.chips}`);
     }
 
@@ -185,7 +196,7 @@ function removeBots(tableId) {
   const botIds = _tableBots.get(tableId);
   if (!botIds) return;
   for (const botId of botIds) {
-    leaveRoom(tableId, botId);
+    leaveRoom(botId); // 第1引数が socketId（tableId は不要）
     _bots.delete(botId);
     logDev(`[TBotM] remove bot ${botId} from ${tableId}`);
   }
@@ -205,7 +216,7 @@ function eliminateZeroChipBots(tableId) {
 
   for (const p of room.players) {
     if (botIds.has(p.id) && p.chips <= 0) {
-      leaveRoom(tableId, p.id);
+      leaveRoom(p.id); // 第1引数が socketId（tableId は不要）
       _bots.delete(p.id);
       botIds.delete(p.id);
       eliminated.push(p.id);

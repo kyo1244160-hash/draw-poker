@@ -199,19 +199,29 @@ export default function TournamentTable({
 
   // ===== ターン通知音 =====
   // isMyTurn が false→true に変化した瞬間だけ短いブザー音を再生する。
-  // Web Audio API で生成するため外部ファイル不要。ユーザー操作後に初期化（iOS 対応）。
+  // Web Audio API で生成するため外部ファイル不要。
+  // suspended 状態で早期生成し、最初の pointerdown で resume() することで
+  // ゲーム開始直後の最初のターンでも音が鳴るようにする。
   const audioCtxRef = useRef<AudioContext | null>(null);
   const prevIsMyTurnRef = useRef<boolean>(false);
 
-  // ユーザーの最初のタップ/クリックで AudioContext を初期化（iOS Safari 要件）
   useEffect(() => {
-    const init = () => {
-      if (!audioCtxRef.current) {
-        audioCtxRef.current = new (window.AudioContext || (window as unknown as Record<string,unknown>).webkitAudioContext as typeof AudioContext)();
+    const AudioContextClass = window.AudioContext
+      || (window as unknown as Record<string, unknown>).webkitAudioContext as typeof AudioContext;
+    if (!AudioContextClass) return;
+    // suspended 状態で作成（ブラウザの自動再生ポリシーに準拠）
+    audioCtxRef.current = new AudioContextClass();
+    const resume = () => {
+      if (audioCtxRef.current?.state === 'suspended') {
+        audioCtxRef.current.resume();
       }
     };
-    window.addEventListener('pointerdown', init, { once: true });
-    return () => window.removeEventListener('pointerdown', init);
+    window.addEventListener('pointerdown', resume);
+    return () => {
+      window.removeEventListener('pointerdown', resume);
+      audioCtxRef.current?.close();
+      audioCtxRef.current = null;
+    };
   }, []);
 
   useEffect(() => {
@@ -221,7 +231,7 @@ export default function TournamentTable({
     // false → true のときだけ鳴らす（自分のターン開始）
     if (!wasMyTurn && isMyTurn && audioCtxRef.current) {
       const ctx = audioCtxRef.current;
-      // 短い「ポン」音: 800Hz → 600Hz で 0.15秒
+      if (ctx.state === 'suspended') return; // まだユーザー操作前なら鳴らさない
       // 「ピピピッ」: 1000Hz の短いビープを 3 回（間隔 0.12秒）
       const freq = 1000;
       const dur  = 0.07;   // 1音の長さ

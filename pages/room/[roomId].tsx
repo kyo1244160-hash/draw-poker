@@ -10,8 +10,12 @@
  */
 
 import { useRouter } from 'next/router';
-import PokerTable  from '../../components/PokerTable';
+import dynamic from 'next/dynamic';
 import DefaultRoom from '../../components/DefaultRoom';
+
+// PokerTable は PC版レンダリング時に window.innerWidth を直接参照するため SSR 不可
+// dynamic({ ssr: false }) で明示的に SSR を無効化しクライアントのみでレンダリングする
+const PokerTable = dynamic(() => import('../../components/PokerTable'), { ssr: false });
 
 export default function RoomPage() {
   const router           = useRouter();

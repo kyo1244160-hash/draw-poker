@@ -151,6 +151,9 @@ async function createBlindSchedule({ name, description, levels, lateLevelCutoff 
   const id = require('crypto').randomUUID();
   const levelsJson = JSON.stringify(levels);
   const cutoff = lateLevelCutoff ?? 0;
+  // sql.unsafe を使う理由: levels カラムへの `::jsonb` キャスト（明示的な型変換）が
+  // postgres.js のタグドテンプレートリテラル形式では正しく機能しないため。
+  // $1〜$5 はパラメータバインドしているため SQLインジェクションのリスクはない。
   const rows = await sql.unsafe(
     `INSERT INTO blind_schedules (id, name, description, levels, late_level_cutoff)
      VALUES ($1, $2, $3, $4::jsonb, $5)
@@ -169,6 +172,7 @@ async function createBlindSchedule({ name, description, levels, lateLevelCutoff 
 async function updateBlindSchedule(id, { name, description, levels, lateLevelCutoff }) {
   const levelsJson = JSON.stringify(levels);
   const cutoff = lateLevelCutoff ?? 0;
+  // sql.unsafe を使う理由: createBlindSchedule と同様（::jsonb キャスト対応のため）
   const rows = await sql.unsafe(
     `INSERT INTO blind_schedules (id, name, description, levels, late_level_cutoff)
      VALUES ($1, $2, $3, $4::jsonb, $5)

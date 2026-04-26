@@ -401,7 +401,7 @@ router.post('/fastfold-bots', (req, res) => {
   if (!poolId || !VALID_POOLS.includes(poolId)) {
     return res.status(400).json({ error: `poolId は ${VALID_POOLS.join(' / ')} のいずれかです` });
   }
-  const n = Math.min(Math.max(1, parseInt(count) || 1), 6);
+  const n = Math.min(Math.max(1, parseInt(count) || 1), 20);
   const added = ringBotManager.addFastFoldBots(poolId, n);
   log(`[adminMonitor] FastFoldボット ${n}体 追加 → ${poolId} by ${req.adminId}`);
   res.json({ ok: true, added });
@@ -422,7 +422,7 @@ router.post('/bots', (req, res) => {
   if (!roomId || typeof roomId !== 'string') {
     return res.status(400).json({ error: 'roomId は必須です' });
   }
-  const n = Math.min(Math.max(1, parseInt(count) || 1), 6);
+  const n = Math.min(Math.max(1, parseInt(count) || 1), 20);
   const added = ringBotManager.addBots(roomId, n);
   log(`[adminMonitor] ボット ${n}体 追加 → ${roomId} by ${req.adminId}`);
   res.json({ ok: true, added });

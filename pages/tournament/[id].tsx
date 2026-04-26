@@ -125,23 +125,28 @@ export default function TournamentLobby() {
 
     const onTournamentStarting = ({ tournamentId, tableId }: { tournamentId: string; tableId: string }) => {
       if (tournamentId !== id) return;
-      // fetchData 完了前は遷移しない（isEliminatedRef がまだ false の可能性がある）
       if (!fetchReadyRef.current) return;
-      // 脱落済みプレイヤーはゲーム画面へ遷移しない（観戦ボタンで手動移動）
       if (isEliminatedRef.current) return;
-      // 自分が参加登録しているトーナメントが開始 → ゲーム画面へ
       router.push(`/tournament/${tournamentId}/draw`);
     };
 
-    socket.on('t:tournamentStarting', onTournamentStarting);
+    // レイトレジスト終了通知: 30秒ポーリングを待たずに即時 fetchData()
+    // これにより終了直後に「観戦ボタン」が正しく表示される
+    const onLateRegClosed = ({ tournamentId }: { tournamentId: string }) => {
+      if (tournamentId !== id) return;
+      fetchData();
+    };
 
-    // 未接続なら接続する
+    socket.on('t:tournamentStarting', onTournamentStarting);
+    socket.on('t:lateRegClosed', onLateRegClosed);
+
     if (!socket.connected) connectWithAuth();
 
     return () => {
       socket.off('t:tournamentStarting', onTournamentStarting);
+      socket.off('t:lateRegClosed', onLateRegClosed);
     };
-  }, [id]);
+  }, [id, fetchData]);
 
   // ===== 参加登録 =====
   const handleRegister = async () => {
