@@ -928,6 +928,17 @@ function handleForcedLeave(tableId, playerId, reason) {
 
   if (player) {
     log(`[TM] ${tournamentId}: forced leave ${player.name} (${reason}) chips=${player.chips}`);
+
+    // timeout-kick（連続タイムアウト）は切断ではなく意図的な放置 → チップの有無に関わらず脱落扱い
+    if (reason === 'timeout-kick') {
+      _disconnectedChips.delete(player.accountId ?? player.id);
+      _eliminatePlayer(t, tableId, player);
+      const remaining = _countRemaining(t);
+      log(`[TM] ${tournamentId}: ${player.name} eliminated (timeout-kick), remaining=${remaining}`);
+      if (remaining <= 1) _finishTournament(t);
+      return;
+    }
+
     if (player.chips > 0) {
       // チップがある = 切断しただけで脱落ではない
       // チップを _disconnectedChips に退避してから leaveRoom する。

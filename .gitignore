@@ -5,6 +5,7 @@ node_modules
 build
 .next
 tsconfig.tsbuildinfo
+stats.json
 
 # 環境変数（秘密情報）
 .env
@@ -23,6 +24,14 @@ MEMORY.md
 *.swp
 *.swo
 
+# ローカルデータ
+history/
+
+# AIモデル（PyTorch生ファイル）
+# .onnx は本番サーバーが必要なので git 管理する
+# .pth はローカル変換用のみ → git 不要
+models/*.pth
+
 # OS 生成ファイル
 .DS_Store
 Thumbs.db
@@ -30,4 +39,3 @@ Thumbs.db
 # エディタ設定
 .vscode/
 .idea/
-
