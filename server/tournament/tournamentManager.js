@@ -109,8 +109,21 @@ function _createTable(tournament, playerInfos) {
   });
 
   // 各プレイヤーをテーブルに参加させる
+  // 【重要】joinPokerRoom の戻り値を必ず検証する。
+  // 'full' / 'pending' / 'reconnected' が返るケースは異常（テーブル新規作成直後のため active 期待）。
+  // 'reconnected' = 同名プレイヤーが他のテーブルに既存だった場合、新テーブルに追加されない。
+  // この場合、playerInfos でも room.players の数が一致しない = ゲーム開始時にプレイヤー消失バグ。
   for (const { accountId, nickname, chips } of playerInfos) {
-    joinPokerRoom(tableId, accountId, nickname, { existingChips: chips, accountId });
+    const _joinResult = joinPokerRoom(tableId, accountId, nickname, { existingChips: chips, accountId });
+    if (_joinResult !== 'active' && _joinResult !== 'reconnected') {
+      log(`[TM-WARN] _createTable: joinRoom unexpected result=${_joinResult} player=${nickname}(${accountId?.slice(-8) ?? '?'}) table=${tableId.slice(-8)}`);
+    }
+  }
+  // 配置結果検証: playerInfos.length と room.players.length の整合確認
+  if (room.players.length !== playerInfos.length) {
+    log(`[TM-WARN] _createTable: player count mismatch! expected=${playerInfos.length} actual=${room.players.length} table=${tableId.slice(-8)} expectedPlayers=[${playerInfos.map(p => p.nickname).join(',')}] actualPlayers=[${room.players.map(p => p.name).join(',')}]`);
+  } else {
+    log(`[TM] _createTable: ${tableId.slice(-8)} created with ${room.players.length} players [${room.players.map(p => p.name).join(',')}]`);
   }
 
   tournament.tableIds.push(tableId);
@@ -594,7 +607,11 @@ function _finishTournament(tournament) {
     const accountId = tournament.eliminationOrder[i];
     if (seenIds.has(accountId)) continue;  // 重複をスキップ
     seenIds.add(accountId);
-    const rank = tournament.totalPlayers - i;
+    // rank = 末尾から何番目か（後ろが上位）+ 2（優勝者1人分）
+    // totalPlayers に依存しない計算式を使用。
+    // totalPlayers は BOT 追加・脱落漏れ等で実際の人数とズレる場合があるため使わない。
+    // eliminationOrder の末尾 = 最後に脱落 = 2位、その前 = 3位… と確定。
+    const rank = (tournament.eliminationOrder.length - i) + 1;
     rankings.push({ accountId, rank });
   }
 

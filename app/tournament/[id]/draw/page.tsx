@@ -49,6 +49,7 @@ export default function TournamentDrawPage() {
   const eliminatedRef = useRef<boolean>(false); // クロージャ問題回避用 ref
   const [connected,  setConnected]  = useState(false);
   const [errorMsg,   setErrorMsg]   = useState<string | null>(null);
+  const [isSpectator, setIsSpectator] = useState(false);
   const [actionErrorMsg, setActionErrorMsg] = useState<string | null>(null); // 一時的なアクションエラートースト
   const [finalTableAlert, setFinalTableAlert] = useState<boolean>(false);
   const [lateRegOpen, setLateRegOpen] = useState<boolean>(false);
@@ -78,25 +79,20 @@ export default function TournamentDrawPage() {
       .then(s => { if (s?.user?.accountId) accountIdRef.current = s.user.accountId; })
       .catch(() => {});
 
-    connectWithAuth().then(ok => {
-      if (cancelled) return;
-      if (!ok) { router.push('/'); return; }
-      setConnected(true);
-      // 初回・再接続どちらも t:getMyTable を使う。
-      // joinRoom は ring game 用で t:blindUpdate を再送しないため
-      // 再接続後にブラインド表示が更新されないバグが起きる。
-      // t:getMyTable は socket.id 更新 + t:blindUpdate + t:tournamentStatus を一括送信する。
-      socket.emit('t:getMyTable', { tournamentId });
-    });
-
-    // 接続済みの場合も問い合わせ
-    if (socket.connected && !tableIdRef.current) {
-      socket.emit('t:getMyTable', { tournamentId });
-    }
+    // 【重要】サーバーからの emit を取り逃さないため、socket.on リスナーは
+    //   socket.emit('t:getMyTable') より先に登録する。
+    //   特に socket.connected===true で同期的に emit するパスでは、
+    //   イベントループのタイミング次第で listener 登録より先にサーバー応答が
+    //   到着する理論的リスクがあるため、リスナー登録を先に行う。
 
     // ゲーム状態（playersとmetaを1回のsetStateでまとめて更新）
-    socket.on('gameState', ({ players: pl, meta: m }: { players: PlayerState[]; meta: GameMeta; isSpectator?: boolean }) => {
+    socket.on('gameState', ({ players: pl, meta: m, isSpectator: isSpectatorFlag }: { players: PlayerState[]; meta: GameMeta; isSpectator?: boolean }) => {
+      // 受信した gameState が現在のテーブルのものか確認（別テーブルからの誤配信を防止）
+      if (m?.roomId && tableIdRef.current && m.roomId !== tableIdRef.current) {
+        return;  // 別テーブルの gameState は無視
+      }
       setGameState({ players: pl ?? [], meta: m ?? null });
+      if (isSpectatorFlag) setIsSpectator(true);
       // 自分がplayersに含まれてpendingでなくなったらpending解除
       const selfPlayer = pl?.find((p: PlayerState) => p.isSelf);
       if (selfPlayer && !selfPlayer.isPendingPlayer) setPendingTransfer(null);
@@ -144,10 +140,14 @@ export default function TournamentDrawPage() {
       setTimer({ remaining, limit });
     });
 
-    // トーナメント開始 or テーブル問い合わせ応答 → テーブル参加
+    // トーナメント開始 or テーブル問い合わせ応答 → tableId を記録するだけ
+    // 【重要】joinRoom emit は不要（サーバーの t:getMyTable 内で既に socket.join 済み）。
+    //   joinRoom emit すると以下の問題が発生:
+    //   1. サーバー側 joinPokerRoom が name で再接続判定 → 競合状態
+    //   2. _broadcast が再度走り gameState の二重送信
+    //   3. リソース無駄遣い・タイミング差で setGameState が古い値で上書きされるリスク
     socket.on('t:tournamentStarting', ({ tableId: tid }: { tournamentId: string; tableId: string }) => {
       tableIdRef.current = tid;
-      socket.emit('joinRoom', { roomId: tid });
     });
 
     // テーブルが見つからない場合
@@ -253,6 +253,7 @@ export default function TournamentDrawPage() {
     // 脱落
     socket.on('t:eliminated', ({ rank, totalPlayers }: { rank: number; totalPlayers: number }) => {
       eliminatedRef.current = true;
+      setIsSpectator(true); // 脱落直後から観戦扱い（waiting画面を経由しない）
       // chips=0 フォールバックタイマーが走っている場合はキャンセルして上書き
       if (eliminatedTimerRef.current) clearTimeout(eliminatedTimerRef.current);
       // showdown結果を確認できるよう 4 秒待ってからオーバーレイ表示
@@ -321,6 +322,17 @@ export default function TournamentDrawPage() {
         setErrorMsg(message);
       }
     });
+
+    // 【重要】すべての socket.on リスナー登録が完了したあとで接続と t:getMyTable を行う。
+    // これにより、サーバーから即時 emit される gameState / t:tournamentStarting を確実に受信できる。
+    connectWithAuth().then(ok => {
+      if (cancelled) return;
+      if (!ok) { router.push('/'); return; }
+      setConnected(true);
+      socket.emit('t:getMyTable', { tournamentId });
+    });
+    // 接続済みの場合は connectWithAuth が即 true を返すが、上の then 内の emit は
+    // 次のマイクロタスクで実行される。リスナーは同期登録済みのため取り逃しは発生しない。
 
     return () => {
       cancelled = true;
@@ -459,9 +471,9 @@ export default function TournamentDrawPage() {
   }
 
   // ===== アクションハンドラ =====
-  function handleBetAction(action: string) {
+  function handleBetAction(action: string, amount?: number) {
     if (!tableIdRef.current) return;
-    socket.emit('betAction', { roomId: tableIdRef.current, action });
+    socket.emit('betAction', { roomId: tableIdRef.current, action, amount });
   }
 
   function handleDrawCards(indices: number[]) {
@@ -532,6 +544,7 @@ export default function TournamentDrawPage() {
           players={players}
           meta={meta}
           timer={timer}
+          isSpectator={isSpectator}
           onBetAction={handleBetAction}
           onDrawCards={handleDrawCards}
           onUpdateSelected={handleUpdateSelected}

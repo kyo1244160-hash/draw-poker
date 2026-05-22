@@ -112,7 +112,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
       return res.status(400).json({ error: 'name / mode / scheduledStartAt / startingChips は必須です' });
     }
 
-    const VALID_MODES = ['27', 'badugi', 'mix'];
+    const VALID_MODES = ['27', 'badugi', 'mix', 'a5', '27sd', 'mix3'];
     if (!VALID_MODES.includes(mode)) {
       return res.status(400).json({ error: `mode は ${VALID_MODES.join(' / ')} のいずれかです` });
     }

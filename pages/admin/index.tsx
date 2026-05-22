@@ -539,7 +539,7 @@ export default function AdminPage() {
 
   const statusLabel = (s: string) => ({ registering: '受付中', running: '進行中', finished: '終了', cancelled: 'キャンセル' }[s] ?? s);
   const statusColor = (s: string) => ({ registering: '#88bbee', running: '#88ee88', finished: '#aaa', cancelled: '#ee8888' }[s] ?? '#aaa');
-  const modeLabel   = (m: string) => ({ '27': '2-7 Triple Draw', badugi: 'Badugi', mix: 'Mix' }[m] ?? m);
+  const modeLabel   = (m: string) => ({ '27': '2-7 Triple Draw', badugi: 'Badugi', mix: 'Mix', a5: 'A-5 Triple Draw', '27sd': '2-7 Single Draw (NL)', mix3: 'Mix-3 (2-7/Badugi/A-5)' }[m] ?? m);
 
   if (loading) return <div style={S.loading}>読み込み中...</div>;
   if (error)   return <div style={S.loading}>{error}</div>;
@@ -642,9 +642,29 @@ export default function AdminPage() {
                   <select style={S.input} value={form.mode} onChange={(e) => setForm((f) => ({ ...f, mode: e.target.value }))}>
                     <option value="27">2-7 Triple Draw</option>
                     <option value="badugi">Badugi</option>
-                    <option value="mix">Mix</option>
+                    <option value="mix">Mix (2-7 / Badugi)</option>
+                    <option value="a5">A-5 Triple Draw</option>
+                    <option value="27sd">2-7 Single Draw (NL)</option>
+                    <option value="mix3">Mix-3 (2-7 / Badugi / A-5)</option>
                   </select>
                 </label>
+                {/* 27SD（ノーリミット）使用時の注意書き */}
+                {form.mode === '27sd' && (
+                  <div style={{
+                    padding: '8px 10px',
+                    background: 'rgba(100,80,200,0.12)',
+                    border: '1px solid rgba(150,130,240,0.35)',
+                    borderRadius: 4,
+                    fontSize: 12,
+                    color: '#c8bfee',
+                    fontFamily: 'var(--font-body)',
+                    lineHeight: 1.5,
+                  }}>
+                    ⚠️ <strong>2-7 Single Draw はノーリミット制です。</strong><br />
+                    ブラインドスケジュールの <code>SBet</code>/<code>BBet</code>（リミットベット額）は使用されません。<br />
+                    各プレイヤーは BB 以上 〜 スタック全額 の範囲で自由にベット/レイズできます。
+                  </div>
+                )}
                 {/* Sit & Go チェックボックス */}
                 <label style={{ ...S.label, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                   <input type="checkbox" checked={form.isSitAndGo} onChange={(e) => setForm((f) => ({ ...f, isSitAndGo: e.target.checked }))} />

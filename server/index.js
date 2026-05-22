@@ -290,7 +290,24 @@ app.prepare().then(async () => {
           // pending中に再接続: socket IDを更新してpending通知を送信
           pendingPlayer.id = socket.id;
           socket.join(tableId);
+          currentRoom = { name: user.nickname ?? '', roomId: tableId };
           socket.emit('t:pendingTableTransfer', { tableId, message: '次のハンドから参加します' });
+          // 【重要】pending プレイヤーにも現在の gameState を送信する。
+          // クライアント側は isPendingPlayer フラグで「次のハンドから参加します」表示に切り替わる。
+          {
+            const { buildGameState: _bgs, getOrCreateRoom: _gr } = require('./poker/gameManager');
+            const _room = _gr(tableId);
+            if (_room) {
+              const _state = _bgs(_room, socket.id);
+              const _meta  = _state.find((x) => x._meta);
+              const _players = _state.filter((x) => !x._meta);
+              socket.emit('gameState', { players: _players, meta: _meta });
+            }
+            const statusPayload = tournamentManager.getTournamentStatusPayload(tournamentId);
+            if (statusPayload) socket.emit('t:tournamentStatus', statusPayload);
+            const blindPayload = tournamentManager.getCurrentBlindPayload(tournamentId);
+            if (blindPayload) socket.emit('t:blindUpdate', blindPayload);
+          }
           logDev(`[t:getMyTable] ${user.nickname} → ${tableId} (pending)`);
         } else {
           // 再接続: room.players の socket.id を即座に更新する。
@@ -310,6 +327,25 @@ app.prepare().then(async () => {
           currentRoom = { name: user.nickname ?? '', roomId: tableId };
           socket.emit('t:tournamentStarting', { tournamentId, tableId });
           logDev(`[t:getMyTable] ${user.nickname} → ${tableId}`);
+          // 【重要】player.id 更新後、本人に gameState を直接送信する。
+          //
+          // 理由: startGame 時の _broadcast は player.id がまだ accountId のままで
+          //       io.sockets.sockets.get(accountId) が undefined を返し本人に送信スキップされる。
+          //       その後 t:getMyTable で player.id を socket.id に更新しても、
+          //       次の _broadcast が起きるまで（誰かのアクションまで）本人画面に gameState が届かない。
+          //       結果として「もう1人参加を待っています」画面で固まる致命的バグ。
+          //
+          // 解決: player.id 更新後に必ず本人へ buildGameState を emit する。
+          {
+            const { buildGameState: _bgs, getOrCreateRoom: _gr } = require('./poker/gameManager');
+            const _room = _gr(tableId);
+            if (_room) {
+              const _state = _bgs(_room, socket.id);
+              const _meta  = _state.find((x) => x._meta);
+              const _players = _state.filter((x) => !x._meta);
+              socket.emit('gameState', { players: _players, meta: _meta });
+            }
+          }
           // 接続直後に現在のステータスを本人のソケットに直接送信（残り人数・ブラインドを即表示）
           {
             const statusPayload = tournamentManager.getTournamentStatusPayload(tournamentId);
@@ -350,7 +386,7 @@ app.prepare().then(async () => {
           // メモリにある → テーブルを再検索
           const retryTableId = tournamentManager.getTableForPlayer(tournamentId, user.accountId);
           if (retryTableId) {
-            const { getOrCreateRoom: _gor } = require('./poker/gameManager');
+            const { getOrCreateRoom: _gor, buildGameState: _bgs } = require('./poker/gameManager');
             const _room = _gor(retryTableId);
             const _pending = _room?.pendingPlayers?.find(p =>
               p.accountId === user.accountId || p.name === user.nickname
@@ -358,9 +394,41 @@ app.prepare().then(async () => {
             if (_pending) {
               _pending.id = socket.id;
               socket.join(retryTableId);
+              currentRoom = { name: user.nickname ?? '', roomId: retryTableId };
               socket.emit('t:pendingTableTransfer', { tableId: retryTableId, message: '次のハンドから参加します' });
+              // pending プレイヤーにも gameState を送信（即時画面更新のため）
+              if (_room) {
+                const _state2 = _bgs(_room, socket.id);
+                const _meta2  = _state2.find((x) => x._meta);
+                const _players2 = _state2.filter((x) => !x._meta);
+                socket.emit('gameState', { players: _players2, meta: _meta2 });
+              }
+              const _sp = tournamentManager.getTournamentStatusPayload(tournamentId);
+              if (_sp) socket.emit('t:tournamentStatus', _sp);
+              const _bp = tournamentManager.getCurrentBlindPayload(tournamentId);
+              if (_bp) socket.emit('t:blindUpdate', _bp);
             } else {
+              // 【重要】retry成功時にも player.id を即更新する。
+              // 更新しないと _broadcast が socket を見つけられず gameState が届かない。
+              const _ap = _room?.players.find(p =>
+                p.accountId === user.accountId || p.name === user.nickname
+              );
+              if (_ap && _ap.id !== socket.id) {
+                _cancelTournamentDisconnectGrace(_ap.id);
+                _ap.id = socket.id;
+                _ap.disconnected = false;
+                log(`[t:getMyTable-retry] ${user.nickname}: player.id updated → ${socket.id}`);
+              }
+              socket.join(retryTableId);
+              currentRoom = { name: user.nickname ?? '', roomId: retryTableId };
               socket.emit('t:tournamentStarting', { tournamentId, tableId: retryTableId });
+              // gameState を本人に直接送信（_broadcast 待ちにしない）
+              if (_room) {
+                const _state = _bgs(_room, socket.id);
+                const _meta  = _state.find((x) => x._meta);
+                const _players = _state.filter((x) => !x._meta);
+                socket.emit('gameState', { players: _players, meta: _meta });
+              }
               // 接続直後に現在のステータスを本人のソケットに直接送信
               {
                 const statusPayload = tournamentManager.getTournamentStatusPayload(tournamentId);
@@ -373,6 +441,15 @@ app.prepare().then(async () => {
             return;
           }
           // テーブルはまだ未割当だがメモリにはある
+          // 脱落済みプレイヤーは早期チェックしてリトライを打ち切る
+          // （最初のリトライ時と10回ごとにチェック）
+          if (retriesLeft === 120 || retriesLeft % 10 === 0) {
+            if (t.eliminationOrder?.includes(user.accountId)) {
+              log(`[t:getMyTable] ${user.nickname}: eliminated (early detect) → redirect to spectate`);
+              socket.emit('t:eliminatedSpectate', { tournamentId });
+              return;
+            }
+          }
           // レイトレジスト中（lateRegOpen=true）なら即座に配置する（60秒待ちをスキップ）
           if (t.status === 'running' && t.lateRegOpen) {
             // 脱落済みプレイヤーは配置しない
@@ -531,8 +608,19 @@ app.prepare().then(async () => {
             }
           } // else: 新規 lateReg 配置
           } else {
-            // lateRegOpen でなく自分のテーブルも見つからない → 参加不可
-            socket.emit('t:tournamentNotFound', { tournamentId });
+            // lateRegOpen でなく自分のテーブルも見つからない
+            // → 脱落済みかどうかを確認して適切なイベントを送信
+            const _tNow = tournamentManager.getTournament(tournamentId);
+            const _isEliminated = _tNow?.eliminationOrder?.includes(user.accountId);
+            if (_isEliminated) {
+              // 脱落済みプレイヤー → 観戦ページへ誘導（t:tournamentNotFoundではなく専用イベント）
+              log(`[t:getMyTable] ${user.nickname}: eliminated → redirect to spectate`);
+              socket.emit('t:eliminatedSpectate', { tournamentId });
+            } else {
+              // 未脱落だがテーブルが見つからない（稀な状態）→ ロビーへ
+              log(`[t:getMyTable] ${user.nickname}: no table found (not eliminated) → tournamentNotFound`);
+              socket.emit('t:tournamentNotFound', { tournamentId });
+            }
           }
         }; // _retryGetTable end
         _retryGetTable(120); // 500ms × 120回 = 最大60秒リトライ
@@ -692,16 +780,22 @@ app.prepare().then(async () => {
 
     // ----- ベットアクション -----
     const VALID_ACTIONS = new Set(['fold','check','call','bet','raise']);
-    socket.on('betAction', ({ roomId, action }) => {
+    socket.on('betAction', ({ roomId, action, amount }) => {
       if (!roomId || typeof roomId !== 'string' || roomId.length > 64) return;
       if (!action || !VALID_ACTIONS.has(action)) return;
       if (!getRoom(roomId)) return;  // 存在しないroomIdは無視（空ルーム生成防止）
+      // amount は NL（27sd）のbet/raise時のみ有効。
+      // 防御層: 厳密に number 型のみ受け入れ、文字列・boolean・object などは無視する。
+      // NaN/Infinity/-Infinity も Number.isFinite で除外。betAction 内で範囲チェック実施。
+      const _amt = (action === 'bet' || action === 'raise')
+        && typeof amount === 'number' && Number.isFinite(amount)
+        ? amount : undefined;
       // アクション前のプレイヤー名を記録
       const roomBefore = getRoom(roomId);
       const actingPlayer = roomBefore
         ? roomBefore.players.find((p) => p.id === socket.id)
         : null;
-      const room = betAction(roomId, socket.id, action);
+      const room = betAction(roomId, socket.id, action, _amt);
       if (!room) {
         // 原因をログ（開発環境のみ）
         const { getOrCreateRoom: _gorBet } = require('./poker/gameManager');
@@ -892,7 +986,13 @@ function _handleLeave(io, socket, roomId) {
  */
 function _makeTimeoutHandler(io, roomId) {
   return (rid, phase, playerId) => {
-    log(`[timeout] ${playerId} in ${rid} at ${phase}`);
+    // 観測性強化: playerId が accountId のままになっている = t:getMyTable 未成功
+    //             プレイヤーが画面を見えていない可能性があるため、name/connected 状態もログに残す
+    const _r = getOrCreateRoom(rid);
+    const _p = _r?.players.find(p => p.id === playerId);
+    const _sock = io.sockets.sockets.get(playerId);
+    const _isAccountIdStyle = playerId && playerId.length > 30 && /^\d+$/.test(playerId);
+    log(`[timeout] ${playerId.slice(-12)} (name=${_p?.name ?? '?'} sock=${_sock ? 'OK' : 'NONE'}${_isAccountIdStyle ? ' AS_ACCOUNT_ID' : ''}) in ${rid.slice(-8)} at ${phase}`);
 
     // アクション実行 ─ 成否を必ず確認する。
     //

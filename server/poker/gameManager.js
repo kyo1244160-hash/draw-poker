@@ -25,7 +25,7 @@ const { log, logDev, logPot } = require('../logger');
  */
 
 const { createShuffledDeck, shuffleDeck }                             = require('./deck');
-const { evaluate27Hand, evaluateBadugiHand, findWinner, findWinners } = require('./handEvaluator');
+const { evaluate27Hand, evaluateA5Hand, evaluateBadugiHand, findWinner, findWinners } = require('./handEvaluator');
 const cfg                                                = require('../config');
 
 // ===== 定数 =====
@@ -40,8 +40,35 @@ const STARTING_CHIPS = cfg.STARTING_BB * cfg.BB_VALUE;
 /**
  * フェーズ一覧
  * bet2以降はビッグベット（draw2を超えた後）
+ * Triple Draw系: 2-7TD / A-5 / Badugi（4ベットラウンド・3ドロー）
  */
 const PHASES = ['waiting','bet0','draw1','bet1','draw2','bet2','draw3','bet3','showdown'];
+
+/**
+ * 27 Single Draw 用フェーズ（2ベットラウンド・1ドロー）
+ * プリドロー → 1回ドロー → ベット → ショーダウン
+ */
+const PHASES_SD = ['waiting','bet0','draw1','bet1','showdown'];
+
+/** モード別フェーズ配列を取得 */
+function getPhases(mode) {
+  return mode === '27sd' ? PHASES_SD : PHASES;
+}
+
+/** ノーリミットモード判定 */
+function isNoLimitMode(mode) {
+  return mode === '27sd';
+}
+
+/**
+ * Mix系モード判定（複数ゲームをローテーションする親モード）
+ * - 'mix'  : 2-7TD ↔ Badugi（2ゲーム）
+ * - 'mix3' : 2-7TD → Badugi → A-5（3ゲーム）
+ * 将来mix4等を追加する場合はここに追加するだけで全箇所の判定が更新される。
+ */
+function isMixMode(mode) {
+  return mode === 'mix' || mode === 'mix3';
+}
 
 /** ビッグベットフェーズか判定（draw2以降） */
 function isBigBetPhase(phase) {
@@ -51,21 +78,37 @@ function isBigBetPhase(phase) {
 /** roomId からゲームモードを取得 */
 function getRoomMode(roomId) {
   if (roomId.includes('badugi')) return 'badugi';
+  if (roomId.includes('mix3'))   return 'mix3';
   if (roomId.includes('mix'))    return 'mix';
+  if (roomId.includes('27sd'))   return '27sd';
+  if (roomId.includes('a5'))     return 'a5';
   return '27';
 }
 
-/** 手札枚数 */
+/** 手札枚数 — 全モード5枚（Badugiのみ4枚） */
 function handSize(mode) { return mode === 'badugi' ? 4 : 5; }
 
 /** 役判定 */
 function evaluateHand(hand, mode) {
-  return mode === 'badugi' ? evaluateBadugiHand(hand) : evaluate27Hand(hand);
+  if (mode === 'badugi') return evaluateBadugiHand(hand);
+  if (mode === 'a5')     return evaluateA5Hand(hand);
+  // '27' と '27sd' は同じ判定
+  return evaluate27Hand(hand);
 }
 
-/** mix モードの現在ゲームモード */
+/**
+ * mix モードの現在ゲームモード
+ * mix : 2-7TD ↔ Badugi（2ゲームローテ）
+ * mix3: 2-7TD → Badugi → A-5（3ゲームローテ）
+ */
 function getMixCurrentMode(room) {
-  const cycle = Math.floor(room.handCount / Math.max(1, room.players.length)) % 2;
+  const playerCount = Math.max(1, room.players.length);
+  if (room.mode === 'mix3') {
+    const cycle = Math.floor(room.handCount / playerCount) % 3;
+    return cycle === 0 ? '27' : cycle === 1 ? 'badugi' : 'a5';
+  }
+  // 既存 mix（2ゲームローテ）
+  const cycle = Math.floor(room.handCount / playerCount) % 2;
   return cycle === 0 ? '27' : 'badugi';
 }
 
@@ -75,11 +118,17 @@ const rooms = new Map();
 function getOrCreateRoom(roomId, opts = {}) {
   if (!rooms.has(roomId)) {
     const baseMode = opts.mode ?? getRoomMode(roomId);
+    const initialCurrentMode = isMixMode(baseMode) ? '27' : baseMode;
     rooms.set(roomId, {
       id:             roomId,
       label:          opts.label          ?? roomId,
       mode:           baseMode,
-      currentMode:    baseMode === 'mix' ? '27' : baseMode,
+      // mix/mix3 はゲーム種ローテのため startGame で確定。それまでは安全側でデフォルト2-7を入れる。
+      // 'mix3' を currentMode に直接入れると evaluateHand 等で意図しないフォールバックが起きる。
+      currentMode:    initialCurrentMode,
+      // NL（ノーリミット）判定: gameManager と botManager の単一情報源として room に保存。
+      // startGame で currentMode が確定したタイミングで更新される。
+      isNL:           isNoLimitMode(initialCurrentMode),
       password:       opts.password       ?? null,
       isUserCreated:  opts.isUserCreated  ?? false,
       isZoomTable:    opts.isZoomTable    ?? false,
@@ -99,6 +148,8 @@ function getOrCreateRoom(roomId, opts = {}) {
       actionIndex:    -1,
       currentBet:     0,
       raiseCount:     0,
+      // NL用: 最後のフルレイズ額（次のミニマムレイズ算出に使用）。startGame でBBに初期化される
+      lastRaiseSize:  0,
       smallBlind:     opts.smallBlind    ?? SMALL_BLIND,
       bigBlind:       opts.bigBlind      ?? BIG_BLIND,
       smallBet:       opts.smallBet      ?? SMALL_BET,
@@ -127,15 +178,29 @@ function getOrCreateRoom(roomId, opts = {}) {
 function joinRoom(roomId, socketId, name, opts = {}) {
   const room = getOrCreateRoom(roomId);
 
-  // 再接続
-  const existing = room.players.find((p) => p.name === name);
+  // 再接続判定: accountId が指定されている場合は accountId 優先で照合する。
+  //   理由: 同じトーナメント内で同名プレイヤーが別アカウントから参加するケースで、
+  //         name のみで判定すると別人の player.id を上書きしてしまうバグがあった。
+  //   accountId がない場合（ゲスト・リング部屋）は従来通り name 照合のフォールバック。
+  const existing = opts.accountId
+    ? room.players.find((p) => p.accountId === opts.accountId) || room.players.find((p) => p.name === name && !p.accountId)
+    : room.players.find((p) => p.name === name);
   if (existing) {
     existing.id = socketId;
     existing.disconnected = false;  // 切断フラグ解除
+    // accountId が未設定だった場合は補完する（古い再接続パスの後方互換）
+    if (opts.accountId && !existing.accountId) existing.accountId = opts.accountId;
     return 'reconnected';
   }
-  const existingPending = room.pendingPlayers.find((p) => p.name === name);
-  if (existingPending) { existingPending.id = socketId; existingPending.disconnected = false; return 'pending'; }
+  const existingPending = opts.accountId
+    ? room.pendingPlayers.find((p) => p.accountId === opts.accountId) || room.pendingPlayers.find((p) => p.name === name && !p.accountId)
+    : room.pendingPlayers.find((p) => p.name === name);
+  if (existingPending) {
+    existingPending.id = socketId;
+    existingPending.disconnected = false;
+    if (opts.accountId && !existingPending.accountId) existingPending.accountId = opts.accountId;
+    return 'pending';
+  }
 
   // 6人制限
   if (room.players.length + room.pendingPlayers.length >= MAX_PLAYERS) {
@@ -225,8 +290,11 @@ function startGame(roomId, onTimeout) {
   }
 
   // mix モード切替
-  if (room.mode === 'mix') room.currentMode = getMixCurrentMode(room);
+  if (isMixMode(room.mode)) room.currentMode = getMixCurrentMode(room);
   else room.currentMode = room.mode;
+  // NLフラグ更新: currentMode が確定したので isNL を同期させる
+  // （MIX-3 でローテーションした結果が NL になる仕様はないが、将来拡張に備えて常に同期）
+  room.isNL = isNoLimitMode(room.currentMode);
 
   // リセット
   room.deck             = createShuffledDeck();
@@ -236,6 +304,10 @@ function startGame(roomId, onTimeout) {
   room._onTimeout       = onTimeout;
   room._selectedIndices = {};
   room.handCount       += 1;
+
+  // ラウンド開始ログ: MIX-3 等で currentMode が変動するため、各ハンドのモードを記録
+  // 本番のBOT行動検証や手役判定の追跡に必要
+  log(`[ROUND] room=${roomId.slice(-12)} mode=${room.mode} currentMode=${room.currentMode}${room.isNL ? ' (NL)' : ''} hand=${room.handCount} players=${room.players.length}`);
 
   // ディーラーボタン前進
   if (room.dealerIndex < 0) {
@@ -300,7 +372,12 @@ function startGame(roomId, onTimeout) {
   // ⚠️ 変更禁止: raiseCount は 1 スタート（BBポストを1bet目として扱う）。
   //   0 スタートにすると bet0 フェーズで6段階分アクション可能になり BET60 まで打てるバグになる。
   room.raiseCount = 1;  // BBポストを1bet目としてカウント（5bet-cap: 1〜5）
-  room.betSize    = room.smallBet;
+  // NL（27sd）はベットサイズ自由。room.smallBet / room.bigBet はリミットゲーム用パラメータで
+  // 27sd では UI 表示用のミニマムベットを示すために bigBlind を入れているだけで、ベット制限には使用されない。
+  // ⚠️ トーナメント管理画面で 27sd モードに smallBet/bigBet を設定しても完全に無視される（NLは無制限のため）
+  room.betSize    = room.isNL ? room.bigBlind : room.smallBet;
+  // NL: 直近のレイズサイズ初期値 = BB（プリドローの初期レイズはBB単位）
+  room.lastRaiseSize = room.bigBlind;
 
   // 全員の acted を正しく初期化
   for (const p of room.players) {
@@ -374,6 +451,8 @@ function _resetDrawRound(room) {
 
 function _resetBetRound(room, betSize) {
   room.currentBet = 0; room.raiseCount = 0; room.betSize = betSize;
+  // NL用: 直近のレイズサイズ（最初のラウンドはBB）
+  room.lastRaiseSize = room.bigBlind || betSize;
   for (const p of room.players) {
     if (!p.sittingOut && !p.folded) {
       // betはpotに移したのでtotalContributionには既に加算済み
@@ -521,11 +600,72 @@ function _advanceDrawAction(room) {
   _startTimer(room);
 }
 
+/**
+ * NL（ノーリミット）でのbet/raise処理
+ * @returns {boolean} 適用成功時 true、バリデーション失敗時 false
+ */
+function _applyNLBetRaise(room, player, myIndex, action, amount) {
+  const minBet        = room.bigBlind;
+  const lastRaiseSize = room.lastRaiseSize || room.bigBlind;
+  const minRaise      = room.currentBet + lastRaiseSize;
+  const maxBet        = player.bet + player.chips; // オールイン上限
+
+  // 厳密に number 型のみ受け入れ。index.js / tournamentBotManager.js の両経路で
+  // number が渡されることを契約とする（防御層は単一化、二重 coercion を排除）
+  if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) return false;
+  let targetBet = amount;
+
+  // 上限を超える指定はオールインに丸める
+  if (targetBet > maxBet) targetBet = maxBet;
+
+  const isAllIn = targetBet === maxBet;
+  if (action === 'bet') {
+    if (room.currentBet > 0) return false;
+    if (!isAllIn && targetBet < minBet) return false;
+  } else { // raise
+    if (room.currentBet === 0) return false;
+    if (!isAllIn && targetBet < minRaise) return false;
+  }
+
+  const actual = targetBet - player.bet;
+  player.chips -= actual;
+  player.bet   += actual;
+  room.pot     += actual;
+  player.totalContribution = (player.totalContribution ?? 0) + actual;
+
+  const prevBet     = room.currentBet;
+  const raiseAmount = player.bet - prevBet;
+  room.currentBet   = Math.max(room.currentBet, player.bet);
+
+  // フルレイズ or ショートオールイン
+  const isFullRaise = raiseAmount >= lastRaiseSize;
+  if (isFullRaise && raiseAmount > 0) {
+    room.lastRaiseSize = raiseAmount;
+    for (let i = 0; i < room.players.length; i++) {
+      if (i !== myIndex && !room.players[i].folded && !room.players[i].sittingOut) {
+        room.players[i].acted = false;
+      }
+    }
+    logDev(`[NL] ${player.name} ${action} → ${player.bet} (raise=${raiseAmount}, lastRaiseSize=${room.lastRaiseSize}, pot=${room.pot})`);
+  } else if (room.currentBet > prevBet) {
+    // ショートオールイン: 再オープン権なし（reopening rule）。lastRaiseSizeは更新しない。
+    for (let i = 0; i < room.players.length; i++) {
+      const op = room.players[i];
+      if (i !== myIndex && !op.folded && !op.sittingOut && op.bet < room.currentBet) {
+        op.acted = false;
+      }
+    }
+    logDev(`[NL] ${player.name} short-allin → ${player.bet} (raise=${raiseAmount}, lastRaiseSize unchanged=${lastRaiseSize}, pot=${room.pot})`);
+  }
+  player.acted = true;
+  return true;
+}
+
 // ==========================================================
-// ■ ベット（5bet-cap）
+// ■ ベット（5bet-cap / ノーリミット両対応）
 // ==========================================================
 
-function betAction(roomId, socketId, action) {
+function betAction(roomId, socketId, action, amount) {
   const room = rooms.get(roomId);
   if (!room || !room.phase.startsWith('bet')) return null;
   const myIndex = room.players.findIndex((p) => p.id === socketId);
@@ -536,6 +676,8 @@ function betAction(roomId, socketId, action) {
   // betActionでのスキップは行わない
 
   const toCall = room.currentBet - player.bet;
+  // room.isNL は startGame で確定される。betAction は bet/draw フェーズで呼ばれるため必ず確定済み。
+  const isNL = !!room.isNL;
 
   if (action === 'fold') {
     // ⚠️ チェック可能な場面（toCall=0）でのフォールドは禁止（RRoP準拠）
@@ -556,6 +698,15 @@ function betAction(roomId, socketId, action) {
     // chips=0のプレイヤー（すでにオールイン済み）はbet/raiseをcallとして処理
     if (player.chips <= 0) {
       player.acted = true;
+    } else if (isNL) {
+      // ===== ノーリミット =====
+      // amount = ベット/レイズ後のtotalBet額（プレイヤーがそのストリートで投じる累計）
+      // 制約:
+      //   action='bet'   (currentBet=0): amount >= BB
+      //   action='raise' (currentBet>0): amount >= currentBet + lastRaiseSize（ミニマムレイズ）
+      //   上限: player.chips + player.bet （オールイン上限）
+      const applied = _applyNLBetRaise(room, player, myIndex, action, amount);
+      if (!applied) return null;
     // ⚠️ 変更禁止: キャップ判定は >= MAX_RAISES(5)。
     //   > MAX_RAISES にすると raiseCount=5 でもレイズ可能になり BET60 まで打てるバグになる。
     //   canRaise は < MAX_RAISES(5) で raiseCount=4(4/5) でもレイズ可、raiseCount=5(5/5) でレイズ不可。
@@ -661,8 +812,11 @@ function _advanceBetAction(room) {
 // ==========================================================
 
 function _nextPhase(room) {
-  const idx  = PHASES.indexOf(room.phase);
-  const next = PHASES[idx + 1] ?? 'showdown';
+  // モードに応じたフェーズ列を取得（27sd は短縮版）
+  const effectiveMode = room.currentMode || room.mode;
+  const phases = getPhases(effectiveMode);
+  const idx  = phases.indexOf(room.phase);
+  const next = phases[idx + 1] ?? 'showdown';
   room.phase = next;
 
   if (next.startsWith('draw')) {
@@ -672,8 +826,15 @@ function _nextPhase(room) {
     room.actionIndex = _nextActiveFromSafe(room, dealerRef);
     _startTimer(room);
   } else if (next.startsWith('bet')) {
-    // draw2以降（bet2, bet3）はビッグベット
-    const betSize = isBigBetPhase(next) ? room.bigBet : room.smallBet;
+    // NLモード（27sd）はベットサイズ固定なし、betSize=BBをミニマム値として扱う
+    // リミットモード: draw2以降（bet2, bet3）はビッグベット
+    // 判定は room.isNL に統一（startGame で確定済みの単一情報源）
+    let betSize;
+    if (room.isNL) {
+      betSize = room.bigBlind; // NL: ミニマムベット = BB
+    } else {
+      betSize = isBigBetPhase(next) ? room.bigBet : room.smallBet;
+    }
     _resetBetRound(room, betSize);
     // ベットラウンド（bet1以降）: 通常/ヘッズアップ共にSB(dealer)から先行
     const dealerRef = room.fixedDealerIdx >= 0 ? room.fixedDealerIdx : room.dealerIndex;
@@ -831,9 +992,18 @@ function buildGameState(room, requesterId) {
     // ⚠️ 変更禁止: raiseCount < MAX_RAISES(5) のときのみレイズ可。
     //   raiseCount=4(4/5) → レイズ可、raiseCount=5(5/5) → レイズ不可（キャップ）
     // 相手が全員フォールドorオールイン（chips<=0）の場合もレイズ不可
-    canRaise: isBetPhase && room.raiseCount < MAX_RAISES && p.chips > 0
+    // NLモード（27sd）はraiseCount上限なし
+    canRaise: isBetPhase && p.chips > 0
+      && (room.isNL || room.raiseCount < MAX_RAISES)
       && room.players.some(op => op.id !== p.id && !op.folded && !op.sittingOut && op.chips > 0),
         betSize:  room.betSize,
+        // NL用情報: クライアントがベット額入力UIを構築するために必要
+        isNL:     room.isNL,
+        ...(room.isNL ? {
+          minBet:        room.bigBlind,
+          minRaiseTotal: room.currentBet + (room.lastRaiseSize || room.bigBlind),
+          maxBetTotal:   p.bet + p.chips,
+        } : {}),
       } : {}),
       ...(isMyTurn ? { timerRemaining } : {}),
     };
@@ -935,6 +1105,10 @@ function buildGameState(room, requesterId) {
     playerCount:    room.players.length,
     maxPlayers:     MAX_PLAYERS,
     roomId:         room.id,  // クライアント側でroomIdフィルタリングに使用
+    // NL対応情報
+    isNL:           room.isNL,
+    bigBlind:       room.bigBlind,
+    lastRaiseSize:  room.lastRaiseSize || room.bigBlind,
   };
 
   return [...playerStates, meta];
@@ -1145,5 +1319,7 @@ module.exports = {
   incrementTimeout, resetTimeout,
   getRoomMode, getRoom, deleteRoom, renamePlayer,
   ensurePotsAwarded,
+  // モード判定（他モジュールから共有利用するため公開）
+  isNoLimitMode, isMixMode,
   STARTING_CHIPS, SMALL_BLIND, BIG_BLIND, SMALL_BET, BIG_BET, MAX_PLAYERS,
 };

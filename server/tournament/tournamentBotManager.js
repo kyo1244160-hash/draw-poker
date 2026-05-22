@@ -22,7 +22,7 @@ const {
   buildGameState,
 } = require('../poker/gameManager');
 
-const { decideBotDraw, decideBotDrawWithRoom, decideBotBetAction } = require('../poker/botManager');
+const { decideBotDraw, decideBotDrawWithRoom, decideBotBetAction, decideBotBetAmount } = require('../poker/botManager');
 
 // ===== BOT ID 管理 =====
 const BOT_PREFIX = 'tbot::';
@@ -177,9 +177,11 @@ function triggerBotActions(tableId, onActionDone) {
     } else if (room2.phase.startsWith('bet')) {
       // モデル推論（async）
       const action = await decideBotBetAction(room2, cur);
-      acted = !!betAction(tableId, botId, action);
+      // NLモードならベット/レイズ額を決定
+      const amount = decideBotBetAmount(room2, cur, action);
+      acted = !!betAction(tableId, botId, action, amount);
       if (acted) doneAction = action;
-      log(`[BOT-DEBUG] ${cur.name}(${room2.currentMode}) BET action=${action} hand=[${(cur.hand||[]).join(',')}] chips=${cur.chips} pot=${room2.pot} currentBet=${room2.currentBet} phase=${room2.phase}`);
+      log(`[BOT-DEBUG] ${cur.name}(${room2.currentMode}) BET action=${action}${amount?' amt='+amount:''} hand=[${(cur.hand||[]).join(',')}] chips=${cur.chips} pot=${room2.pot} currentBet=${room2.currentBet} phase=${room2.phase}`);
       logDev(`[TBotM] ${tableId.slice(-8)} ${cur.name} ${action} acted=${acted} chips=${cur.chips}`);
     }
 

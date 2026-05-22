@@ -15,10 +15,21 @@ function TournamentStartWatcher() {
   useEffect(() => {
     if (!session?.user?.accountId) return;
 
-    // すでにdraw/spectateページにいる場合はここでの遷移は不要
     const onTournamentStarting = async ({ tournamentId }: { tournamentId: string; tableId: string }) => {
       const currentPath = window.location.pathname;
-      if (currentPath.includes('/draw') || currentPath.includes('/spectate')) return;
+      // drawページ: 既にゲーム中なので不要
+      if (currentPath.includes('/draw')) return;
+      // spectateページ: 「観戦中のトーナメント」と「自分が参加登録しているトーナメント」が
+      // 異なる場合、ここで検知して遷移する（spectate側のリスナーはparams.idでフィルタするため）
+      // 観戦中のURLが /tournament/A/spectate で、開始したのがBトーナメントの場合のみ遷移
+      if (currentPath.includes('/spectate')) {
+        // 観戦中のトーナメントIDをURLから取得
+        const spectateMatch = currentPath.match(/\/tournament\/([^/]+)\/spectate/);
+        const spectatingId = spectateMatch?.[1];
+        // 開始したトーナメントが自分が観戦中のものと同じなら spectate側で処理済み
+        if (spectatingId === tournamentId) return;
+        // 別トーナメントが開始 → 参加登録確認してから遷移
+      }
 
       // 自分が登録済みかつ脱落していないか確認
       try {

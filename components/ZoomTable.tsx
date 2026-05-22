@@ -25,6 +25,9 @@ const ZoomTable: React.FC<Props> = ({ poolId, name, mode }) => {
   const leaveReservedRef = useRef(false);
   // ベット or showdownフェーズ中はFastFoldボタンを表示
   const [canFastFold, setCanFastFold] = useState(false);
+  // bet0でコール/レイズ済みの場合はFastFold不可
+  const [hasActedInBet0, setHasActedInBet0] = useState(false);
+  const currentPhaseRef = useRef<string>('waiting');
   // 初回joinを1度だけ送るためのフラグ
   const joinedRef = useRef(false);
 
@@ -57,6 +60,7 @@ const ZoomTable: React.FC<Props> = ({ poolId, name, mode }) => {
       }
       setRoomId(rid);
       setWaiting(false);
+      setHasActedInBet0(false); // 新テーブルではリセット
       // 500ms後サーバーがbroadcast → さらに700msでrequestGameState（二重保険）
       setTimeout(() => {
         socket.emit('z:requestGameState', { roomId: rid });
@@ -76,9 +80,15 @@ const ZoomTable: React.FC<Props> = ({ poolId, name, mode }) => {
     // ゲーム状態からFastFoldボタンの表示を制御
     const onGameState = (gs: { meta: { phase: string }, players?: any[] }) => {
       const phase = gs.meta.phase;
+      currentPhaseRef.current = phase;
       setCanFastFold(phase.startsWith('bet') || phase === 'showdown');
       // デバッグログ
       const me = gs.players?.find((p: any) => p.isSelf);
+    };
+
+    // 新しいハンド開始時にbet0アクション履歴をリセット
+    const onGameStarted = () => {
+      setHasActedInBet0(false);
     };
 
     const onKicked = () => { router.push('/'); };
@@ -87,6 +97,7 @@ const ZoomTable: React.FC<Props> = ({ poolId, name, mode }) => {
     socket.on('z:assigned',       onAssigned);
     socket.on('z:poolState',      onPoolState);
     socket.on('gameState',        onGameState);
+    socket.on('gameStarted',      onGameStarted);
     socket.on('kicked',           onKicked);
     socket.on('leaveReservation', onLeaveReservation);
 
@@ -95,6 +106,7 @@ const ZoomTable: React.FC<Props> = ({ poolId, name, mode }) => {
       socket.off('z:assigned',       onAssigned);
       socket.off('z:poolState',      onPoolState);
       socket.off('gameState',        onGameState);
+      socket.off('gameStarted',      onGameStarted);
       socket.off('kicked',           onKicked);
       socket.off('leaveReservation', onLeaveReservation);
       socket.emit('z:leave', { poolId });
@@ -105,6 +117,13 @@ const ZoomTable: React.FC<Props> = ({ poolId, name, mode }) => {
   // ⚡ FastFold: 即フォールド → 次のテーブルへ移動
   const handleFastFold = () => {
     socket.emit('z:fastFold', { poolId, roomId });
+  };
+
+  // bet0でコール/レイズ/ベットした場合にFastFold不可フラグを立てる
+  const handleBetAction = (action: string) => {
+    if (currentPhaseRef.current === 'bet0' && (action === 'call' || action === 'raise' || action === 'bet')) {
+      setHasActedInBet0(true);
+    }
   };
 
   // 📺 フォールドして観戦: フォールドするが現テーブルに留まりゲーム終了まで見る
@@ -140,7 +159,7 @@ const ZoomTable: React.FC<Props> = ({ poolId, name, mode }) => {
   // ===== ゲーム中 =====
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
-      <PokerTable key={roomId} roomId={roomId} name={name} mode={mode} onFastFold={handleFastFold} onFoldStay={handleFoldStay} />
+      <PokerTable key={roomId} roomId={roomId} name={name} mode={mode} onFastFold={canFastFold && !hasActedInBet0 ? handleFastFold : undefined} onFoldStay={handleFoldStay} onBetAction={handleBetAction} />
     </div>
   );
 };

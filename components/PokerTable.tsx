@@ -24,6 +24,11 @@ interface Player {
   result?: string; isWinner?: boolean;
   isDealer: boolean; isSB: boolean; isBB: boolean;
   toCall?: number; canCheck?: boolean; canRaise?: boolean; betSize?: number;
+  // NL（27sd）対応
+  isNL?: boolean;
+  minBet?: number;
+  minRaiseTotal?: number;
+  maxBetTotal?: number;
   timerRemaining?: number;
 }
 
@@ -35,9 +40,13 @@ interface Meta {
   raiseCount: number; maxRaises: number; dealerIndex: number;
   timerRemaining: number | null; timerLimit: number;
   pendingPlayers: string[]; playerCount: number; maxPlayers: number;
+  // NL（27sd）対応
+  isNL?: boolean;
+  bigBlind?: number;
+  lastRaiseSize?: number;
 }
 
-interface Props { roomId: string; name: string; mode: '27' | 'badugi' | 'mix'; onFastFold?: () => void; onFoldStay?: () => void; }
+interface Props { roomId: string; name: string; mode: '27' | 'badugi' | 'mix' | 'a5' | '27sd' | 'mix3'; onFastFold?: () => void; onFoldStay?: () => void; onBetAction?: (action: string) => void; }
 
 // ===== 定数 =====
 const PHASE_LABEL: Record<string,string> = {
@@ -45,16 +54,36 @@ const PHASE_LABEL: Record<string,string> = {
   draw1:'DRAW I', bet1:'BET I', draw2:'DRAW II', bet2:'BET II',
   draw3:'DRAW III', bet3:'BET III', showdown:'SHOWDOWN',
 };
-const MODE_LABEL: Record<string,string> = { '27':'2-7 Triple Draw', badugi:'Badugi', mix:'Mix' };
+const MODE_LABEL: Record<string,string> = {
+  '27':'2-7 Triple Draw',
+  badugi:'Badugi',
+  mix:'Mix',
+  a5:'A-5 Triple Draw',
+  '27sd':'2-7 Single Draw (NL)',
+  mix3:'Mix-3',
+};
+
+/**
+ * Mix系モード判定（複数ゲームをローテーションする親モード）
+ * サーバー側 gameManager.isMixMode と同じロジック。
+ * 将来 mix4 等を追加する場合はここに追加するだけで全箇所に伝播する。
+ */
+function isMixMode(mode: string): boolean {
+  return mode === 'mix' || mode === 'mix3';
+}
 
 // ===== メインコンポーネント =====
-const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldStay }) => {
+const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldStay, onBetAction }) => {
   const router = useRouter();
 
   const [players,       setPlayers]       = useState<Player[]>([]);
   const [meta,          setMeta]          = useState<Meta>({
-    phase:'waiting', mode, currentMode: mode==='badugi'?'badugi':'27',
-    pot:0, currentBet:0, betSize:10, raiseCount:0, maxRaises:4,
+    // mix/mix3 は初期表示で2-7にフォールバック（startGame まで currentMode 未確定のため）。
+    // それ以外（27/badugi/a5/27sd）は mode をそのまま currentMode に入れる。
+    phase:'waiting', mode, currentMode: isMixMode(mode) ? '27' : mode,
+    // ⚠️ maxRaises はサーバー側 MAX_RAISES と同期させる（5bet-cap）。
+    // raiseDisplay = `${raiseCount}/${maxRaises}` で表示式が決まるため、ここを4にすると 0/4 表示の不整合が起きる。
+    pot:0, currentBet:0, betSize:10, raiseCount:0, maxRaises:5,
     dealerIndex:-1, timerRemaining:null, timerLimit:0,
     pendingPlayers:[], playerCount:0, maxPlayers:6,
   });
@@ -66,6 +95,8 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
   const [countdown, setCountdown] = useState<number|null>(null);
   // 退室予約: null | 'afterHand' | 'nextBB'
   const [leaveReservation, setLeaveReservation] = useState<null|'afterHand'|'nextBB'>(null);
+  // NLベット用: ユーザーが入力中のベット額（totalBet）
+  const [nlBetAmount, setNlBetAmount] = useState<number | null>(null);
   // kicked通知メッセージ
   const [kickedMsg, setKickedMsg] = useState<string|null>(null);
   // pending待機中メッセージ（ゲーム進行中に入室→次のハンドから参加）
@@ -320,12 +351,21 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
   const isMyTurn      = self?.isMyTurn ?? false;
   const drawRound     = ['draw1','draw2','draw3'].indexOf(meta.phase)+1;
   const curPlayer     = players.find((p) => p.isMyTurn);
-  const effectiveMode = meta.currentMode ?? (mode==='mix'?'27':mode);
+  const effectiveMode = meta.currentMode ?? (isMixMode(mode) ? '27' : mode);
   // ⚠️ 変更禁止: raiseCount/maxRaises が正しい表示式。(maxRaises+1) にすると分母が6になり5/6表示になるバグになる。
   const raiseDisplay  = `${meta.raiseCount}/${meta.maxRaises}`;
-  const modeColor     = effectiveMode==='badugi' ? '#cc9966' : '#88bbee';
-  const modeBg        = effectiveMode==='badugi' ? 'rgba(204,119,68,0.22)' : 'rgba(68,136,204,0.22)';
-  const modeBorder    = effectiveMode==='badugi' ? 'rgba(204,119,68,0.45)' : 'rgba(68,136,204,0.45)';
+  const modeColor     = effectiveMode==='badugi' ? '#cc9966'
+                      : effectiveMode==='a5'     ? '#bb88dd'
+                      : effectiveMode==='27sd'   ? '#88dd88'
+                      : '#88bbee';
+  const modeBg        = effectiveMode==='badugi' ? 'rgba(204,119,68,0.22)'
+                      : effectiveMode==='a5'     ? 'rgba(187,136,221,0.22)'
+                      : effectiveMode==='27sd'   ? 'rgba(136,221,136,0.22)'
+                      : 'rgba(68,136,204,0.22)';
+  const modeBorder    = effectiveMode==='badugi' ? 'rgba(204,119,68,0.45)'
+                      : effectiveMode==='a5'     ? 'rgba(187,136,221,0.45)'
+                      : effectiveMode==='27sd'   ? 'rgba(136,221,136,0.45)'
+                      : 'rgba(68,136,204,0.45)';
 
   // ===== ターン通知音 =====
   const audioCtxRef = React.useRef<AudioContext | null>(null);
@@ -397,7 +437,10 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
     setMyDrew(true); setSelected([]);
   };
   const clearSelected = () => { setSelected([]); socket.emit('updateSelected',{roomId,indices:[]}); };
-  const handleBet   = (action: string) => { socket.emit('betAction', { roomId, action }); };
+  const handleBet = (action: string, amount?: number) => {
+    socket.emit('betAction', { roomId, action, amount });
+    onBetAction?.(action);
+  };
   const handleLeave = () => { socket.emit('leaveRoom', {roomId}); router.push('/'); };
   const handleLeaveReserve = (type: 'afterHand'|'nextBB'|'cancel') => {
     socket.emit('reserveLeave', { roomId, type });
@@ -407,6 +450,111 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
   const Badge = ({bg,color,label}:{bg:string,color:string,label:string}) => (
     <span style={{fontSize:9,fontFamily:'var(--font-title)',padding:'1px 5px',borderRadius:3,background:bg,color,flexShrink:0}}>{label}</span>
   );
+
+
+  // NLベット送信時の amount を決定
+  // ショートスタック (maxBet < lowerBound) → maxBet（オールイン）
+  // 通常 → ユーザーが設定した nlBetAmount、未設定なら lowerBound
+  const getNLSendAmount = (self: Player): number => {
+    const isBet      = meta.currentBet === 0;
+    const minBet     = self.minBet ?? meta.bigBlind ?? 10;
+    const minRaiseT  = self.minRaiseTotal ?? (meta.currentBet + (meta.bigBlind ?? 10));
+    const maxBet     = self.maxBetTotal ?? (self.bet + self.chips);
+    const lowerBound = isBet ? minBet : minRaiseT;
+    if (maxBet < lowerBound) return maxBet; // ショートスタック → オールイン固定
+    return nlBetAmount ?? lowerBound;
+  };
+
+  // ===== NLベットコントロール =====
+  // currentBet=0時はベット、>0時はレイズ。ユーザーがminBet/minRaise〜maxBet間で額を選択する。
+  // PC/モバイル両対応のコンパクトレイアウト。
+  const NLBetControl = ({compact}:{compact:boolean}) => {
+    const self = players.find(p => p.isSelf);
+    if (!self || !self.canRaise) return null;
+
+    const isBet      = meta.currentBet === 0;
+    const minBet     = self.minBet ?? meta.bigBlind ?? 10;
+    const minRaiseT  = self.minRaiseTotal ?? (meta.currentBet + (meta.bigBlind ?? 10));
+    const maxBet     = self.maxBetTotal ?? (self.bet + self.chips);
+    const lowerBound = isBet ? minBet : minRaiseT;
+    const pot        = meta.pot;
+
+    // ショートスタック: 通常のミニマム（bet:BB / raise:currentBet+lastRaiseSize）に届かない場合
+    // → オールインのみ可能（サーバー側は isAllIn=true でminRaise下限を緩和して受理する）
+    const isShortStack = maxBet < lowerBound;
+    if (isShortStack) {
+      // オールイン専用UI: スライダー・クイック選択は表示せず、額情報のみ
+      const fs = compact ? 9 : 11;
+      return (
+        <div style={{display:'flex',flexDirection:'column',gap:compact?3:5,marginBottom:compact?3:5}}>
+          <div style={{
+            fontSize: fs, textAlign:'center' as const,
+            color:'var(--cream-dim)', fontFamily:'var(--font-body)',
+            padding: compact ? '3px 6px' : '4px 8px',
+            background:'rgba(100,80,200,0.15)',
+            border:'0.5px solid rgba(150,130,240,0.3)',
+            borderRadius: 4,
+          }}>
+            残りチップ不足 → オールイン専用 ({maxBet.toLocaleString()})
+          </div>
+        </div>
+      );
+    }
+
+    // 現在の入力値（未設定なら lowerBound を使う）
+    const currentAmt = nlBetAmount ?? lowerBound;
+    const clampedAmt = Math.max(lowerBound, Math.min(maxBet, currentAmt));
+
+    // クイック選択額（pot基準・lowerBound〜maxBetの範囲に丸める）
+    const quickAmounts: { label: string; value: number }[] = [
+      { label: '1/2P', value: Math.floor(pot * 0.5) },
+      { label: 'P',    value: pot },
+      { label: '2P',   value: pot * 2 },
+    ].map(q => ({ ...q, value: Math.max(lowerBound, Math.min(maxBet, q.value)) }));
+
+    const fs = compact ? 9 : 11;
+    const padY = compact ? 3 : 4;
+
+    return (
+      <div style={{display:'flex',flexDirection:'column',gap:compact?3:5,marginBottom:compact?3:5}}>
+        {/* クイック選択 */}
+        <div style={{display:'flex',gap:compact?2:4}}>
+          {quickAmounts.map((q,i) => (
+            <button key={i} onClick={() => setNlBetAmount(q.value)} style={{
+              flex:1, fontSize: fs, padding:`${padY}px 0`, borderRadius:4,
+              border: clampedAmt === q.value ? '1px solid var(--gold)' : '1px solid rgba(255,255,255,0.2)',
+              background: clampedAmt === q.value ? 'rgba(201,168,76,0.25)' : 'rgba(255,255,255,0.07)',
+              color: clampedAmt === q.value ? 'var(--gold-bright)' : 'var(--cream-dim)',
+              fontFamily:'var(--font-title)', cursor:'pointer',
+            }}>{q.label}</button>
+          ))}
+        </div>
+        {/* スライダー + 値表示 */}
+        <div style={{display:'flex',alignItems:'center',gap:compact?4:6}}>
+          <input type="range" min={lowerBound} max={maxBet} step={Math.max(1, Math.floor((meta.bigBlind ?? 10) / 2))}
+            value={clampedAmt} onChange={(e) => setNlBetAmount(Number(e.target.value))}
+            style={{flex:1, accentColor:'var(--gold)', height:compact?12:14}} />
+          <span style={{fontSize:compact?11:13, fontWeight:600, color:'var(--gold-bright)',
+            minWidth:compact?40:50, textAlign:'right' as const,
+            fontFamily:'var(--font-body)'}}>{clampedAmt.toLocaleString()}</span>
+        </div>
+      </div>
+    );
+  };
+
+  // NLベット時にminBet/minRaiseTotalが変わったら、入力値を初期化する
+  // 自分のターン開始時と、currentBet変動時にリセット
+  const _self = players.find(p => p.isSelf);
+  useEffect(() => {
+    if (!_self || !_self.isNL || !_self.canRaise) { setNlBetAmount(null); return; }
+    const lowerBound = meta.currentBet === 0 ? (_self.minBet ?? 10) : (_self.minRaiseTotal ?? 10);
+    // ターン外から入った瞬間、または下限が現在値を超えていたらリセット
+    if (nlBetAmount === null || nlBetAmount < lowerBound) {
+      setNlBetAmount(lowerBound);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meta.currentBet, meta.phase, _self?.isMyTurn, _self?.isNL, _self?.canRaise, _self?.minBet, _self?.minRaiseTotal]);
+
 
   // カスタムチェックボックス（ポーカーテーマ）
   const ChkBox = ({checked, onChange}:{checked:boolean, onChange:()=>void}) => (
@@ -537,8 +685,10 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
       <div style={{display:'flex',flexDirection:'column',gap:5}}>
         <div style={{textAlign:'center',fontSize:11,color:'var(--cream-dim)',fontFamily:'var(--font-body)'}}>
           {(self.toCall!>0 ? ('コール: '+self.toCall) : 'チェック or ベット')}
-          <span style={{fontSize:9,opacity:0.65,marginLeft:6}}>{'単位:'+self.betSize+' Bet '+raiseDisplay}</span>
+          <span style={{fontSize:9,opacity:0.65,marginLeft:6}}>{self.isNL ? 'No Limit' : ('単位:'+self.betSize+' Bet '+raiseDisplay)}</span>
         </div>
+        {/* NLモード: ベット額スライダーを表示 */}
+        {self.isNL && self.canRaise && <NLBetControl compact={false} />}
         {/* 横1行レイアウト: bet0かつFastFold部屋の場合はFoldボタンを⚡次へ/📺観戦に置き換え */}
         <div style={{display:'flex',gap:6}}>
           {!self.canCheck && (onFastFold && onFoldStay && meta.phase==='bet0'
@@ -549,8 +699,14 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
             ? btn(()=>handleBet('check'),'チェック','gray')
             : btn(()=>handleBet('call'),'コール('+self.toCall+')','gray')
           }
-          {self.canRaise&&btn(()=>handleBet(meta.currentBet===0?'bet':'raise'),
-            meta.currentBet===0?('BET+'+self.betSize):('RAISE+'+self.betSize),'gold')}
+          {self.canRaise && (self.isNL
+            ? (() => {
+                const sendAmt = getNLSendAmount(self);
+                return btn(() => handleBet(meta.currentBet===0?'bet':'raise', sendAmt),
+                  meta.currentBet===0 ? `ベット ${sendAmt.toLocaleString()}` : `レイズ ${sendAmt.toLocaleString()}`, 'gold');
+              })()
+            : btn(()=>handleBet(meta.currentBet===0?'bet':'raise'),
+                meta.currentBet===0?('BET+'+self.betSize):('RAISE+'+self.betSize),'gold'))}
         </div>
         <InlineLeave />
       </div>
@@ -650,20 +806,27 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
       <div style={actionColStyle}>
         <div style={{...infoStyle, gridColumn:'unset'}}>
           {self.toCall!>0?`コール: ${self.toCall}`:'チェック or ベット'}
-          <span style={{fontSize:fs-3,opacity:0.65,display:'block'}}>単位:{self.betSize} Bet {raiseDisplay}</span>
+          <span style={{fontSize:fs-3,opacity:0.65,display:'block'}}>{self.isNL ? 'No Limit' : `単位:${self.betSize} Bet ${raiseDisplay}`}</span>
         </div>
-        {onFastFold && onFoldStay && meta.phase==='bet0'
+        {self.isNL && self.canRaise && <NLBetControl compact={true} />}
+        {!self.canCheck && (onFastFold && onFoldStay && meta.phase==='bet0'
           ? <>{btn(onFastFold,'⚡ 次へ','gold')}{btn(onFoldStay,'📺 観戦','red')}</>
           : btn(()=>handleBet('fold'),'フォールド','red')
-        }
+        )}
         {self.canCheck
           ? btn(()=>handleBet('check'),'チェック','gray')
           : btn(()=>handleBet('call'),`コール (${self.toCall})`,'gray')
         }
         {self.canRaise
-          ? btn(()=>handleBet(meta.currentBet===0?'bet':'raise'),
-              meta.currentBet===0?`ベット (+${self.betSize})`:`レイズ (+${self.betSize})`,
-              'gold')
+          ? (self.isNL
+              ? (() => {
+                  const sendAmt = getNLSendAmount(self);
+                  return btn(() => handleBet(meta.currentBet===0?'bet':'raise', sendAmt),
+                    meta.currentBet===0 ? `ベット ${sendAmt.toLocaleString()}` : `レイズ ${sendAmt.toLocaleString()}`, 'gold');
+                })()
+              : btn(()=>handleBet(meta.currentBet===0?'bet':'raise'),
+                  meta.currentBet===0?`ベット (+${self.betSize})`:`レイズ (+${self.betSize})`,
+                  'gold'))
           : null
         }
       </div>
@@ -723,7 +886,9 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
       </div>
       <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap' as const,justifyContent:'center'}}>
         <span style={{...modBadgeSt, background:modeBg, color:modeColor, border:`1px solid ${modeBorder}`, fontSize:compact?9:11}}>
-          {mode==='mix'?`Mix→${effectiveMode==='badugi'?'Badugi':'2-7'}`:MODE_LABEL[effectiveMode]}
+          {isMixMode(mode)
+            ? `${mode==='mix3'?'Mix-3':'Mix'}→${effectiveMode==='badugi'?'Badugi':effectiveMode==='a5'?'A-5':'2-7'}`
+            : MODE_LABEL[effectiveMode]}
         </span>
         <span style={{...phaseBadgeSt, fontSize:compact?10:13, padding:compact?'2px 8px':'4px 12px'}}>
           {PHASE_LABEL[meta.phase]??meta.phase}
@@ -807,7 +972,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
         {PHASE_LABEL[meta.phase]}
       </div>
       {meta.pot>0 && <div style={{fontSize:big?16:11,color:'#f0d060',fontWeight:'700',marginTop:3,fontFamily:'var(--font-title)'}}>🏦 {meta.pot}</div>}
-      {isBetPhase && meta.currentBet>0 && <div style={{fontSize:big?12:9,color:'#ffcc44',marginTop:1,fontFamily:'var(--font-body)'}}>BET {meta.currentBet} · {raiseDisplay}</div>}
+      {isBetPhase && meta.currentBet>0 && <div style={{fontSize:big?12:9,color:'#ffcc44',marginTop:1,fontFamily:'var(--font-body)'}}>BET {meta.currentBet}{meta.isNL ? '' : ' · ' + raiseDisplay}</div>}
     </div>
   );
 
@@ -1084,7 +1249,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
                   textShadow:'0 0 8px rgba(0,0,0,0.9)'}}>
                   {PHASE_LABEL[meta.phase]}
                 </div>
-                {isBetPhase && <div style={{fontSize:8,color:'rgba(255,255,255,0.45)',fontFamily:'var(--font-body)'}}>Bet {raiseDisplay}</div>}
+                {isBetPhase && !meta.isNL && <div style={{fontSize:8,color:'rgba(255,255,255,0.45)',fontFamily:'var(--font-body)'}}>Bet {raiseDisplay}</div>}
                 {isDrawPhase && (
                   <div style={{display:'flex',gap:4,justifyContent:'center',marginTop:2}}>
                     {[1,2,3].map((n)=>(
@@ -1122,7 +1287,10 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
             {/* ルール・待機情報（上段） */}
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
               <div style={{fontSize:9,color:'var(--gold-dim)',fontFamily:'var(--font-body)'}}>
-                {effectiveMode==='badugi'?'★ Badugi: 全スート異なる低い4枚が最強':'★ 2-7: 低い手が強い。A最高位'}
+                {effectiveMode==='badugi'?'★ Badugi: 全スート異なる低い4枚が最強'
+                 :effectiveMode==='a5'?'★ A-5: A=1扱い、ストレート/フラッシュ無視'
+                 :effectiveMode==='27sd'?'★ 2-7 SD: 1ドロー・ノーリミット'
+                 :'★ 2-7: 低い手が強い。A最高位'}
               </div>
               {meta.pendingPlayers.length>0 && (
                 <div style={{fontSize:9,color:'var(--gold-dim)',fontStyle:'italic'}}>
@@ -1165,7 +1333,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
                   textShadow:'0 0 8px rgba(0,0,0,0.9)'}}>
                   {PHASE_LABEL[meta.phase]}
                 </div>
-                {isBetPhase && <div style={{fontSize:8,color:'rgba(255,255,255,0.45)',fontFamily:'var(--font-body)'}}>Bet {raiseDisplay}</div>}
+                {isBetPhase && !meta.isNL && <div style={{fontSize:8,color:'rgba(255,255,255,0.45)',fontFamily:'var(--font-body)'}}>Bet {raiseDisplay}</div>}
               </div>
             )}
             {/* ポット（テーブル上部）*/}
@@ -1207,7 +1375,10 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
               <LeaveReserveBox compact />
             </div>
             <div style={{fontSize:8,color:'var(--gold-dim)',fontFamily:'var(--font-body)',textAlign:'center'}}>
-              {effectiveMode==='badugi'?'★ Badugi':'★ 2-7 Low'}
+              {effectiveMode==='badugi'?'★ Badugi'
+               :effectiveMode==='a5'?'★ A-5 Low'
+               :effectiveMode==='27sd'?'★ 2-7 SD'
+               :'★ 2-7 Low'}
             </div>
           </div>
         </div>

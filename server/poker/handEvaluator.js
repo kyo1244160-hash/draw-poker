@@ -28,6 +28,17 @@ const RANK_ORDER_BADUGI = {
   '8': 8, '9': 9, 'T': 10, 'J': 11, 'Q': 12, 'K': 13,
 };
 
+/**
+ * A-5 Triple Draw 用ランク順（A は最低位 = 最強）
+ * ストレート・フラッシュは無視されるローボール
+ * 最強手: A-2-3-4-5
+ */
+const RANK_ORDER_A5 = {
+  'A': 1,
+  '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7,
+  '8': 8, '9': 9, 'T': 10, 'J': 11, 'Q': 12, 'K': 13,
+};
+
 // ==========================================================
 // ■ 2-7 Triple Draw 役判定
 //   ローボール: 数字が低いほど強い
@@ -104,6 +115,77 @@ function compare27Hands(handA, handB) {
   // 同カテゴリ → カードを降順に並べて順番に比較（低いほど強い）
   const numsA = handA.map((c) => RANK_ORDER[c[0]]).sort((a, b) => b - a);
   const numsB = handB.map((c) => RANK_ORDER[c[0]]).sort((a, b) => b - a);
+  for (let i = 0; i < numsA.length; i++) {
+    if (numsA[i] !== numsB[i]) return numsA[i] - numsB[i];
+  }
+  return 0;
+}
+
+// ==========================================================
+// ■ A-5 Triple Draw 役判定
+//   ローボール: 数字が低いほど強い
+//   A は常に低い（強い） — A=1扱い
+//   ストレート・フラッシュは無視（役にならない）
+//   最強の手: A-2-3-4-5
+// ==========================================================
+
+/**
+ * A-5 の手カテゴリを返す（小さいほど強い）
+ * ストレート・フラッシュを無視するため、カテゴリ数が2-7より少ない
+ *  0: ノーペア（最強）
+ *  1: ワンペア
+ *  2: ツーペア
+ *  3: スリーカード
+ *  4: フルハウス
+ *  5: フォーカード
+ */
+function getA5Category(hand) {
+  if (!hand || hand.length !== 5) return 5;
+
+  const ranks = hand.map((c) => c[0]);
+  const nums  = ranks.map((r) => RANK_ORDER_A5[r]).sort((a, b) => a - b);
+
+  // 枚数カウント（ペア判定用）
+  const cnt = {};
+  for (const n of nums) cnt[n] = (cnt[n] ?? 0) + 1;
+  const freq = Object.values(cnt).sort((a, b) => b - a);
+
+  if (freq[0] === 4)                      return 5; // フォーカード
+  if (freq[0] === 3 && freq[1] === 2)     return 4; // フルハウス
+  if (freq[0] === 3)                      return 3; // スリーカード
+  if (freq[0] === 2 && freq[1] === 2)     return 2; // ツーペア
+  if (freq[0] === 2)                      return 1; // ワンペア
+  return 0;                                         // ノーペア（最強）
+}
+
+/** A-5 の役名（日本語）を返す */
+function evaluateA5Hand(hand) {
+  const cat = getA5Category(hand);
+  if (cat === 0) {
+    // ノーペア: 最大カードを特定して「X ロー」と表示
+    const nums = hand.map((c) => RANK_ORDER_A5[c[0]]).sort((a, b) => b - a);
+    const rankName = {1:'A',2:'2',3:'3',4:'4',5:'5',6:'6',7:'7',8:'8',9:'9',10:'T',11:'J',12:'Q',13:'K'};
+    return rankName[nums[0]] + ' ロー';
+  }
+  const names = [
+    '', 'ワンペア', 'ツーペア', 'スリーカード',
+    'フルハウス', 'フォーカード',
+  ];
+  return names[cat] ?? '不明';
+}
+
+/**
+ * A-5 の2手を比較する
+ * @returns {number} 負: handA が強い, 正: handB が強い, 0: 引き分け
+ */
+function compareA5Hands(handA, handB) {
+  const catA = getA5Category(handA);
+  const catB = getA5Category(handB);
+  if (catA !== catB) return catA - catB;
+
+  // 同カテゴリ → カードを降順に並べて順番に比較（低いほど強い、A=1）
+  const numsA = handA.map((c) => RANK_ORDER_A5[c[0]]).sort((a, b) => b - a);
+  const numsB = handB.map((c) => RANK_ORDER_A5[c[0]]).sort((a, b) => b - a);
   for (let i = 0; i < numsA.length; i++) {
     if (numsA[i] !== numsB[i]) return numsA[i] - numsB[i];
   }
@@ -219,7 +301,9 @@ function findWinner(players, mode = '27') {
  */
 function findWinners(players, mode = '27') {
   if (!players || players.length === 0) return [];
-  const compare = mode === 'badugi' ? compareBadugiHands : compare27Hands;
+  const compare = mode === 'badugi' ? compareBadugiHands
+                : mode === 'a5'     ? compareA5Hands
+                : compare27Hands;
 
   let best = [players[0]];
   for (let i = 1; i < players.length; i++) {
@@ -238,6 +322,10 @@ module.exports = {
   evaluate27Hand,
   compare27Hands,
   get27Category,
+  // A-5 Triple Draw
+  evaluateA5Hand,
+  compareA5Hands,
+  getA5Category,
   // Badugi
   evaluateBadugiHand,
   compareBadugiHands,
@@ -246,4 +334,5 @@ module.exports = {
   findWinner,
   findWinners,
   RANK_ORDER,
+  RANK_ORDER_A5,
 };

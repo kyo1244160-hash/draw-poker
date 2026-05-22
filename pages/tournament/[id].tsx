@@ -159,9 +159,9 @@ export default function TournamentLobby() {
     setRegistered(true);
     setActionMsg('✅ 参加登録しました');
     setBusy(false);
-    // レイトレジスト: 登録後すぐにdrawページへ遷移
+    // レイトレジスト: 登録後すぐにspectateページへ遷移（テーブル配置まで観戦しながら待機）
     if (tournament?.status === 'running') {
-      setTimeout(() => router.replace(`/tournament/${id}/draw`), 800);
+      setTimeout(() => router.replace(`/tournament/${id}/spectate?fromLateReg=1`), 800);
     }
   };
 

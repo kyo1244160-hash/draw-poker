@@ -257,6 +257,10 @@ function cardQualityScores(hand, mode) {
   const cards = hand.map(parseCard).filter(Boolean);
   const scores = [];
 
+  // A-5 ロジック（useAceLow=true）は将来 A-5 専用 ONNX モデルが学習されたときに有効化される。
+  // 現状の運用: A-5 / 27SD は botManager.decideBotBetAction の早期 return で
+  // ルールベースフォールバックに流れるため、buildInfoState は呼ばれず この分岐は実行されない。
+  // 削除しないこと（モデル学習後のリグレッション防止）。
   if (mode === '27' || mode === 'a5') {
     const useAceLow = mode === 'a5';
     const rankCnt = {}, suitCnt = {};

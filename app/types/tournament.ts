@@ -58,6 +58,12 @@ export interface PlayerState {
   isAllIn?: boolean;
   isPendingPlayer?: boolean;  // pendingPlayers待機中（次のハンドから参加）
   betSize?: number;
+  // NL（27sd）対応: クライアントUI構築用情報。
+  // isNL=true のときのみ minBet/minRaiseTotal/maxBetTotal が利用可能
+  isNL?: boolean;
+  minBet?: number;          // bet時の下限
+  minRaiseTotal?: number;   // raise時の下限（totalBet基準）
+  maxBetTotal?: number;     // 上限（player.bet + player.chips）
   timerRemaining?: number;
 }
 
@@ -80,6 +86,11 @@ export interface GameMeta {
   pendingPlayers?: string[];
   isTournament?: boolean;
   tournamentId?: string;
+  roomId?: string;     // Vol.11追加: PokerTable の roomId フィルタに使用
+  // NL（27sd）対応
+  isNL?: boolean;
+  bigBlind?: number;
+  lastRaiseSize?: number;
 }
 
 export interface GameState {

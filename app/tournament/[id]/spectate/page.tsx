@@ -15,6 +15,11 @@ export default function SpectatePage() {
 
   // ?tableId=xxx で特定テーブルを指定
   const targetTableId = searchParams?.get('tableId');
+  // ?fromLateReg=1 でレイトレジスト後の観戦待機モード
+  const fromLateReg = searchParams?.get('fromLateReg') === '1';
+  // ?myTournamentId=xxx で自分が参加登録しているトーナメントIDを受け取る
+  // 観戦中に自分のトーナメントが開始したら /draw へ遷移するための判定に使用
+  const myTournamentId = searchParams?.get('myTournamentId') ?? null;
 
   const [players,  setPlayers]  = useState<PlayerState[]>([]);
   const [meta,     setMeta]     = useState<GameMeta | null>(null);
@@ -23,6 +28,8 @@ export default function SpectatePage() {
   const [timer,    setTimer]    = useState<{ remaining: number; limit: number } | null>(null);
   const [connected, setConnected] = useState(false);
   const tableIdRef = useRef<string | null>(targetTableId ?? null);
+  // レイトレジスト時: 自分のテーブルID（ゲーム開始で /draw 遷移するための判定用）
+  const myTableIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -30,6 +37,12 @@ export default function SpectatePage() {
     connectWithAuth().then(ok => {
       if (cancelled || !ok) return;
       setConnected(true);
+
+      // レイトレジスト後: t:getMyTable で配置をトリガするが、即遷移せず観戦継続する。
+      // t:tournamentStarting で自分のテーブルIDを記憶し、ゲームが実際に開始されたら /draw へ遷移する。
+      if (fromLateReg) {
+        socket.emit('t:getMyTable', { tournamentId: params.id });
+      }
 
       // テーブルIDが指定されていれば即観戦参加。
       // 指定なしの場合も tournamentId をサーバーに渡して即解決する
@@ -40,7 +53,23 @@ export default function SpectatePage() {
         // 進行中トーナメントなら tournamentId だけで即解決できる
         socket.emit('spectate', { tournamentId: params.id });
         // 未開始の場合に備えて t:tournamentStarting も待つ
-        socket.on('t:tournamentStarting', ({ tableId: tid }: { tournamentId: string; tableId: string }) => {
+        socket.on('t:tournamentStarting', ({ tournamentId: tid_t, tableId: tid }: { tournamentId: string; tableId: string }) => {
+          // 【重要】自分が参加登録しているトーナメント（別のトーナメント）が開始した場合も検知する。
+          // ユーザーが「Aトーナメントを観戦しながらBトーナメントの開始を待つ」ケース:
+          //   - params.id === A（観戦中）
+          //   - myTournamentId === B（自分が参加登録しているもの）
+          //   - t:tournamentStarting の tournamentId === B → /tournament/B/draw へ遷移
+          if (myTournamentId && tid_t === myTournamentId) {
+            router.replace(`/tournament/${myTournamentId}/draw`);
+            return;
+          }
+          if (fromLateReg) {
+            // レイトレジスト時: 自分のテーブルとして記憶し、そのテーブルを観戦
+            myTableIdRef.current = tid;
+            tableIdRef.current = tid;
+            socket.emit('spectate', { tableId: tid });
+            return;
+          }
           if (!tableIdRef.current) {
             tableIdRef.current = tid;
             socket.emit('spectate', { tableId: tid });
@@ -52,6 +81,12 @@ export default function SpectatePage() {
     socket.on('gameState', ({ players: pl, meta: m }) => {
       setPlayers(pl ?? []);
       setMeta(m ?? null);
+      // レイトレジスト観戦中: 自分のテーブルでゲーム開始されたら /draw へ遷移
+      if (fromLateReg && myTableIdRef.current && m?.roomId === myTableIdRef.current) {
+        if (m.phase && m.phase !== 'waiting') {
+          router.replace(`/tournament/${params.id}/draw`);
+        }
+      }
     });
 
     socket.on('timerUpdate', ({ remaining, limit }: { remaining: number; limit: number }) => {
