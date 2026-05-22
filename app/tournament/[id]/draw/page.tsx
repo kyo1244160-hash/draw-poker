@@ -92,9 +92,15 @@ export default function TournamentDrawPage() {
         return;  // 別テーブルの gameState は無視
       }
       setGameState({ players: pl ?? [], meta: m ?? null });
-      if (isSpectatorFlag) setIsSpectator(true);
-      // 自分がplayersに含まれてpendingでなくなったらpending解除
+      // isSpectator 更新:
+      //   - isSelf プレイヤーが見つかった場合は必ず false（spectate→lateReg参加後の観戦モード解除）
+      //   - isSelf が見つからず isSpectatorFlag=true の場合のみ true にする
       const selfPlayer = pl?.find((p: PlayerState) => p.isSelf);
+      if (selfPlayer) {
+        setIsSpectator(false);  // プレイヤーとして参加中 → 観戦モード強制解除
+      } else if (isSpectatorFlag) {
+        setIsSpectator(true);
+      }
       if (selfPlayer && !selfPlayer.isPendingPlayer) setPendingTransfer(null);
 
       // フォールバック: t:eliminated が届かなかった場合の脱落検出

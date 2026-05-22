@@ -1333,10 +1333,19 @@ function _broadcast(io, roomId) {
   // 観戦者へ配信（手札は伏せる）
   const spectators = _spectators.get(roomId);
   if (spectators && spectators.size > 0) {
+    // spectate→lateReg参加後にソケットがplayerとspectatorsの両方に残るケースを修正:
+    // プレイヤーとして参加済みのソケットは観戦者リストから除外する
+    const playerSocketIds = new Set([...room.players, ...room.pendingPlayers].map(p => p.id));
     const state   = buildGameState(room, null);
     const meta    = state.find((x) => x._meta);
     const players = state.filter((x) => !x._meta);
     for (const sid of spectators) {
+      if (playerSocketIds.has(sid)) {
+        // このソケットはプレイヤーとして参加済み → 観戦者リストから自動除外
+        spectators.delete(sid);
+        logDev(`[broadcast] ${roomId.slice(-8)} spectator ${sid.slice(-8)} promoted to player → removed from spectators`);
+        continue;
+      }
       const s = io.sockets.sockets.get(sid);
       if (s) s.emit('gameState', { players, meta, isSpectator: true });
     }
