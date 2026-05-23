@@ -15,6 +15,7 @@ import { socket, connectWithAuth } from '../socket';
 import UserMenu from './UserMenu';
 import NicknameSetup from './NicknameSetup';
 import LoginPromptModal from './LoginPromptModal';
+import MyPageModal from './MyPageModal';
 
 // ===== 型定義 =====
 interface RoomInfo {
@@ -73,6 +74,7 @@ export default function Room() {
   // モーダル表示制御
   const [showLoginPrompt,   setShowLoginPrompt]   = useState(false);
   const [showNicknameSetup, setShowNicknameSetup] = useState(false);
+  const [showMyPage,        setShowMyPage]        = useState(false);
   const [socketError,       setSocketError]       = useState('');
   const [tournaments, setTournaments] = useState<TournamentInfo[]>([]);
   const [joining,     setJoining]     = useState(false);  // 入室待機中フラグ
@@ -207,6 +209,11 @@ export default function Room() {
         <LoginPromptModal onClose={() => setShowLoginPrompt(false)} />
       )}
 
+      {/* マイページモーダル */}
+      {showMyPage && (
+        <MyPageModal onClose={() => setShowMyPage(false)} />
+      )}
+
       {/* ニックネーム設定モーダル */}
       {showNicknameSetup && (
         <NicknameSetup
@@ -242,7 +249,15 @@ export default function Room() {
         <div style={S.userMenuWrap}>
           <UserMenu onNicknameNeeded={() => setShowNicknameSetup(true)} />
           {session?.user?.accountId && (
-            <AdminLink accountId={session.user.accountId} />
+            <>
+              <button
+                onClick={() => setShowMyPage(true)}
+                style={S2.myPageBtn}
+              >
+                MY PAGE
+              </button>
+              <AdminLink accountId={session.user.accountId} />
+            </>
           )}
         </div>
       </header>
@@ -485,6 +500,18 @@ function statusBadge(s: string): React.CSSProperties {
 }
 
 const S2: Record<string, React.CSSProperties> = {
+  myPageBtn: {
+    fontFamily:    'var(--font-title)',
+    fontSize:      11,
+    letterSpacing: '0.08em',
+    color:         'var(--gold)',
+    background:    'rgba(201,168,76,0.12)',
+    border:        '1px solid var(--gold-dim)',
+    borderRadius:  4,
+    padding:       '4px 10px',
+    cursor:        'pointer',
+    marginLeft:    8,
+  },
   adminLink: {
     fontFamily:    'var(--font-title)',
     fontSize:      11,

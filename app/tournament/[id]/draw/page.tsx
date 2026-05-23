@@ -555,6 +555,7 @@ export default function TournamentDrawPage() {
           onDrawCards={handleDrawCards}
           onUpdateSelected={handleUpdateSelected}
           blind={blind}
+          tournamentId={params.id}
         />
       </div>
 

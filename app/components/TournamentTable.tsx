@@ -133,6 +133,7 @@ interface Props {
   onDrawCards:      (indices:number[]) => void;
   onUpdateSelected: (indices:number[]) => void;
   blind?:           BlindUpdate | null;
+  tournamentId?:    string;   // 他テーブル確認に使用
 }
 
 // ==========================================================
@@ -141,13 +142,16 @@ interface Props {
 export default function TournamentTable({
   players, meta, timer, isSpectator,
   onBetAction, onDrawCards, onUpdateSelected,
-  blind,
+  blind, tournamentId,
 }: Props) {
   const [selected,      setSelected]      = useState<number[]>([]);
   const [layout,        setLayout]        = useState<'pc'|'portrait'|'landscape'|null>(null);
   const [containerSize, setContainerSize] = useState<{w:number;h:number}>({w:0,h:0});
   const containerRef = useRef<HTMLDivElement>(null);
   const [actionFlash,   setActionFlash]   = useState<Record<string,{label:string;key:number}>>({});
+  const [showTableList, setShowTableList] = useState(false);
+  const [tableListData, setTableListData] = useState<{tableId:string;players:{name:string;chips:number;isSelf:boolean;sittingOut:boolean}[]}[]>([]);
+  const [tableListLoading, setTableListLoading] = useState(false);
   const [drawFlash,     setDrawFlash]     = useState<Record<string,{count:number;key:number}>>({});
   const [lastDrawCount, setLastDrawCount] = useState<Record<string,number|null>>({});
   const prevDrewRef = useRef<Record<string,boolean>>({});
@@ -190,6 +194,22 @@ export default function TournamentTable({
   const raiseCount    = meta?.raiseCount ?? 0;
   const timerSec      = timer?.remaining ?? null;
   const timerLimit    = timer?.limit ?? (meta?.timerLimit ?? 0);
+
+  // テーブル一覧を取得してモーダル表示
+  const openTableList = async () => {
+    if (!tournamentId) return;
+    setShowTableList(true);
+    setTableListLoading(true);
+    try {
+      const res = await fetch(`/api/tournament/${tournamentId}/tables`);
+      if (res.ok) {
+        const data = await res.json();
+        setTableListData(data.tables ?? []);
+      }
+    } catch { /* silent */ } finally {
+      setTableListLoading(false);
+    }
+  };
 
   // 自分から時計回りに他プレイヤーを並べる
   const orderedOthers = (() => {
@@ -621,6 +641,7 @@ export default function TournamentTable({
     };
 
     return (
+      <>
       <div ref={containerRef} style={{display:'flex',alignItems:'center',gap:0,width:'100%',
         maxWidth:TW+ACT_W+32,padding:'0 16px',flex:1,minHeight:0}}>
         {/* 楕円テーブル */}
@@ -811,8 +832,86 @@ export default function TournamentTable({
             </div>
           )}
           <ActionButtons/>
+          {/* テーブル一覧ボタン */}
+          {tournamentId&&(
+            <button
+              onClick={openTableList}
+              style={{fontFamily:'var(--font-title)',fontSize:10,letterSpacing:'0.1em',
+                color:'var(--gold-dim)',background:'rgba(201,168,76,0.08)',
+                border:'1px solid rgba(201,168,76,0.25)',borderRadius:5,
+                padding:'5px 0',cursor:'pointer',width:'100%',marginTop:4}}
+            >
+              テーブル一覧
+            </button>
+          )}
         </div>
       </div>
+
+      {/* ===== テーブル一覧モーダル（PC） ===== */}
+      {showTableList&&(
+        <div
+          onClick={e=>{if(e.target===e.currentTarget)setShowTableList(false);}}
+          style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.75)',
+            display:'flex',alignItems:'center',justifyContent:'center',zIndex:9000,padding:16}}>
+          <div style={{background:'linear-gradient(160deg,rgba(18,60,38,0.97),rgba(8,38,24,0.99))',
+            border:'1px solid var(--gold-dim)',borderRadius:12,padding:'20px 24px',
+            width:'100%',maxWidth:480,maxHeight:'80vh',overflowY:'auto',
+            boxShadow:'0 8px 40px rgba(0,0,0,0.8)'}}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',
+              marginBottom:16,paddingBottom:12,borderBottom:'1px solid rgba(201,168,76,0.2)'}}>
+              <span style={{fontFamily:'var(--font-title)',fontSize:13,letterSpacing:'0.3em',color:'var(--gold)'}}>
+                テーブル一覧
+              </span>
+              <button onClick={()=>setShowTableList(false)}
+                style={{background:'none',border:'1px solid var(--gold-dim)',borderRadius:5,
+                  color:'var(--gold-dim)',cursor:'pointer',fontSize:13,padding:'2px 9px'}}>
+                ✕
+              </button>
+            </div>
+            {tableListLoading&&(
+              <div style={{textAlign:'center',color:'var(--cream-dim)',padding:'32px 0'}}>読み込み中...</div>
+            )}
+            {!tableListLoading&&tableListData.map((tbl,ti)=>{
+              const isMine = tbl.players.some(p=>p.isSelf);
+              return (
+                <div key={tbl.tableId} style={{marginBottom:12,
+                  border:`1px solid ${isMine?'var(--gold)':'rgba(201,168,76,0.2)'}`,
+                  borderRadius:8,overflow:'hidden'}}>
+                  <div style={{background:isMine?'rgba(201,168,76,0.15)':'rgba(0,0,0,0.3)',
+                    padding:'6px 12px',display:'flex',alignItems:'center',gap:8}}>
+                    <span style={{fontFamily:'var(--font-title)',fontSize:11,
+                      letterSpacing:'0.15em',color:isMine?'var(--gold)':'var(--cream-dim)'}}>
+                      Table {ti+1}
+                    </span>
+                    {isMine&&<span style={{fontSize:10,color:'var(--gold)',background:'rgba(201,168,76,0.2)',
+                      border:'1px solid var(--gold-dim)',borderRadius:3,padding:'1px 6px'}}>★ 自テーブル</span>}
+                    <span style={{marginLeft:'auto',fontSize:11,color:'var(--cream-dim)',fontFamily:'var(--font-body)'}}>
+                      {tbl.players.length}人
+                    </span>
+                  </div>
+                  <div>
+                    {[...tbl.players].sort((a,b)=>b.chips-a.chips).map((p,pi)=>(
+                      <div key={pi} style={{display:'flex',alignItems:'center',justifyContent:'space-between',
+                        padding:'7px 14px',borderTop:'1px solid rgba(255,255,255,0.05)',
+                        background:p.isSelf?'rgba(201,168,76,0.08)':'transparent'}}>
+                        <span style={{fontFamily:'var(--font-body)',fontSize:13,
+                          color:p.isSelf?'var(--gold-bright)':p.sittingOut?'rgba(255,255,255,0.35)':'var(--cream)'}}>
+                          {p.isSelf?'▶ ':''}{p.name}{p.sittingOut?' (待機)':''}
+                        </span>
+                        <span style={{fontFamily:'var(--font-title)',fontSize:13,
+                          color:p.isSelf?'#88ee88':'var(--cream-dim)'}}>
+                          {p.chips.toLocaleString()}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      </>
     );
   }
 
@@ -1144,6 +1243,15 @@ export default function TournamentTable({
             </div>
           )}
           {phase==='showdown'&&<div style={{textAlign:'center',fontSize:12,color:'var(--cream-dim)',fontFamily:'var(--font-body)',padding:'8px 0',fontStyle:'italic'}}>次のゲームを準備中...</div>}
+          {/* テーブル一覧ボタン（縦） */}
+          {tournamentId&&(
+            <button onClick={openTableList} style={{fontFamily:'var(--font-title)',fontSize:10,
+              letterSpacing:'0.08em',color:'var(--gold-dim)',background:'rgba(201,168,76,0.07)',
+              border:'1px solid rgba(201,168,76,0.2)',borderRadius:5,padding:'5px 0',
+              cursor:'pointer',width:'100%',marginTop:4}}>
+              テーブル一覧
+            </button>
+          )}
         </div>
       </div>
     );
@@ -1163,6 +1271,15 @@ export default function TournamentTable({
         display:'flex',flexDirection:'column',justifyContent:'center',overflow:'hidden',padding:'6px 8px'}}>
         <div style={{display:'flex',flexDirection:'column',gap:6,flex:1,justifyContent:'center'}}>
           <ActionButtons compact/>
+          {/* テーブル一覧ボタン（横） */}
+          {tournamentId&&(
+            <button onClick={openTableList} style={{fontFamily:'var(--font-title)',fontSize:9,
+              letterSpacing:'0.06em',color:'var(--gold-dim)',background:'rgba(201,168,76,0.07)',
+              border:'1px solid rgba(201,168,76,0.2)',borderRadius:5,padding:'4px 0',
+              cursor:'pointer',width:'100%'}}>
+              テーブル一覧
+            </button>
+          )}
         </div>
         <div style={{fontSize:8,color:'var(--gold-dim)',fontFamily:'var(--font-body)',textAlign:'center'}}>
           {effectiveMode==='badugi'?'★ Badugi'
@@ -1171,6 +1288,72 @@ export default function TournamentTable({
            :'★ 2-7 Low'}
         </div>
       </div>
+
+      {/* ===== テーブル一覧モーダル ===== */}
+      {showTableList&&(
+        <div
+          onClick={e=>{if(e.target===e.currentTarget)setShowTableList(false);}}
+          style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.75)',
+            display:'flex',alignItems:'center',justifyContent:'center',zIndex:9000,padding:16}}>
+          <div style={{background:'linear-gradient(160deg,rgba(18,60,38,0.97),rgba(8,38,24,0.99))',
+            border:'1px solid var(--gold-dim)',borderRadius:12,padding:'20px 24px',
+            width:'100%',maxWidth:480,maxHeight:'80vh',overflowY:'auto',
+            boxShadow:'0 8px 40px rgba(0,0,0,0.8)'}}>
+            {/* ヘッダー */}
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',
+              marginBottom:16,paddingBottom:12,borderBottom:'1px solid rgba(201,168,76,0.2)'}}>
+              <span style={{fontFamily:'var(--font-title)',fontSize:13,letterSpacing:'0.3em',color:'var(--gold)'}}>
+                テーブル一覧
+              </span>
+              <button onClick={()=>setShowTableList(false)}
+                style={{background:'none',border:'1px solid var(--gold-dim)',borderRadius:5,
+                  color:'var(--gold-dim)',cursor:'pointer',fontSize:13,padding:'2px 9px'}}>
+                ✕
+              </button>
+            </div>
+            {tableListLoading&&(
+              <div style={{textAlign:'center',color:'var(--cream-dim)',padding:'32px 0'}}>読み込み中...</div>
+            )}
+            {!tableListLoading&&tableListData.map((tbl,ti)=>{
+              const isMine = tbl.players.some(p=>p.isSelf);
+              return (
+                <div key={tbl.tableId} style={{marginBottom:12,
+                  border:`1px solid ${isMine?'var(--gold)':'rgba(201,168,76,0.2)'}`,
+                  borderRadius:8,overflow:'hidden'}}>
+                  <div style={{background:isMine?'rgba(201,168,76,0.15)':'rgba(0,0,0,0.3)',
+                    padding:'6px 12px',display:'flex',alignItems:'center',gap:8}}>
+                    <span style={{fontFamily:'var(--font-title)',fontSize:11,
+                      letterSpacing:'0.15em',color:isMine?'var(--gold)':'var(--cream-dim)'}}>
+                      Table {ti+1}
+                    </span>
+                    {isMine&&<span style={{fontSize:10,color:'var(--gold)',background:'rgba(201,168,76,0.2)',
+                      border:'1px solid var(--gold-dim)',borderRadius:3,padding:'1px 6px'}}>★ 自テーブル</span>}
+                    <span style={{marginLeft:'auto',fontSize:11,color:'var(--cream-dim)',fontFamily:'var(--font-body)'}}>
+                      {tbl.players.length}人
+                    </span>
+                  </div>
+                  <div>
+                    {[...tbl.players].sort((a,b)=>b.chips-a.chips).map((p,pi)=>(
+                      <div key={pi} style={{display:'flex',alignItems:'center',justifyContent:'space-between',
+                        padding:'6px 12px',borderTop:'1px solid rgba(255,255,255,0.05)',
+                        background:p.isSelf?'rgba(201,168,76,0.08)':'transparent'}}>
+                        <span style={{fontFamily:'var(--font-body)',fontSize:13,
+                          color:p.isSelf?'var(--gold-bright)':p.sittingOut?'rgba(255,255,255,0.35)':'var(--cream)'}}>
+                          {p.isSelf?'▶ ':''}{p.name}{p.sittingOut?' (待機)':''}
+                        </span>
+                        <span style={{fontFamily:'var(--font-title)',fontSize:13,
+                          color:p.isSelf?'#88ee88':'var(--cream-dim)'}}>
+                          {p.chips.toLocaleString()}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
