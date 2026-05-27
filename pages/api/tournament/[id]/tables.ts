@@ -1,16 +1,17 @@
 /**
  * pages/api/tournament/[id]/tables.ts
  * GET /api/tournament/[id]/tables
- * → { tables: [{ tableId, players: [{name, chips, isSelf}] }] }
+ * → { tables: [{ tableId, players: [{name, chips, isSelf, sittingOut}] }] }
  *
- * サーバーメモリから読むだけ（DBには保存しない）
+ * webpack バンドル境界問題への対応:
+ *   pages/api は Next.js の webpack でバンドルされるため、
+ *   server/ の require は Express サーバーとは別インスタンスになる。
+ *   entry.ts の __pastisLateRegClosed と同じ手法で
+ *   global.__pastisTournaments / global.__pastisRooms 経由でアクセスする。
  */
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { getServerSession } from 'next-auth/next';
 import { authOptions } from '../../auth/[...nextauth]';
-
-const tournamentManager = require('../../../../server/tournament/tournamentManager');
-const { getRoom } = require('../../../../server/poker/gameManager');
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'GET') return res.status(405).end();
@@ -21,16 +22,32 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const { id: tournamentId } = req.query as { id: string };
   if (!tournamentId) return res.status(400).json({ error: 'tournamentId required' });
 
-  const t = tournamentManager.getTournament(tournamentId);
+  // global 経由でサーバーインスタンスのメモリにアクセス
+  const g = global as Record<string, unknown>;
+  const tournamentsMap = g.__pastisTournaments as Map<string, { tableIds: string[] }> | undefined;
+  const roomsMap       = g.__pastisRooms as Map<string, {
+    players:        { name: string; chips: number; accountId: string | null; sittingOut?: boolean }[];
+    pendingPlayers: { name: string; chips: number; accountId: string | null; sittingOut?: boolean }[];
+  }> | undefined;
+
+  if (!tournamentsMap) {
+    // サーバー起動直後など、まだ global が設定されていない場合
+    return res.status(503).json({ error: 'Server not ready' });
+  }
+
+  const t = tournamentsMap.get(tournamentId);
   if (!t) return res.status(404).json({ error: 'tournament not found' });
 
   const tables = t.tableIds.map((tableId: string) => {
-    const room = getRoom(tableId);   // 読み取り専用（解体済みテーブルで誤生成しない）
+    const room = roomsMap?.get(tableId);
     if (!room) return { tableId, players: [] };
 
-    const players = [...room.players, ...room.pendingPlayers].map((p: {
-      name: string; chips: number; accountId: string | null; sittingOut?: boolean;
-    }) => ({
+    const allPlayers = [
+      ...(room.players        ?? []),
+      ...(room.pendingPlayers ?? []),
+    ];
+
+    const players = allPlayers.map((p) => ({
       name:       p.name,
       chips:      p.chips,
       isSelf:     accountId ? p.accountId === accountId : false,

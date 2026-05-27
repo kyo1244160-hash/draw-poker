@@ -81,12 +81,39 @@ export default function SpectatePage() {
     socket.on('gameState', ({ players: pl, meta: m }) => {
       setPlayers(pl ?? []);
       setMeta(m ?? null);
-      // レイトレジスト観戦中: 自分のテーブルでゲーム開始されたら /draw へ遷移
+      // レイトレジスト観戦中: 自分がそのテーブルのプレイヤー（またはpending）として
+      // gameState が届いたら /draw へ遷移する。
+      // 判定: isSelf=true のプレイヤーが players に含まれる = 自分がこのテーブルの参加者
+      if (fromLateReg) {
+        const selfEntry = (pl ?? []).find((p: { isSelf?: boolean }) => p.isSelf);
+        if (selfEntry) {
+          // myTableIdRef が未セットの場合でも meta.roomId から補完する
+          const myTid = myTableIdRef.current ?? m?.roomId ?? null;
+          if (myTid) myTableIdRef.current = myTid;
+          // ゲーム進行中（bet/draw フェーズ）または pending（次のハンドから参加）どちらでも /draw へ
+          router.replace(`/tournament/${params.id}/draw`);
+          return;
+        }
+      }
+      // レイトレジスト観戦中: 旧ロジック（myTableIdRef が先にセットされたケースのフォールバック）
       if (fromLateReg && myTableIdRef.current && m?.roomId === myTableIdRef.current) {
         if (m.phase && m.phase !== 'waiting') {
           router.replace(`/tournament/${params.id}/draw`);
         }
       }
+    });
+
+    // レイトレジスト: pending プレイヤーとして配置された場合のハンドラ。
+    // ゲーム進行中テーブルに pending で追加されると t:tournamentStarting ではなく
+    // t:pendingTableTransfer が届く。fromLateReg=true の場合は /draw に遷移する。
+    socket.on('t:pendingTableTransfer', ({ tableId: pendingTid }: { tableId: string; message?: string }) => {
+      if (fromLateReg) {
+        myTableIdRef.current = pendingTid;
+        router.replace(`/tournament/${params.id}/draw`);
+        return;
+      }
+      // fromLateReg でない場合はテーブル切替（バランシング後等）
+      tableIdRef.current = pendingTid;
     });
 
     socket.on('timerUpdate', ({ remaining, limit }: { remaining: number; limit: number }) => {
@@ -123,6 +150,7 @@ export default function SpectatePage() {
       socket.off('t:tournamentFinished');
       socket.off('t:tournamentNotFound');
       socket.off('t:tableClosed');
+      socket.off('t:pendingTableTransfer');
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

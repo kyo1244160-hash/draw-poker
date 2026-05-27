@@ -8,6 +8,7 @@
  */
 
 import { useEffect, useState, useCallback } from 'react';
+import { modeLabelFull, modeColor as getModeColor } from '../lib/modeLabels';
 
 // ===== 型定義 =====
 interface HistoryPoint {
@@ -30,24 +31,8 @@ interface Summary {
 }
 
 // ===== ユーティリティ =====
-const MODE_LABEL: Record<string, string> = {
-  '27':     '2-7 Triple Draw',
-  'badugi': 'Badugi',
-  'mix':    'Mix (2-7↔Badugi)',
-  'a5':     'A-5 Triple Draw',
-  '27sd':   '2-7 Single Draw',
-  'mix3':   'Mix-3',
-};
-const modeLabel = (m: string) => MODE_LABEL[m] ?? m;
-
-const modeColor: Record<string, string> = {
-  '27':     '#4488cc',
-  'badugi': '#cc9966',
-  'mix':    '#aa88dd',
-  'a5':     '#66cc88',
-  '27sd':   '#cc6688',
-  'mix3':   '#ddaa44',
-};
+const modeLabel = modeLabelFull;
+const modeColor = getModeColor;
 
 function fmtNet(n: number) {
   if (n === 0) return '±0';
@@ -257,7 +242,7 @@ export default function MyPageModal({ onClose }: Props) {
                     return (
                       <div key={m.mode} style={S.modeRow}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <span style={{ ...S.modeDot, background: modeColor[m.mode] ?? '#888' }} />
+                          <span style={{ ...S.modeDot, background: modeColor(m.mode) }} />
                           <span style={S.modeName}>{modeLabel(m.mode)}</span>
                         </div>
                         <span style={{ ...S.modeNet, color: nc }}>{fmtNet(m.net)}</span>

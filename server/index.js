@@ -50,8 +50,6 @@ const {
   getRoomMode, getRoom, ensurePotsAwarded,
 } = require('./poker/gameManager');
 
-const ringDb = require('./db/ring');
-
 const { registerZoomHandlers, getAllPools, getWaitingCount, getTotalCount, handleZoomShowdown } = require('./zoom/zoomManager');
 const tournamentManager    = require('./tournament/tournamentManager');
 const tournamentBotManager = require('./tournament/tournamentBotManager');
@@ -148,12 +146,6 @@ app.prepare().then(async () => {
     log('✓ DB migration: late_reg_minutes OK');
   } catch (e) {
     console.warn('⚠ DB migration warning:', e.message);
-  }
-  try {
-    await ringDb.ensureRingTable();
-    log('✓ DB migration: ring_hand_results OK');
-  } catch (e) {
-    console.warn('⚠ DB migration warning (ring):', e.message);
   }
 
   const expressApp = express();
@@ -780,7 +772,6 @@ app.prepare().then(async () => {
           //   最終ハンドの showdown 手札が確認できなくなるバグの原因になる。
           //   次の gameState 更新は _scheduleAutoStart の 3 秒後タイマーに委譲する。
         }
-        _recordRingHandResults(roomId);  // リングゲーム損益記録
         io.to(roomId).emit('showdown');
         if (room.isZoomTable) handleZoomShowdown(io, roomId);
         else _scheduleAutoStart(io, roomId);
@@ -832,7 +823,6 @@ app.prepare().then(async () => {
           tournamentManager.checkEliminations(roomId);
           // ※ 2回目の _broadcast は送らない（drawCards と同様の理由）
         }
-        _recordRingHandResults(roomId);  // リングゲーム損益記録
         io.to(roomId).emit('showdown');
         if (room.isZoomTable) handleZoomShowdown(io, roomId);
         else _scheduleAutoStart(io, roomId);
@@ -1044,7 +1034,6 @@ function _makeTimeoutHandler(io, roomId) {
         tournamentManager.checkEliminations(rid);
         // ※ 2回目の _broadcast は送らない（betAction と同様の理由）
       }
-      _recordRingHandResults(rid);  // リングゲーム損益記録
       io.to(rid).emit('showdown');
       if (room.isZoomTable) handleZoomShowdown(io, rid);
       else _scheduleAutoStart(io, rid);
@@ -1277,46 +1266,6 @@ function _tryAutoStart(io, roomId) {
 const _pendingAutoStart = new Set();
 
 /** ショーダウン後の自動スタート。FastFoldテーブルは即スタート、通常部屋は3秒待つ */
-/**
- * リングゲーム: ハンド終了時の損益をDBに記録する
- * - トーナメントテーブルは除外
- * - accountId を持たないプレイヤー（ゲスト・BOT）は除外
- * - chips_before = room.startingChips（リング部屋は毎ハンド startingChips にリセットされる仕様）
- *   ※ gameManager.js startGame L333 の `if (!room._isTournament) p.chips = room.startingChips`
- *      に依存。この仕様変更時は本関数も修正が必要。
- *
- * 二重記録は DB の UNIQUE(room_id, account_id, hand_num) + ON CONFLICT DO NOTHING で防止。
- */
-async function _recordRingHandResults(roomId) {
-  try {
-    if (tournamentManager.isTournamentTable(roomId)) return;
-    const room = getRoom(roomId);   // 読み取り専用（新規作成しない）
-    if (!room) return;
-    if (room.handCount <= 0) return;  // ハンド未開始の防衛チェック
-
-    const chipsBefore = room.startingChips;
-    const records = [];
-    for (const p of room.players) {
-      if (!p.accountId) continue;                   // ゲスト・BOTはスキップ
-      if (p.id && p.id.startsWith('tbot::')) continue; // トーナメントBOT IDプレフィックス防衛
-      const net = p.chips - chipsBefore;
-      records.push({
-        accountId:  p.accountId,
-        roomId,
-        mode:       room.currentMode ?? room.mode,
-        handNum:    room.handCount,
-        net,
-        chipsAfter: p.chips,
-      });
-    }
-    if (records.length === 0) return;
-    await ringDb.recordHandResults(records);
-  } catch (e) {
-    // DB書き込みエラーはゲームに影響させない
-    log(`[ring] recordHandResults error: ${e.message}`);
-  }
-}
-
 function _scheduleAutoStart(io, roomId) {
   const room = getOrCreateRoom(roomId);
   // 退室予約者は即退室
@@ -1384,19 +1333,10 @@ function _broadcast(io, roomId) {
   // 観戦者へ配信（手札は伏せる）
   const spectators = _spectators.get(roomId);
   if (spectators && spectators.size > 0) {
-    // spectate→lateReg参加後にソケットがplayerとspectatorsの両方に残るケースを修正:
-    // プレイヤーとして参加済みのソケットは観戦者リストから除外する
-    const playerSocketIds = new Set([...room.players, ...room.pendingPlayers].map(p => p.id));
     const state   = buildGameState(room, null);
     const meta    = state.find((x) => x._meta);
     const players = state.filter((x) => !x._meta);
     for (const sid of spectators) {
-      if (playerSocketIds.has(sid)) {
-        // このソケットはプレイヤーとして参加済み → 観戦者リストから自動除外
-        spectators.delete(sid);
-        logDev(`[broadcast] ${roomId.slice(-8)} spectator ${sid.slice(-8)} promoted to player → removed from spectators`);
-        continue;
-      }
       const s = io.sockets.sockets.get(sid);
       if (s) s.emit('gameState', { players, meta, isSpectator: true });
     }
@@ -1421,7 +1361,6 @@ function _broadcast(io, roomId) {
         if (tournamentManager.isTournamentTable(tblId)) {
           tournamentManager.checkEliminations(tblId);
         }
-        _recordRingHandResults(tblId);  // リングゲーム損益記録
         io.to(tblId).emit('showdown');
         _scheduleAutoStart(io, tblId);
       }

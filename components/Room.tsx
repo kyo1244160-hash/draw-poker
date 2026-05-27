@@ -16,6 +16,7 @@ import UserMenu from './UserMenu';
 import NicknameSetup from './NicknameSetup';
 import LoginPromptModal from './LoginPromptModal';
 import MyPageModal from './MyPageModal';
+import { modeLabelFull, modeLabelShort, modeColor, modeBg, modeBorder, modeLeftBorder } from '../lib/modeLabels';
 
 // ===== 型定義 =====
 interface RoomInfo {
@@ -196,11 +197,8 @@ export default function Room() {
 
   const statusLabel = (s: string) => ({ registering: '受付中', running: '進行中', finished: '終了', cancelled: 'キャンセル' }[s] ?? s);
 
-  const modeColor      = (mode: string) => mode === 'badugi' ? '#cc9966' : mode === 'mix' ? '#aa88dd' : '#88bbee';
-  const modeBg         = (mode: string) => mode === 'badugi' ? 'rgba(204,119,68,0.2)' : mode === 'mix' ? 'rgba(170,136,221,0.2)' : 'rgba(68,136,204,0.2)';
-  const modeBorder     = (mode: string) => mode === 'badugi' ? 'rgba(204,119,68,0.4)' : mode === 'mix' ? 'rgba(170,136,221,0.4)' : 'rgba(68,136,204,0.4)';
-  const modeLabel      = (mode: string) => mode === 'badugi' ? 'Badugi' : mode === 'mix' ? 'Mix (2-7↔Badugi)' : '2-7 Triple Draw';
-  const modeLeftBorder = (mode: string) => mode === 'badugi' ? '#cc7744' : mode === 'mix' ? '#aa88dd' : '#4488cc';
+  const modeLabel = modeLabelFull;
+  // modeColor, modeBg, modeBorder, modeLeftBorder は lib/modeLabels.ts から import 済み
 
   return (
     <div style={S.page}>
@@ -271,7 +269,7 @@ export default function Room() {
               <div key={t.id} style={{ ...S.tournamentCard, cursor: 'pointer' }} onClick={() => router.push(`/tournament/${t.id}`)}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
                   <span style={{ ...S.modeBadge, background: 'rgba(201,168,76,0.15)', color: 'var(--gold)', border: '1px solid var(--gold-dim)' }}>
-                    {t.mode === '27' ? '2-7' : t.mode === 'badugi' ? 'Badugi' : 'Mix'}
+                    {modeLabelShort(t.mode)}
                   </span>
                   <span style={statusBadge(t.status)}>{statusLabel(t.status)}</span>
                 </div>
