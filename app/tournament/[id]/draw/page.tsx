@@ -376,6 +376,33 @@ export default function TournamentDrawPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ===== isSpectator=true の自動リカバリ =====
+  // lateReg → spectate → draw 遷移のタイミング問題で draw ページが観戦モードになった場合、
+  // F5（フルリロード）と同等の効果を自動で実現する。
+  // player.id 更新前の gameState が届いて isSpectator=true になっても、
+  // t:getMyTable を再送することで正しい gameState を取得し直す。
+  const isSpectatorRef = useRef(false);
+  isSpectatorRef.current = isSpectator;
+  useEffect(() => {
+    if (!connected || !isSpectator) return;
+    const tournamentId = typeof window !== 'undefined'
+      ? window.location.pathname.split('/')[2]
+      : '';
+    if (!tournamentId) return;
+    // 1秒後にまだ観戦モードなら t:getMyTable を再送
+    const t1 = setTimeout(() => {
+      if (!isSpectatorRef.current) return;
+      socket.emit('t:getMyTable', { tournamentId });
+      // さらに 3 秒後もまだ観戦モードなら再送（2段階フォールバック）
+      const t2 = setTimeout(() => {
+        if (!isSpectatorRef.current) return;
+        socket.emit('t:getMyTable', { tournamentId });
+      }, 3000);
+      return () => clearTimeout(t2);
+    }, 1000);
+    return () => clearTimeout(t1);
+  }, [connected, isSpectator]);
+
   // ===== シェア（クリップボードコピー）=====
   async function handleShareCopy(rank: number, total: number) {
     const POINT_TABLE: Record<number, number> = { 1:100, 2:60, 3:40, 4:25, 5:15 };

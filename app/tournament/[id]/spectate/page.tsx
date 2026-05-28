@@ -116,6 +116,25 @@ export default function SpectatePage() {
       tableIdRef.current = pendingTid;
     });
 
+    // バランシングによるテーブル移動通知。
+    // fromLateReg=true: 新テーブルに配置後にバランシングで別テーブルへ移動するケース。
+    // サーバーから t:tableJoin（即時）と t:tableTransfer（3秒後）が届く。
+    // これらも /draw への遷移トリガーとして使う。
+    socket.on('t:tableJoin', ({ toTableId }: { toTableId: string }) => {
+      if (fromLateReg) {
+        myTableIdRef.current = toTableId;
+        tableIdRef.current = toTableId;
+        // t:tableTransfer（3秒後）を待たずに即 /draw へ遷移
+        router.replace(`/tournament/${params.id}/draw`);
+      }
+    });
+    socket.on('t:tableTransfer', ({ toTableId }: { fromTableId: string; toTableId: string }) => {
+      if (fromLateReg) {
+        myTableIdRef.current = toTableId;
+        router.replace(`/tournament/${params.id}/draw`);
+      }
+    });
+
     socket.on('timerUpdate', ({ remaining, limit }: { remaining: number; limit: number }) => {
       setTimer({ remaining, limit });
     });
@@ -151,6 +170,8 @@ export default function SpectatePage() {
       socket.off('t:tournamentNotFound');
       socket.off('t:tableClosed');
       socket.off('t:pendingTableTransfer');
+      socket.off('t:tableJoin');
+      socket.off('t:tableTransfer');
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
