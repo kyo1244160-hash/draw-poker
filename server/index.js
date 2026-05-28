@@ -325,6 +325,13 @@ app.prepare().then(async () => {
           // _disconnectedChips に退避されたチップを復元（leaveRoom済みプレイヤーは activePlayer=null になるため別途処理）
           socket.join(tableId);
           currentRoom = { name: user.nickname ?? '', roomId: tableId };
+          // 【重要】spectate から draw に遷移した場合、_spectators にまだ socket.id が残っている。
+          // _broadcast が「観戦者」としても gameState(isSpectator=true) を送り続けるため、
+          // プレイヤーモード↔観戦モードが頻繁に切り替わるバグが起きる。
+          // t:getMyTable でプレイヤーとして確認されたら全テーブルの _spectators から削除する。
+          for (const [, specSet] of _spectators) {
+            specSet.delete(socket.id);
+          }
           socket.emit('t:tournamentStarting', { tournamentId, tableId });
           logDev(`[t:getMyTable] ${user.nickname} → ${tableId}`);
           // 【重要】player.id 更新後、本人に gameState を直接送信する。
@@ -421,6 +428,8 @@ app.prepare().then(async () => {
               }
               socket.join(retryTableId);
               currentRoom = { name: user.nickname ?? '', roomId: retryTableId };
+              // spectate → draw 遷移後の _spectators 残留を削除（観戦/プレイヤー交互切替バグ防止）
+              for (const [, specSet] of _spectators) { specSet.delete(socket.id); }
               socket.emit('t:tournamentStarting', { tournamentId, tableId: retryTableId });
               // gameState を本人に直接送信（_broadcast 待ちにしない）
               if (_room) {
@@ -561,6 +570,8 @@ app.prepare().then(async () => {
               joinPokerRoom(destTid, socket.id, nickname, { accountId: user.accountId, existingChips: t.startingChips });
               socket.join(destTid);
               tournamentManager.incrementTotalPlayers(tournamentId, 1);
+              // spectate 中からの lateReg: _spectators に残留している場合は削除
+              for (const [, specSet] of _spectators) { specSet.delete(socket.id); }
               socket.emit('t:tournamentStarting', { tournamentId, tableId: destTid });
               io.to(destTid).emit('t:playerArrived', { playerName: nickname });
               _broadcast(io, destTid);
