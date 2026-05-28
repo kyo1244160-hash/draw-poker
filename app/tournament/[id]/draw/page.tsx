@@ -92,9 +92,16 @@ export default function TournamentDrawPage() {
         return;  // 別テーブルの gameState は無視
       }
       setGameState({ players: pl ?? [], meta: m ?? null });
-      if (isSpectatorFlag) setIsSpectator(true);
-      // 自分がplayersに含まれてpendingでなくなったらpending解除
+      // isSpectator は毎回 gameState から再計算する（片方向の true 固定をやめる）。
+      // isSelf=true のプレイヤーが存在 = 自分はこのテーブルの参加者 → 非観戦モード。
+      // isSelf が誰にもない = サーバーが観戦者として扱っている → 観戦モード。
       const selfPlayer = pl?.find((p: PlayerState) => p.isSelf);
+      if (selfPlayer) {
+        setIsSpectator(false);
+      } else {
+        setIsSpectator(isSpectatorFlag === true);
+      }
+      // 自分がplayersに含まれてpendingでなくなったらpending解除
       if (selfPlayer && !selfPlayer.isPendingPlayer) setPendingTransfer(null);
 
       // フォールバック: t:eliminated が届かなかった場合の脱落検出
@@ -216,6 +223,9 @@ export default function TournamentDrawPage() {
       logAction('別テーブルへ移動しました');
       // 移動直後にgameStateをリセット（旧テーブルのshowdown画面に止まるバグ防止）
       setGameState({ players: [], meta: null });
+      // テーブル移動後は観戦モードを必ずリセットする。
+      // 移動先テーブルの gameState で isSelf が確認できてから isSpectator は再判定される。
+      setIsSpectator(false);
       // 移動先のゲーム状態を取得
       socket.emit('getGameState', { roomId: toTableId });
       // join完了後に確実にgameStateが届くよう再送（フリーズ防止）
