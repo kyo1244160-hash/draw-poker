@@ -50,6 +50,9 @@ const {
   getRoomMode, getRoom, ensurePotsAwarded,
 } = require('./poker/gameManager');
 
+const ringDb = require('./db/ring');
+const tcManager = require('./poker/threeCardManager');
+
 const { registerZoomHandlers, getAllPools, getWaitingCount, getTotalCount, handleZoomShowdown } = require('./zoom/zoomManager');
 const tournamentManager    = require('./tournament/tournamentManager');
 const tournamentBotManager = require('./tournament/tournamentBotManager');
@@ -119,6 +122,18 @@ function getLobbyList() {
       hasPassword: !!room.password, isUserRoom: true,
     });
   }
+  // スリーカードポーカーテーブル
+  for (const t of tcManager.listRooms()) {
+    list.push({
+      id:          t.id,
+      label:       `Three Card Poker ${t.id.replace('3card-room-', '')}`,
+      mode:        '3card',
+      count:       t.players.length,
+      maxPlayers:  tcManager.MAX_PLAYERS,
+      phase:       t.phase,
+      isThreeCard: true,
+    });
+  }
   return list;
 }
 
@@ -146,6 +161,12 @@ app.prepare().then(async () => {
     log('✓ DB migration: late_reg_minutes OK');
   } catch (e) {
     console.warn('⚠ DB migration warning:', e.message);
+  }
+  try {
+    await ringDb.ensureRingTable();
+    log('✓ DB migration: ring_hand_results OK');
+  } catch (e) {
+    console.warn('⚠ DB migration warning (ring):', e.message);
   }
 
   const expressApp = express();
@@ -325,13 +346,6 @@ app.prepare().then(async () => {
           // _disconnectedChips に退避されたチップを復元（leaveRoom済みプレイヤーは activePlayer=null になるため別途処理）
           socket.join(tableId);
           currentRoom = { name: user.nickname ?? '', roomId: tableId };
-          // 【重要】spectate から draw に遷移した場合、_spectators にまだ socket.id が残っている。
-          // _broadcast が「観戦者」としても gameState(isSpectator=true) を送り続けるため、
-          // プレイヤーモード↔観戦モードが頻繁に切り替わるバグが起きる。
-          // t:getMyTable でプレイヤーとして確認されたら全テーブルの _spectators から削除する。
-          for (const [, specSet] of _spectators) {
-            specSet.delete(socket.id);
-          }
           socket.emit('t:tournamentStarting', { tournamentId, tableId });
           logDev(`[t:getMyTable] ${user.nickname} → ${tableId}`);
           // 【重要】player.id 更新後、本人に gameState を直接送信する。
@@ -428,8 +442,6 @@ app.prepare().then(async () => {
               }
               socket.join(retryTableId);
               currentRoom = { name: user.nickname ?? '', roomId: retryTableId };
-              // spectate → draw 遷移後の _spectators 残留を削除（観戦/プレイヤー交互切替バグ防止）
-              for (const [, specSet] of _spectators) { specSet.delete(socket.id); }
               socket.emit('t:tournamentStarting', { tournamentId, tableId: retryTableId });
               // gameState を本人に直接送信（_broadcast 待ちにしない）
               if (_room) {
@@ -570,8 +582,6 @@ app.prepare().then(async () => {
               joinPokerRoom(destTid, socket.id, nickname, { accountId: user.accountId, existingChips: t.startingChips });
               socket.join(destTid);
               tournamentManager.incrementTotalPlayers(tournamentId, 1);
-              // spectate 中からの lateReg: _spectators に残留している場合は削除
-              for (const [, specSet] of _spectators) { specSet.delete(socket.id); }
               socket.emit('t:tournamentStarting', { tournamentId, tableId: destTid });
               io.to(destTid).emit('t:playerArrived', { playerName: nickname });
               _broadcast(io, destTid);
@@ -665,7 +675,9 @@ app.prepare().then(async () => {
         return;
       }
 
-      const result = joinPokerRoom(roomId, socket.id, name);
+      const result = joinPokerRoom(roomId, socket.id, name, {
+        accountId: socket.data.user?.accountId ?? null,
+      });
 
       // 6人制限
       if (result === 'full') {
@@ -783,6 +795,7 @@ app.prepare().then(async () => {
           //   最終ハンドの showdown 手札が確認できなくなるバグの原因になる。
           //   次の gameState 更新は _scheduleAutoStart の 3 秒後タイマーに委譲する。
         }
+        _recordRingHandResults(roomId);  // リングゲーム損益記録
         io.to(roomId).emit('showdown');
         if (room.isZoomTable) handleZoomShowdown(io, roomId);
         else _scheduleAutoStart(io, roomId);
@@ -834,6 +847,7 @@ app.prepare().then(async () => {
           tournamentManager.checkEliminations(roomId);
           // ※ 2回目の _broadcast は送らない（drawCards と同様の理由）
         }
+        _recordRingHandResults(roomId);  // リングゲーム損益記録
         io.to(roomId).emit('showdown');
         if (room.isZoomTable) handleZoomShowdown(io, roomId);
         else _scheduleAutoStart(io, roomId);
@@ -910,14 +924,155 @@ app.prepare().then(async () => {
       socket.emit('gameState', { players, meta, isSpectator: true });
     });
 
+    // ================================================================
+    // ■ スリーカードポーカー イベント
+    // ================================================================
+
+    // --- io スコープ内ヘルパー（io を直接参照できる） ---
+    const tc_broadcast = (roomId) => {
+      const t = tcManager.getTable(roomId);
+      if (!t) return;
+      for (const p of t.players) {
+        const s = io.sockets.sockets.get(p.socketId);
+        if (s) s.emit('3c:state', tcManager.buildTableState(roomId, p.socketId));
+      }
+      io.emit('roomList', getLobbyList());
+    };
+
+    const tc_leave = (roomId, socketId) => {
+      tcManager.leaveTable(roomId, socketId);
+      const s = io.sockets.sockets.get(socketId);
+      if (s) s.leave(roomId);
+      io.emit('roomList', getLobbyList());
+      const t = tcManager.getTable(roomId);
+      if (t) tc_broadcast(roomId);
+    };
+
+    socket.on('3c:getRoomList', () => {
+      const rooms = tcManager.listRooms().map(t => ({
+        id:         t.id,
+        label:      `Three Card Poker ${t.id.replace('3card-room-', '')}`,
+        count:      t.players.length,
+        maxPlayers: tcManager.MAX_PLAYERS,
+        phase:      t.phase,
+      }));
+      socket.emit('3c:roomList', rooms);
+    });
+
+    socket.on('3c:join', async ({ roomId }) => {
+      const user = socket.data.user;
+      if (!user?.nickname) { socket.emit('3c:error', { message: 'ログインが必要です' }); return; }
+
+      // ポイントチェック
+      let points = 0;
+      if (user.accountId) {
+        try {
+          const pointsDb = require('./db/points');
+          points = await pointsDb.getUserPoints(user.accountId);
+        } catch { points = 0; }
+      }
+      if (points < 1) {
+        socket.emit('3c:error', { message: 'ポイントが不足しています' });
+        return;
+      }
+
+      let targetRoomId = roomId;
+      if (!targetRoomId) {
+        // roomId 未指定 → 空きのあるテーブルに自動配置
+        targetRoomId = tcManager.getOrCreateAvailableRoom().id;
+      }
+
+      // socket.join を joinTable より前に実行する。
+      // joinTable 内で waiting→betting 遷移が起きると _notify→_tc_broadcast が
+      // 走るため、その時点で socket がルームに参加済みである必要がある。
+      socket.join(targetRoomId);
+
+      const result = tcManager.joinTable(targetRoomId, socket.id, user.nickname, user.accountId, points);
+      if (result === 'full') {
+        socket.leave(targetRoomId);
+        socket.emit('3c:error', { message: 'このテーブルは満員です' });
+        return;
+      }
+      if (result !== 'ok' && result !== 'alreadyJoined') {
+        socket.leave(targetRoomId);
+        socket.emit('3c:error', { message: '入室できませんでした' });
+        return;
+      }
+
+      // 本人に最新状態を送信（betting 遷移済みでも確実に届く）
+      socket.emit('3c:state', tcManager.buildTableState(targetRoomId, socket.id));
+      // 他プレイヤーにも通知
+      socket.to(targetRoomId).emit('3c:state', tcManager.buildBroadcastState(targetRoomId));
+      // ロビー更新
+      io.emit('roomList', getLobbyList());
+    });
+
+    socket.on('3c:bet', ({ roomId, ante, pp, sixCard }) => {
+      const result = tcManager.placeBet(roomId, socket.id, {
+        ante:    Number(ante),
+        pp:      Number(pp    ?? 0),
+        sixCard: Number(sixCard ?? 0),
+      });
+      if (!result.ok) {
+      const BET_ERROR_MSG = {
+        notBetting:         'ベットフェーズではありません',
+        notInRoom:          'テーブルに参加していません',
+        alreadyBet:         'すでにベット確定済みです',
+        invalidAnte:        `アンテは ${tcManager.BET_MIN}〜${tcManager.BET_MAX}pt で入力してください`,
+        invalidPP:          `ペアプラスは 0〜${tcManager.BET_MAX}pt で入力してください`,
+        invalidSixCard:     `6カードボーナスは 0〜${tcManager.BET_MAX}pt で入力してください`,
+        insufficientPoints: 'ポイントが不足しています',
+      };
+      socket.emit('3c:error', { message: BET_ERROR_MSG[result.reason] ?? `ベットエラー: ${result.reason}` });
+        return;
+      }
+      // 全員ベット完了で deal→action へ遷移した場合は phaseChange コールバックが
+      // ブロードキャストする。まだ betting 中なら個別にブロードキャスト。
+      const t = tcManager.getTable(roomId);
+      if (t && t.phase === 'betting') {
+        tc_broadcast(roomId);
+      }
+    });
+
+    socket.on('3c:action', ({ roomId, action }) => {
+      const result = tcManager.playerAction(roomId, socket.id, action);
+      if (!result.ok) {
+      const ACTION_ERROR_MSG = {
+        notAction:     'アクションフェーズではありません',
+        invalid:       '無効なアクションです',
+        invalidAction: 'PLAY か FOLD を選択してください',
+      };
+      socket.emit('3c:error', { message: ACTION_ERROR_MSG[result.reason] ?? `アクションエラー: ${result.reason}` });
+        return;
+      }
+      const t = tcManager.getTable(roomId);
+      if (t && t.phase === 'action') {
+        tc_broadcast(roomId);
+      }
+    });
+
+    socket.on('3c:leave', ({ roomId }) => {
+      tc_leave(roomId, socket.id);
+    });
+
+    // ================================================================
+    // ■ 切断
+    // ================================================================
+
     socket.on('disconnect', () => {
       logDev(`[disconnect] ${socket.id}`);
       leaveReservations.delete(socket.id);
       _rateCounts.delete(socket.id);
-      // 二重接続管理マップから削除（自分が最新の接続の場合のみ）
       const user = socket.data.user;
       if (user?.accountId && _connectedUsers.get(user.accountId) === socket.id) {
         _connectedUsers.delete(user.accountId);
+      }
+      // スリーカードポーカーテーブルから退室
+      for (const t of tcManager.listRooms()) {
+        if (t.players.some(p => p.socketId === socket.id)) {
+          tc_leave(t.id, socket.id);
+          break;
+        }
       }
       // 観戦者リストからも除去
       if (currentRoom.roomId) _spectators.get(currentRoom.roomId)?.delete(socket.id);
@@ -952,6 +1107,30 @@ app.prepare().then(async () => {
   // balance後のBOTアクショントリガーを _broadcast チェーンに一本化するため注入
   tournamentManager.injectBroadcast((roomId) => _broadcast(io, roomId));
   expressApp.use('/api/admin/monitor', express.json(), adminMonitor.router);
+
+  // スリーカードポーカー: フェーズ変化時のコールバックを登録
+  // io スコープ内で定義し、io を直接クロージャでキャプチャする。
+  // （_tc_broadcast は io スコープ外のため io にアクセスできない問題を回避）
+  tcManager.setPhaseChangeCallback(async (roomId, phase) => {
+    const t = tcManager.getTable(roomId);
+    if (!t) return;
+    if (phase === 'result') {
+      // DB ポイント反映
+      const pointsDb = require('./db/points');
+      for (const p of t.players) {
+        if (!p.accountId || !p.result) continue;
+        try {
+          await pointsDb.applyThreeCardResult(p.accountId, p.result.net ?? 0);
+        } catch (e) { log(`[3CP] DB error ${p.name}: ${e.message}`); }
+      }
+    }
+    // 全プレイヤーに状態送信（io を直接使用）
+    for (const p of t.players) {
+      const s = io.sockets.sockets.get(p.socketId);
+      if (s) s.emit('3c:state', tcManager.buildTableState(roomId, p.socketId));
+    }
+    io.emit('roomList', getLobbyList());
+  });
 
   // ヘルスチェック（render.yaml の healthCheckPath）
   expressApp.get('/api/health', (_req, res) => {
@@ -988,6 +1167,45 @@ function _handleLeave(io, socket, roomId) {
   // showdownのままなら次ゲームを試みる（waitingにリセットされていたら不要）
   if (room && room.phase === 'showdown') _scheduleAutoStart(io, roomId);
   // waitingになった（人数不足でリセット）なら参加者到着を待つだけ
+}
+
+// ================================================================
+// ■ スリーカードポーカー ヘルパー関数
+// ================================================================
+
+/** 全プレイヤーにテーブル状態をブロードキャスト（自分の手は自分のみ） */
+function _tc_broadcast(roomId) {
+  const t = tcManager.getTable(roomId);
+  if (!t) return;
+  for (const p of t.players) {
+    const s = io.sockets.sockets.get(p.socketId);
+    if (s) s.emit('3c:state', tcManager.buildTableState(roomId, p.socketId));
+  }
+  io.emit('roomList', getLobbyList());
+}
+
+/** reveal 後にポイントをDBへ反映 */
+async function _tc_applyResults(t) {
+  const pointsDb = require('./db/points');
+  for (const p of t.players) {
+    if (!p.accountId || !p.result) continue;
+    try {
+      await pointsDb.applyThreeCardResult(p.accountId, p.result.net);
+    } catch (e) {
+      log(`[3c] applyThreeCardResult error: ${e.message}`);
+    }
+  }
+}
+
+/** プレイヤーをテーブルから退室させる */
+function _tc_leavePlayer(roomId, socketId) {
+  tcManager.leaveTable(roomId, socketId);  // 内部で空テーブル削除も実施
+  const s = io.sockets.sockets.get(socketId);
+  if (s) s.leave(roomId);
+  io.emit('roomList', getLobbyList());
+  // 残ったプレイヤーに状態を送信（テーブルがまだ存在する場合のみ）
+  const t = tcManager.getTable(roomId);
+  if (t) _tc_broadcast(roomId);
 }
 
 /**
@@ -1045,6 +1263,7 @@ function _makeTimeoutHandler(io, roomId) {
         tournamentManager.checkEliminations(rid);
         // ※ 2回目の _broadcast は送らない（betAction と同様の理由）
       }
+      _recordRingHandResults(rid);  // リングゲーム損益記録
       io.to(rid).emit('showdown');
       if (room.isZoomTable) handleZoomShowdown(io, rid);
       else _scheduleAutoStart(io, rid);
@@ -1277,6 +1496,52 @@ function _tryAutoStart(io, roomId) {
 const _pendingAutoStart = new Set();
 
 /** ショーダウン後の自動スタート。FastFoldテーブルは即スタート、通常部屋は3秒待つ */
+/**
+ * リングゲーム: ハンド終了時の損益をDBに記録する
+ * - トーナメントテーブルは除外
+ * - accountId を持たないプレイヤー（ゲスト・BOT）は除外
+ * - chips_before = room.startingChips（リング部屋は毎ハンド startingChips にリセットされる仕様）
+ *   ※ gameManager.js startGame L333 の `if (!room._isTournament) p.chips = room.startingChips`
+ *      に依存。この仕様変更時は本関数も修正が必要。
+ *
+ * 二重記録は DB の UNIQUE(room_id, account_id, hand_num) + ON CONFLICT DO NOTHING で防止。
+ */
+async function _recordRingHandResults(roomId) {
+  try {
+    if (tournamentManager.isTournamentTable(roomId)) return;
+    const room = getRoom(roomId);   // 読み取り専用（新規作成しない）
+    if (!room) return;
+    if (room.handCount <= 0) return;  // ハンド未開始の防衛チェック
+
+    const chipsBefore = room.startingChips;
+    const records = [];
+    for (const p of room.players) {
+      if (!p.accountId) continue;                       // ゲストはスキップ
+      if (p.accountId.startsWith('bot::')) continue;    // リングBOTはスキップ（bot.js が起動した場合）
+      if (p.id && p.id.startsWith('tbot::')) continue;  // トーナメントBOT IDプレフィックス防衛
+      const net = p.chips - chipsBefore;
+      records.push({
+        accountId:  p.accountId,
+        roomId,
+        mode:       room.currentMode ?? room.mode,
+        handNum:    room.handCount,
+        net,
+        chipsAfter: p.chips,
+      });
+    }
+    if (records.length === 0) return;
+    await ringDb.recordHandResults(records);
+  } catch (e) {
+    // DB書き込みエラーはゲームに影響させない
+    log(`[ring] recordHandResults error: ${e.message}`);
+  }
+}
+
+// ================================================================
+// ================================================================
+// ■ スリーカードポーカー ヘルパー関数（定義は上部に集約済み）
+// ================================================================
+
 function _scheduleAutoStart(io, roomId) {
   const room = getOrCreateRoom(roomId);
   // 退室予約者は即退室
@@ -1344,10 +1609,19 @@ function _broadcast(io, roomId) {
   // 観戦者へ配信（手札は伏せる）
   const spectators = _spectators.get(roomId);
   if (spectators && spectators.size > 0) {
+    // spectate→lateReg参加後にソケットがplayerとspectatorsの両方に残るケースを修正:
+    // プレイヤーとして参加済みのソケットは観戦者リストから除外する
+    const playerSocketIds = new Set([...room.players, ...room.pendingPlayers].map(p => p.id));
     const state   = buildGameState(room, null);
     const meta    = state.find((x) => x._meta);
     const players = state.filter((x) => !x._meta);
     for (const sid of spectators) {
+      if (playerSocketIds.has(sid)) {
+        // このソケットはプレイヤーとして参加済み → 観戦者リストから自動除外
+        spectators.delete(sid);
+        logDev(`[broadcast] ${roomId.slice(-8)} spectator ${sid.slice(-8)} promoted to player → removed from spectators`);
+        continue;
+      }
       const s = io.sockets.sockets.get(sid);
       if (s) s.emit('gameState', { players, meta, isSpectator: true });
     }
@@ -1372,6 +1646,7 @@ function _broadcast(io, roomId) {
         if (tournamentManager.isTournamentTable(tblId)) {
           tournamentManager.checkEliminations(tblId);
         }
+        _recordRingHandResults(tblId);  // リングゲーム損益記録
         io.to(tblId).emit('showdown');
         _scheduleAutoStart(io, tblId);
       }

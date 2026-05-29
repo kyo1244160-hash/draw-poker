@@ -12,6 +12,7 @@ import { useRouter } from 'next/router';
 import { useSession } from 'next-auth/react';
 import Head from 'next/head';
 import { socket, connectWithAuth } from '../../socket';
+import { MODE_LABEL_FULL } from '../../lib/modeLabels';
 
 interface Tournament {
   id:                  string;
@@ -38,9 +39,7 @@ interface Entry {
   google_name:   string | null;
 }
 
-const MODE_LABEL: Record<string, string> = {
-  '27': '2-7 Triple Draw', badugi: 'Badugi', mix: 'Mix',
-};
+const MODE_LABEL = MODE_LABEL_FULL;
 
 const STATUS_LABEL: Record<string, string> = {
   registering: '参加受付中', running: '進行中', finished: '終了', cancelled: 'キャンセル',

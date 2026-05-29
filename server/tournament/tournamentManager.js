@@ -33,6 +33,10 @@ function _clearLateRegState(tournamentId) {
   global.__pastisLateRegClosed.delete(tournamentId);
 }
 
+// tournaments Map を API Route から参照できるよう global に公開
+// (entry.ts の __pastisLateRegClosed と同じ手法)
+global.__pastisTournaments = tournaments;
+
 // roomId → tournamentId （どのトーナメントのテーブルかを逆引き）
 const roomToTournament = new Map();
 

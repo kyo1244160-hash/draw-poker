@@ -154,6 +154,7 @@ interface Props {
 export default function MyPageModal({ onClose }: Props) {
   const [history,  setHistory]  = useState<HistoryPoint[]>([]);
   const [stats,    setStats]    = useState<{ summary: Summary; byMode: ModeStats[] } | null>(null);
+  const [myPoints, setMyPoints] = useState<number | null>(null);
   const [loading,  setLoading]  = useState(true);
   const [error,    setError]    = useState<string | null>(null);
 
@@ -161,14 +162,16 @@ export default function MyPageModal({ onClose }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const [sRes, hRes] = await Promise.all([
+      const [sRes, hRes, pRes] = await Promise.all([
         fetch('/api/ring/stats'),
         fetch('/api/ring/history?limit=1000'),
+        fetch('/api/profile/points'),
       ]);
       if (!sRes.ok || !hRes.ok) throw new Error('データ取得失敗');
-      const [sData, hData] = await Promise.all([sRes.json(), hRes.json()]);
+      const [sData, hData, pData] = await Promise.all([sRes.json(), hRes.json(), pRes.json()]);
       setStats(sData);
       setHistory(hData.history ?? []);
+      setMyPoints(pData.points ?? 0);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'エラーが発生しました');
     } finally {
@@ -212,6 +215,18 @@ export default function MyPageModal({ onClose }: Props) {
 
         {!loading && !error && (
           <>
+            {/* ポイント残高 */}
+            {myPoints !== null && (
+              <div style={{ ...S.summaryCard, marginBottom: 16,
+                background: 'linear-gradient(135deg, rgba(180,80,140,0.15), rgba(100,40,80,0.2))',
+                border: '1px solid rgba(180,80,140,0.3)' }}>
+                <div style={{ ...S.summaryLabel, color: '#cc88bb' }}>所持ポイント（スリーカードポーカー用）</div>
+                <div style={{ ...S.summaryValue, color: '#dd99cc', fontSize: 28 }}>
+                  {myPoints.toLocaleString()} pt
+                </div>
+              </div>
+            )}
+
             {/* サマリー */}
             <div style={S.summaryRow}>
               <div style={S.summaryCard}>

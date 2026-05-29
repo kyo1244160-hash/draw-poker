@@ -22,11 +22,14 @@ import { modeLabelFull, modeLabelShort, modeColor, modeBg, modeBorder, modeLeftB
 interface RoomInfo {
   id:          string;
   label:       string;
-  mode:        '27' | 'badugi' | 'mix';
+  mode:        '27' | 'badugi' | 'mix' | 'a5' | '27sd' | 'mix3' | '3card';
   count:       number;
   hasPassword: boolean;
   isUserRoom:  boolean;
   isZoom:      boolean;
+  isThreeCard?: boolean;
+  maxPlayers?: number;
+  phase?:      string;
 }
 
 interface TournamentInfo {
@@ -309,7 +312,7 @@ export default function Room() {
           </div>
 
           <div style={S.roomGrid}>
-            {rooms.map((r) => (
+            {rooms.filter(r => !r.isThreeCard).map((r) => (
               <button key={r.id} onClick={() => handleSelect(r.id)} style={{
                 ...S.roomCard,
                 ...(selected === r.id ? S.roomCardActive : {}),
@@ -329,8 +332,8 @@ export default function Room() {
                 <span style={S.roomCount}>👤 {r.count}</span>
               </button>
             ))}
-            {rooms.length === 0 && !socketError && <p style={S.emptyMsg}>接続中...</p>}
-            {rooms.length === 0 && socketError && (
+            {rooms.filter(r => !r.isThreeCard).length === 0 && !socketError && <p style={S.emptyMsg}>接続中...</p>}
+            {rooms.filter(r => !r.isThreeCard).length === 0 && socketError && (
               <div>
                 <p style={{ ...S.emptyMsg, color: '#ee8888' }}>接続エラー: {socketError}</p>
                 <button
@@ -340,6 +343,38 @@ export default function Room() {
                   再接続
                 </button>
               </div>
+            )}
+          </div>
+
+          {/* ===== スリーカードポーカー ===== */}
+          <h2 style={{ ...S.panelTitle, marginTop: 20 }}>
+            <span style={S.titleLine}/>THREE CARD POKER<span style={S.titleLine}/>
+          </h2>
+          <div style={S.roomGrid}>
+            {rooms.filter(r => r.isThreeCard).map((r) => {
+              const isFull = r.count >= (r.maxPlayers ?? 6);
+              return (
+                <button key={r.id}
+                  onClick={() => !isFull && router.push(`/three-card/${r.id}`)}
+                  disabled={isFull}
+                  style={{ ...S.roomCard, borderLeftColor: '#cc66aa',
+                    opacity: isFull ? 0.5 : 1, cursor: isFull ? 'not-allowed' : 'pointer' }}>
+                  <div style={{ textAlign: 'left' as const }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                      <span style={{ ...S.modeBadge, background: 'rgba(180,80,140,0.2)',
+                        color: '#dd88cc', border: '1px solid rgba(180,80,140,0.4)' }}>
+                        3-CARD
+                      </span>
+                      {isFull && <span style={{ fontSize: 10, color: '#cc6666' }}>満員</span>}
+                    </div>
+                    <div style={S.roomLabel}>{r.label}</div>
+                  </div>
+                  <span style={S.roomCount}>👤 {r.count}/{r.maxPlayers ?? 6}</span>
+                </button>
+              );
+            })}
+            {rooms.filter(r => r.isThreeCard).length === 0 && (
+              <p style={S.emptyMsg}>接続中...</p>
             )}
           </div>
         </section>

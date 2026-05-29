@@ -124,10 +124,44 @@ async function getPointsRanking({ limit = 20 } = {}) {
   `;
 }
 
+/**
+ * 個人の所持ポイントを取得する
+ * @param {string} accountId
+ * @returns {Promise<number>} ポイント数（未登録は 0）
+ */
+async function getUserPoints(accountId) {
+  const [row] = await sql`
+    SELECT total_points FROM points WHERE account_id = ${accountId}
+  `;
+  return row?.total_points ?? 0;
+}
+
+/**
+ * スリーカードポーカー1ハンドの結果をDBに反映する
+ * net が正ならポイント加算、負なら減算。
+ * ベット時にゲーム内残高を先に差し引いているため、
+ * ここでは「ゲーム終了後の残高 - ゲーム開始前の残高」= net を DB に反映する。
+ *
+ * @param {string} accountId
+ * @param {number} net 損益（正=利益, 負=損失）
+ */
+async function applyThreeCardResult(accountId, net) {
+  if (net === 0) return;
+  await sql`
+    INSERT INTO points (account_id, total_points, updated_at)
+    VALUES (${accountId}, ${Math.max(0, net)}, NOW())
+    ON CONFLICT (account_id) DO UPDATE
+      SET total_points = GREATEST(0, points.total_points + ${net}),
+          updated_at   = NOW()
+  `;
+}
+
 module.exports = {
   calcPoints,
   recordTournamentResults,
   getTournamentResults,
   getPointsRanking,
   POINT_TABLE,
+  getUserPoints,
+  applyThreeCardResult,
 };

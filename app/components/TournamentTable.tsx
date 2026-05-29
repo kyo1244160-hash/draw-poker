@@ -15,6 +15,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { socket } from '../../socket';
 import type { PlayerState, GameMeta, BlindUpdate } from '../types/tournament';
+import TableListModal from '../../components/TableListModal';
 
 // ==========================================================
 // ■ Card（PokerTable.tsx と同じ 4色デッキ実装）
@@ -133,6 +134,7 @@ interface Props {
   onDrawCards:      (indices:number[]) => void;
   onUpdateSelected: (indices:number[]) => void;
   blind?:           BlindUpdate | null;
+  tournamentId?:    string;   // 他テーブル確認に使用
 }
 
 // ==========================================================
@@ -141,13 +143,16 @@ interface Props {
 export default function TournamentTable({
   players, meta, timer, isSpectator,
   onBetAction, onDrawCards, onUpdateSelected,
-  blind,
+  blind, tournamentId,
 }: Props) {
   const [selected,      setSelected]      = useState<number[]>([]);
   const [layout,        setLayout]        = useState<'pc'|'portrait'|'landscape'|null>(null);
   const [containerSize, setContainerSize] = useState<{w:number;h:number}>({w:0,h:0});
   const containerRef = useRef<HTMLDivElement>(null);
   const [actionFlash,   setActionFlash]   = useState<Record<string,{label:string;key:number}>>({});
+  const [showTableList, setShowTableList] = useState(false);
+  const [tableListData, setTableListData] = useState<{tableId:string;players:{name:string;chips:number;isSelf:boolean;sittingOut:boolean}[]}[]>([]);
+  const [tableListLoading, setTableListLoading] = useState(false);
   const [drawFlash,     setDrawFlash]     = useState<Record<string,{count:number;key:number}>>({});
   const [lastDrawCount, setLastDrawCount] = useState<Record<string,number|null>>({});
   const prevDrewRef = useRef<Record<string,boolean>>({});
@@ -190,6 +195,22 @@ export default function TournamentTable({
   const raiseCount    = meta?.raiseCount ?? 0;
   const timerSec      = timer?.remaining ?? null;
   const timerLimit    = timer?.limit ?? (meta?.timerLimit ?? 0);
+
+  // テーブル一覧を取得してモーダル表示
+  const openTableList = async () => {
+    if (!tournamentId) return;
+    setShowTableList(true);
+    setTableListLoading(true);
+    try {
+      const res = await fetch(`/api/tournament/${tournamentId}/tables`);
+      if (res.ok) {
+        const data = await res.json();
+        setTableListData(data.tables ?? []);
+      }
+    } catch { /* silent */ } finally {
+      setTableListLoading(false);
+    }
+  };
 
   // 自分から時計回りに他プレイヤーを並べる
   const orderedOthers = (() => {
@@ -621,6 +642,7 @@ export default function TournamentTable({
     };
 
     return (
+      <>
       <div ref={containerRef} style={{display:'flex',alignItems:'center',gap:0,width:'100%',
         maxWidth:TW+ACT_W+32,padding:'0 16px',flex:1,minHeight:0}}>
         {/* 楕円テーブル */}
@@ -811,8 +833,23 @@ export default function TournamentTable({
             </div>
           )}
           <ActionButtons/>
+          {/* テーブル一覧ボタン */}
+          {tournamentId&&(
+            <button
+              onClick={openTableList}
+              style={{fontFamily:'var(--font-title)',fontSize:10,letterSpacing:'0.1em',
+                color:'var(--gold-dim)',background:'rgba(201,168,76,0.08)',
+                border:'1px solid rgba(201,168,76,0.25)',borderRadius:5,
+                padding:'5px 0',cursor:'pointer',width:'100%',marginTop:4}}
+            >
+              テーブル一覧
+            </button>
+          )}
         </div>
       </div>
+
+      <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} onClose={() => setShowTableList(false)} />
+      </>
     );
   }
 
@@ -1077,6 +1114,7 @@ export default function TournamentTable({
   // ===== 縦表示 =====
   if (isPortrait) {
     return (
+      <>
       <div ref={containerRef} style={{display:'flex',flexDirection:'column',width:'100%',height:'100%',overflow:'visible'}}>
         <MobileTable/>
         {/* 下部アクションパネル */}
@@ -1144,13 +1182,26 @@ export default function TournamentTable({
             </div>
           )}
           {phase==='showdown'&&<div style={{textAlign:'center',fontSize:12,color:'var(--cream-dim)',fontFamily:'var(--font-body)',padding:'8px 0',fontStyle:'italic'}}>次のゲームを準備中...</div>}
+          {/* テーブル一覧ボタン（縦） */}
+          {tournamentId&&(
+            <button onClick={openTableList} style={{fontFamily:'var(--font-title)',fontSize:10,
+              letterSpacing:'0.08em',color:'var(--gold-dim)',background:'rgba(201,168,76,0.07)',
+              border:'1px solid rgba(201,168,76,0.2)',borderRadius:5,padding:'5px 0',
+              cursor:'pointer',width:'100%',marginTop:4}}>
+              テーブル一覧
+            </button>
+          )}
         </div>
       </div>
+
+      <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} onClose={() => setShowTableList(false)} />
+      </>
     );
   }
 
   // ===== 横表示 =====
   return (
+    <>
     <div ref={containerRef} style={{display:'flex',width:'100%',height:'100%',overflow:'visible'}}>
       <div style={{position:'relative',flex:1,minWidth:0,overflow:'visible'}}>
         <div style={{position:'absolute',top:0,left:0,width:TW_M,height:TH_M}}>
@@ -1163,6 +1214,15 @@ export default function TournamentTable({
         display:'flex',flexDirection:'column',justifyContent:'center',overflow:'hidden',padding:'6px 8px'}}>
         <div style={{display:'flex',flexDirection:'column',gap:6,flex:1,justifyContent:'center'}}>
           <ActionButtons compact/>
+          {/* テーブル一覧ボタン（横） */}
+          {tournamentId&&(
+            <button onClick={openTableList} style={{fontFamily:'var(--font-title)',fontSize:9,
+              letterSpacing:'0.06em',color:'var(--gold-dim)',background:'rgba(201,168,76,0.07)',
+              border:'1px solid rgba(201,168,76,0.2)',borderRadius:5,padding:'4px 0',
+              cursor:'pointer',width:'100%'}}>
+              テーブル一覧
+            </button>
+          )}
         </div>
         <div style={{fontSize:8,color:'var(--gold-dim)',fontFamily:'var(--font-body)',textAlign:'center'}}>
           {effectiveMode==='badugi'?'★ Badugi'
@@ -1172,5 +1232,8 @@ export default function TournamentTable({
         </div>
       </div>
     </div>
+
+    <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} onClose={() => setShowTableList(false)} />
+    </>
   );
 }

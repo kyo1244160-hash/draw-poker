@@ -92,16 +92,15 @@ export default function TournamentDrawPage() {
         return;  // 別テーブルの gameState は無視
       }
       setGameState({ players: pl ?? [], meta: m ?? null });
-      // isSpectator は毎回 gameState から再計算する（片方向の true 固定をやめる）。
-      // isSelf=true のプレイヤーが存在 = 自分はこのテーブルの参加者 → 非観戦モード。
-      // isSelf が誰にもない = サーバーが観戦者として扱っている → 観戦モード。
+      // isSpectator 更新:
+      //   - isSelf プレイヤーが見つかった場合は必ず false（spectate→lateReg参加後の観戦モード解除）
+      //   - isSelf が見つからず isSpectatorFlag=true の場合のみ true にする
       const selfPlayer = pl?.find((p: PlayerState) => p.isSelf);
       if (selfPlayer) {
-        setIsSpectator(false);
-      } else {
-        setIsSpectator(isSpectatorFlag === true);
+        setIsSpectator(false);  // プレイヤーとして参加中 → 観戦モード強制解除
+      } else if (isSpectatorFlag) {
+        setIsSpectator(true);
       }
-      // 自分がplayersに含まれてpendingでなくなったらpending解除
       if (selfPlayer && !selfPlayer.isPendingPlayer) setPendingTransfer(null);
 
       // フォールバック: t:eliminated が届かなかった場合の脱落検出
@@ -223,9 +222,6 @@ export default function TournamentDrawPage() {
       logAction('別テーブルへ移動しました');
       // 移動直後にgameStateをリセット（旧テーブルのshowdown画面に止まるバグ防止）
       setGameState({ players: [], meta: null });
-      // テーブル移動後は観戦モードを必ずリセットする。
-      // 移動先テーブルの gameState で isSelf が確認できてから isSpectator は再判定される。
-      setIsSpectator(false);
       // 移動先のゲーム状態を取得
       socket.emit('getGameState', { roomId: toTableId });
       // join完了後に確実にgameStateが届くよう再送（フリーズ防止）
@@ -375,33 +371,6 @@ export default function TournamentDrawPage() {
   // router は Next.js の useRouter が安定した参照を返すため問題ない。
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // ===== isSpectator=true の自動リカバリ =====
-  // lateReg → spectate → draw 遷移のタイミング問題で draw ページが観戦モードになった場合、
-  // F5（フルリロード）と同等の効果を自動で実現する。
-  // player.id 更新前の gameState が届いて isSpectator=true になっても、
-  // t:getMyTable を再送することで正しい gameState を取得し直す。
-  const isSpectatorRef = useRef(false);
-  isSpectatorRef.current = isSpectator;
-  useEffect(() => {
-    if (!connected || !isSpectator) return;
-    const tournamentId = typeof window !== 'undefined'
-      ? window.location.pathname.split('/')[2]
-      : '';
-    if (!tournamentId) return;
-    // 1秒後にまだ観戦モードなら t:getMyTable を再送
-    const t1 = setTimeout(() => {
-      if (!isSpectatorRef.current) return;
-      socket.emit('t:getMyTable', { tournamentId });
-      // さらに 3 秒後もまだ観戦モードなら再送（2段階フォールバック）
-      const t2 = setTimeout(() => {
-        if (!isSpectatorRef.current) return;
-        socket.emit('t:getMyTable', { tournamentId });
-      }, 3000);
-      return () => clearTimeout(t2);
-    }, 1000);
-    return () => clearTimeout(t1);
-  }, [connected, isSpectator]);
 
   // ===== シェア（クリップボードコピー）=====
   async function handleShareCopy(rank: number, total: number) {
@@ -586,6 +555,7 @@ export default function TournamentDrawPage() {
           onDrawCards={handleDrawCards}
           onUpdateSelected={handleUpdateSelected}
           blind={blind}
+          tournamentId={params.id}
         />
       </div>
 

@@ -124,3 +124,9 @@ export const getPointsRanking: (opts?: { limit?: number }) => Promise<{
   google_name: string | null;
   tournament_count: number;
 }[]> = pointsDb.getPointsRanking;
+
+export const getUserPoints: (accountId: string) => Promise<number>
+  = pointsDb.getUserPoints;
+
+export const applyThreeCardResult: (accountId: string, net: number) => Promise<void>
+  = pointsDb.applyThreeCardResult;

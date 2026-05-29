@@ -77,6 +77,7 @@ function isBigBetPhase(phase) {
 
 /** roomId からゲームモードを取得 */
 function getRoomMode(roomId) {
+  if (roomId.includes('3card'))  return '3card';
   if (roomId.includes('badugi')) return 'badugi';
   if (roomId.includes('mix3'))   return 'mix3';
   if (roomId.includes('mix'))    return 'mix';
@@ -114,6 +115,8 @@ function getMixCurrentMode(room) {
 
 // ===== ルームストレージ =====
 const rooms = new Map();
+// API Route から参照できるよう global に公開（webpack バンドル境界対策）
+global.__pastisRooms = rooms;
 
 function getOrCreateRoom(roomId, opts = {}) {
   if (!rooms.has(roomId)) {
