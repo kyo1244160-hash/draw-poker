@@ -137,7 +137,12 @@ export default function TournamentDrawPage() {
       // ===== gameState ハンドラー全体を try-catch でラップ =====
       // クライアントクラッシュの原因特定のため、エラー時に詳細を /api/debug/client-error へ送信
       try {
-      const { players: pl, meta: m, isSpectator: isSpectatorFlag } = raw as { players: PlayerState[]; meta: GameMeta; isSpectator?: boolean };
+      // 実行時型チェック: サーバーからの予期しないペイロードでクラッシュしないよう防御
+      if (!raw || typeof raw !== 'object') return;
+      const rawObj = raw as Record<string, unknown>;
+      const pl = Array.isArray(rawObj.players) ? rawObj.players as PlayerState[] : [];
+      const m  = (rawObj.meta && typeof rawObj.meta === 'object') ? rawObj.meta as GameMeta : null;
+      const isSpectatorFlag = typeof rawObj.isSpectator === 'boolean' ? rawObj.isSpectator : undefined;
       // 受信した gameState が現在のテーブルのものか確認（別テーブルからの誤配信を防止）
       if (m?.roomId && tableIdRef.current && m.roomId !== tableIdRef.current) {
         return;  // 別テーブルの gameState は無視

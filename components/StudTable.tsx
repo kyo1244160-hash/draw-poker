@@ -238,19 +238,27 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
 
   // actionFlash: TournamentTable と同じ日本語ラベル方式
   const [actionFlash, setActionFlash] = useState<Record<string, { label: string; key: number }>>({});
+  const flashTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   useEffect(() => {
     const onAction = ({ playerName, action }: { playerName: string; action: string }) => {
       if (!playerName) return;
       const label = ACTION_LABEL[action] ?? action;
       setActionFlash(prev => ({ ...prev, [playerName]: { label, key: Date.now() } }));
-      setTimeout(() => {
+      // setTimeout を ref で管理してアンマウント後のリークを防止
+      const t = setTimeout(() => {
         setActionFlash(prev => { const n = { ...prev }; delete n[playerName]; return n; });
       }, 2000);
+      flashTimersRef.current.push(t);
     };
     const onGameStarted = () => setActionFlash({});
     socket.on('playerAction', onAction);
     socket.on('gameStarted',  onGameStarted);
-    return () => { socket.off('playerAction', onAction); socket.off('gameStarted', onGameStarted); };
+    return () => {
+      socket.off('playerAction', onAction);
+      socket.off('gameStarted', onGameStarted);
+      flashTimersRef.current.forEach(clearTimeout);
+      flashTimersRef.current = [];
+    };
   }, []);
 
   const openTableList = async () => {
@@ -357,7 +365,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
               const bh     = p.isSelf ? Math.floor(TH * 0.31) : Math.floor(TH * 0.25);
               const active  = p.isMyTurn && !p.folded && !p.sittingOut;
               const flash   = actionFlash[p.name];
-              const studCards = (p.studCards ?? p.hand.map(code => ({ code, up: true }))) as StudCard[];
+              const studCards = (p.studCards ?? (p.hand ?? []).map(code => ({ code, up: true }))) as StudCard[];
               return (
                 <div key={p.id} style={{ position: 'absolute', left, top, width: BW, zIndex: 2, overflow: 'visible' }}>
                   {flash && (
@@ -476,7 +484,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
     const bw     = p.isSelf ? SELF_W : OTH_W;
     const active  = p.isMyTurn && !p.folded && !p.sittingOut;
     const flash   = actionFlash[p.name];
-    const studCards = (p.studCards ?? p.hand.map(code => ({ code, up: true }))) as StudCard[];
+    const studCards = (p.studCards ?? (p.hand ?? []).map(code => ({ code, up: true }))) as StudCard[];
 
     // 修正1: フラッシュ要素を ref に積む（MobileTable で最上位描画）
     if (flash) {
@@ -498,7 +506,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
     }
 
     // 修正3: 自分の手役は 3枚以上あれば常時表示（ベット中も表示）
-    const showSelfResult = p.isSelf && !p.folded && (p.studCards ?? p.hand).length >= 3 && !!p.result;
+    const showSelfResult = p.isSelf && !p.folded && (p.studCards ?? (p.hand ?? [])).length >= 3 && !!p.result;
 
     return (
       <div key={p.id} style={{ position: 'absolute', left, top, width: bw, overflow: 'visible', zIndex: p.isSelf ? 3 : 2 }}>
@@ -548,7 +556,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
   // ==========================================================
   // ■ MobileTable
   // ==========================================================
-  const MobileTable = () => {
+  function renderMobileTable() {
     // 修正1: renderPlayer呼び出し前にrefをリセット
     flashOverlaysRef.current = [];
     const renderedPlayers = players.map(p => renderPlayer(p));
@@ -598,7 +606,8 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
   // ==========================================================
   // ■ アクションパネル（TournamentTable の btnStyle 統一）
   // ==========================================================
-  const ActionPanel = () => (
+  function renderActionPanel() {
+    return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', background: 'rgba(0,0,0,0.35)', borderTop: '1px solid rgba(201,168,76,0.2)', padding: '6px 8px 8px', overflow: 'hidden', minHeight: 0 }}>
       <div style={{ fontSize: 9, color: 'var(--gold-dim)', fontFamily: 'var(--font-body)', marginBottom: 4 }}>
         {mode === 'stud_e' ? '★ Stud Hi/Lo: 8以下のローでポット折半' : mode === 'razz' ? '★ Razz: A-5ローボール、低い手が強い' : '★ 7 Card Stud: 高い手が強い'}
@@ -619,14 +628,15 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
       {isShowdown && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--cream-dim)', fontFamily: 'var(--font-body)', padding: '8px 0', fontStyle: 'italic' }}>次のゲームを準備中...</div>}
       {tournamentId && <button onClick={openTableList} style={{ fontFamily: 'var(--font-title)', fontSize: 10, letterSpacing: '0.08em', color: 'var(--gold-dim)', background: 'rgba(201,168,76,0.07)', border: '1px solid rgba(201,168,76,0.2)', borderRadius: 5, padding: '5px 0', cursor: 'pointer', width: '100%', marginTop: 4 }}>テーブル一覧</button>}
     </div>
-  );
+    );
+  }
 
   if (isPortrait) {
     return (
       <>
         <div ref={containerRef} style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', overflow: 'visible' }}>
-          <MobileTable />
-          <ActionPanel />
+          {renderMobileTable()}
+          {renderActionPanel()}
         </div>
         <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} onClose={() => setShowTableList(false)} />
       </>
@@ -636,9 +646,9 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
   return (
     <>
       <div ref={containerRef} style={{ display: 'flex', alignItems: 'center', gap: 0, width: '100%', height: '100%', overflow: 'hidden' }}>
-        <MobileTable />
+        {renderMobileTable()}
         <div style={{ width: ACT_W_M, height: '100%', display: 'flex', flexDirection: 'column' }}>
-          <ActionPanel />
+          {renderActionPanel()}
         </div>
       </div>
       <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} onClose={() => setShowTableList(false)} />
