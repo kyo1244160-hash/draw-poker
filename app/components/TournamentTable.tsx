@@ -779,7 +779,7 @@ export default function TournamentTable({
                   {active&&timerSec!==null&&timerLimit>0&&<TimerBar remaining={timerSec} limit={timerLimit}/>}
                   {/* カード */}
                   <div style={{display:'flex',justifyContent:'center',gap:p.isSelf?7:4,flexWrap:'nowrap',margin:'5px 0'}}>
-                    {p.hand.map((code,j)=>(
+                    {(p.hand ?? []).map((code,j)=>(
                       <div key={j} style={{display:'flex',flexDirection:'column',alignItems:'center'}}>
                         <Card code={code} size={p.isSelf?'lg':'sm'}
                           selected={p.isSelf&&selected.includes(j)}
@@ -972,7 +972,7 @@ export default function TournamentTable({
           </div>
           {active&&timerSec!==null&&timerLimit>0&&<div style={{margin:'1px 0'}}><TimerBar remaining={timerSec} limit={timerLimit}/></div>}
           <div style={{display:'flex',gap:2,justifyContent:'center',flexWrap:'nowrap',margin:'2px 0'}}>
-            {p.hand.map((code,j)=>(
+            {(p.hand ?? []).map((code,j)=>(
               <div key={j} style={{display:'flex',flexDirection:'column',alignItems:'center'}}>
                 <Card code={code} size={p.isSelf?SELF_C:OTH_C}
                   selected={p.isSelf&&selected.includes(j)}

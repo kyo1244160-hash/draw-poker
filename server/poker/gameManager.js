@@ -62,12 +62,20 @@ function isNoLimitMode(mode) {
 
 /**
  * Mix系モード判定（複数ゲームをローテーションする親モード）
- * - 'mix'  : 2-7TD ↔ Badugi（2ゲーム）
- * - 'mix3' : 2-7TD → Badugi → A-5（3ゲーム）
+ * - 'mix'      : 2-7TD ↔ Badugi（2ゲーム）
+ * - 'mix3'     : 2-7TD → Badugi → A-5（3ゲーム）
+ * - 'beast+'   : Badugi → StudHi/Lo → A-5 → 7Stud → 2-7TD → Razz（6ゲーム）
+ * - 'stud_mix' : 7Stud → StudHi/Lo → Razz（3ゲーム・スタッドのみ）
  * 将来mix4等を追加する場合はここに追加するだけで全箇所の判定が更新される。
  */
 function isMixMode(mode) {
-  return mode === 'mix' || mode === 'mix3';
+  return mode === 'mix' || mode === 'mix3' || mode === 'beast+' || mode === 'stud_mix';
+}
+
+/** スタッド系モード判定（studManager にルーティングすべきモード） */
+const STUD_MODES = ['stud_s', 'stud_e', 'razz'];
+function isStudMode(mode) {
+  return STUD_MODES.includes(mode);
 }
 
 /** ビッグベットフェーズか判定（draw2以降） */
@@ -99,11 +107,26 @@ function evaluateHand(hand, mode) {
 
 /**
  * mix モードの現在ゲームモード
- * mix : 2-7TD ↔ Badugi（2ゲームローテ）
- * mix3: 2-7TD → Badugi → A-5（3ゲームローテ）
+ * mix      : 2-7TD ↔ Badugi（2ゲームローテ）
+ * mix3     : 2-7TD → Badugi → A-5（3ゲームローテ）
+ * beast+   : Badugi → StudHi/Lo → A-5 → 7Stud → 2-7TD → Razz（6ゲームローテ）
+ * stud_mix : 7Stud → StudHi/Lo → Razz（3ゲームローテ・スタッドのみ）
+ *
+ * スタッド系（stud_s/stud_e/razz）を返した場合、呼び出し側（index.js）が
+ * studManager にルーティングする。
  */
 function getMixCurrentMode(room) {
   const playerCount = Math.max(1, room.players.length);
+  if (room.mode === 'beast+') {
+    // B → E → A → S → T → Razz
+    const cycle = Math.floor(room.handCount / playerCount) % 6;
+    return ['badugi', 'stud_e', 'a5', 'stud_s', '27', 'razz'][cycle];
+  }
+  if (room.mode === 'stud_mix') {
+    // S → E → Razz
+    const cycle = Math.floor(room.handCount / playerCount) % 3;
+    return ['stud_s', 'stud_e', 'razz'][cycle];
+  }
   if (room.mode === 'mix3') {
     const cycle = Math.floor(room.handCount / playerCount) % 3;
     return cycle === 0 ? '27' : cycle === 1 ? 'badugi' : 'a5';
@@ -111,6 +134,23 @@ function getMixCurrentMode(room) {
   // 既存 mix（2ゲームローテ）
   const cycle = Math.floor(room.handCount / playerCount) % 2;
   return cycle === 0 ? '27' : 'badugi';
+}
+
+/**
+ * 次ハンドの currentMode を「先読み」する（handCount をインクリメントせず計算）。
+ * index.js が startGame 前に「次がスタッドか？」を判定するために使用。
+ * startStudHand に切り替えるべきかを startGame 呼び出し前に知る必要があるため。
+ */
+function peekNextMode(room) {
+  if (!isMixMode(room.mode)) return room.mode;
+  // getMixCurrentMode は room.handCount を基準にするが、startGame では
+  // handCount += 1 の後に getMixCurrentMode が呼ばれる。
+  // ここでは「次のハンド」= handCount+1 時点のモードを返す。
+  const saved = room.handCount;
+  room.handCount = saved + 1;
+  const mode = getMixCurrentMode(room);
+  room.handCount = saved;
+  return mode;
 }
 
 // ===== ルームストレージ =====
@@ -982,7 +1022,9 @@ function buildGameState(room, requesterId) {
       hand: reveal ? p.hand : p.hand.map(() => '??'),
       isSelf, isMyTurn,
       drewThisRound: p.drewThisRound, drawCount: p.drawCount,
-      result: reveal && p.hand.length > 0 && !p.folded
+      // スタッドモード（stud_s/stud_e/razz）はstudManagerが手役名を担当するため
+      // gameManager側では evaluateHand を呼ばない（ドロー系専用関数のため誤評価防止）
+      result: reveal && p.hand.length > 0 && !p.folded && !isStudMode(room.currentMode)
                 ? evaluateHand(p.hand, room.currentMode) : undefined,
       isWinner:  isShowdown && winnerIds != null && winnerIds.has(p.id),
       isDealer:  myIdx === dealerIdx,
@@ -1323,6 +1365,7 @@ module.exports = {
   getRoomMode, getRoom, deleteRoom, renamePlayer,
   ensurePotsAwarded,
   // モード判定（他モジュールから共有利用するため公開）
-  isNoLimitMode, isMixMode,
+  isNoLimitMode, isMixMode, isStudMode, peekNextMode, getMixCurrentMode,
+  STUD_MODES,
   STARTING_CHIPS, SMALL_BLIND, BIG_BLIND, SMALL_BET, BIG_BET, MAX_PLAYERS,
 };

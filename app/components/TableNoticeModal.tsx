@@ -4,7 +4,7 @@
 
 import { useEffect, useRef } from 'react';
 
-export type NoticeType = 'bust' | 'arrived' | 'left' | 'blindUp' | 'break';
+export type NoticeType = 'bust' | 'arrived' | 'left' | 'blindUp' | 'break' | 'gameChange';
 
 export interface NoticeItem {
   id: number;
@@ -21,11 +21,12 @@ interface Props {
 }
 
 const CFG: Record<NoticeType, { emoji: string; color: string; label: (n: string, r?: number, t?: number) => string }> = {
-  bust:    { emoji: '💀', color: '#ff8888', label: (n, r, t) => `${n} がバストしました${r && t ? `（${t}人中 ${r}位）` : ''}` },
-  arrived: { emoji: '👋', color: '#88ddff', label: (n) => `${n} が別テーブルから合流しました` },
-  left:    { emoji: '➡️', color: '#ffcc88', label: (n) => `${n} が別テーブルへ移動しました` },
-  blindUp: { emoji: '⬆️', color: '#aaffaa', label: (n) => n },
-  break:   { emoji: '☕', color: '#cc99ff', label: (n) => n },
+  bust:       { emoji: '💀', color: '#ff8888', label: (n, r, t) => `${n} がバストしました${r && t ? `（${t}人中 ${r}位）` : ''}` },
+  arrived:    { emoji: '👋', color: '#88ddff', label: (n) => `${n} が別テーブルから合流しました` },
+  left:       { emoji: '➡️', color: '#ffcc88', label: (n) => `${n} が別テーブルへ移動しました` },
+  blindUp:    { emoji: '⬆️', color: '#aaffaa', label: (n) => n },
+  break:      { emoji: '☕', color: '#cc99ff', label: (n) => n },
+  gameChange: { emoji: '🎮', color: '#88ddff', label: (n) => n },
 };
 
 export default function TableNoticeModal({ notices, onClose, autoCloseMs = 5000 }: Props) {

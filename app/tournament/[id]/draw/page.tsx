@@ -6,9 +6,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { socket, connectWithAuth } from '../../../../socket';
 import TournamentTable from '../../../components/TournamentTable';
+import StudTable from '../../../../components/StudTable';
 import TournamentInfoBar from '../../../components/TournamentInfoBar';
 import EliminatedOverlay from '../../../components/EliminatedOverlay';
 import TableNoticeModal, { type NoticeType, type NoticeItem } from '../../../components/TableNoticeModal';
+import GameErrorBoundary from '../../../components/GameErrorBoundary';
 import type {
   BlindUpdate,
   TournamentStatus,
@@ -27,6 +29,7 @@ export default function TournamentDrawPage() {
   const router   = useRouter();
   const accountIdRef = useRef<string | null>(null); // 自分の accountId（/api/auth/session から取得）
   const tableIdRef = useRef<string | null>(null);  // サーバーから t:tournamentStarting で受信
+  const prevModeRef = useRef<string | null>(null); // ゲームチェンジ検出用
 
   // players と meta を1つのstateにまとめて1回のレンダリングで更新（カクつき防止）
   const [gameState,  setGameState]  = useState<{ players: PlayerState[]; meta: GameMeta | null }>({ players: [], meta: null });
@@ -67,6 +70,50 @@ export default function TournamentDrawPage() {
     setActionLog(prev => [...prev.slice(-29), { id: Date.now(), text }]);
   }, []);
 
+  // ===== グローバルエラーキャッチ（window.onerror / unhandledrejection） =====
+  // Next.js のエラーバウンダリでは非同期エラーを捕捉できないため
+  // window レベルでも監視し、/api/debug/client-error へ送信する
+  useEffect(() => {
+    const sendError = (label: string, msg: string, stack: string, extra?: Record<string, unknown>) => {
+      fetch('/api/debug/client-error', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          label, message: msg, stack,
+          url: window.location.href,
+          ua: navigator.userAgent,
+          ts: new Date().toISOString(),
+          extra: extra ?? {},
+        }),
+      }).catch(() => {});
+    };
+
+    const onError = (event: ErrorEvent) => {
+      sendError(
+        'window.onerror',
+        event.message ?? String(event.error),
+        event.error?.stack ?? `${event.filename}:${event.lineno}:${event.colno}`,
+        { filename: event.filename, lineno: event.lineno, colno: event.colno },
+      );
+    };
+
+    const onUnhandled = (event: PromiseRejectionEvent) => {
+      const reason = event.reason;
+      sendError(
+        'unhandledrejection',
+        reason instanceof Error ? reason.message : String(reason),
+        reason instanceof Error ? (reason.stack ?? '') : '',
+      );
+    };
+
+    window.addEventListener('error', onError);
+    window.addEventListener('unhandledrejection', onUnhandled);
+    return () => {
+      window.removeEventListener('error', onError);
+      window.removeEventListener('unhandledrejection', onUnhandled);
+    };
+  }, []);
+
   // ===== Socket.IO 接続 =====
   useEffect(() => {
     let cancelled = false;
@@ -86,12 +133,31 @@ export default function TournamentDrawPage() {
     //   到着する理論的リスクがあるため、リスナー登録を先に行う。
 
     // ゲーム状態（playersとmetaを1回のsetStateでまとめて更新）
-    socket.on('gameState', ({ players: pl, meta: m, isSpectator: isSpectatorFlag }: { players: PlayerState[]; meta: GameMeta; isSpectator?: boolean }) => {
+    socket.on('gameState', (raw: unknown) => {
+      // ===== gameState ハンドラー全体を try-catch でラップ =====
+      // クライアントクラッシュの原因特定のため、エラー時に詳細を /api/debug/client-error へ送信
+      try {
+      const { players: pl, meta: m, isSpectator: isSpectatorFlag } = raw as { players: PlayerState[]; meta: GameMeta; isSpectator?: boolean };
       // 受信した gameState が現在のテーブルのものか確認（別テーブルからの誤配信を防止）
       if (m?.roomId && tableIdRef.current && m.roomId !== tableIdRef.current) {
         return;  // 別テーブルの gameState は無視
       }
       setGameState({ players: pl ?? [], meta: m ?? null });
+      // ゲームチェンジ検出（ハンド開始時に currentMode が変化したら通知）
+      if (m?.currentMode && m.phase !== 'waiting' && m.phase !== 'showdown') {
+        const prev = prevModeRef.current;
+        if (prev && prev !== m.currentMode) {
+          const MODE_NOTICE_LABEL: Record<string, string> = {
+            '27': '2-7 Triple Draw', badugi: 'Badugi', mix: 'Mix', a5: 'A-5 Triple Draw',
+            '27sd': '2-7 Single Draw', mix3: 'Mix-3',
+            'beast+': 'BEAST+', stud_mix: 'Stud Mix',
+            stud_s: '7 Card Stud', stud_e: 'Stud Hi/Lo', razz: 'Razz',
+          };
+          const label = MODE_NOTICE_LABEL[m.currentMode] ?? m.currentMode;
+          pushNotice('gameChange', `ゲームが ${label} に変わりました`);
+        }
+        prevModeRef.current = m.currentMode;
+      }
       // isSpectator 更新:
       //   - isSelf プレイヤーが見つかった場合は必ず false（spectate→lateReg参加後の観戦モード解除）
       //   - isSelf が見つからず isSpectatorFlag=true の場合のみ true にする
@@ -138,6 +204,27 @@ export default function TournamentDrawPage() {
         eliminatedTimerRef.current = setTimeout(() => {
           setEliminated({ rank: 0, total: 0 }); // rank 不明のため 0 で表示
         }, 1500);
+      }
+      } catch (err: unknown) {
+        // ===== gameState ハンドラー内の例外をキャッチ =====
+        const error = err instanceof Error ? err : new Error(String(err));
+        console.error('[gameState-handler] CRASH:', error, '\nraw data:', raw);
+        fetch('/api/debug/client-error', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            label:   'gameState-handler',
+            message: error.message,
+            stack:   error.stack ?? '',
+            url:     window.location.href,
+            ua:      navigator.userAgent,
+            ts:      new Date().toISOString(),
+            extra: {
+              rawMeta:    JSON.stringify((raw as {meta?: unknown})?.meta ?? null),
+              rawPlayers: JSON.stringify(((raw as {players?: unknown[]})?.players ?? []).slice(0,2)),
+            },
+          }),
+        }).catch(() => {});
       }
     });
 
@@ -524,6 +611,7 @@ export default function TournamentDrawPage() {
   }
 
   return (
+    <GameErrorBoundary label="TournamentDrawPage">
     <div style={{ height:'100dvh', display:'flex', flexDirection:'column' as const, overflow:'hidden', background:'var(--felt)', color:'var(--cream)', fontFamily:'var(--font-body)' }}>
 
       {/* ナビバー — ロゴなし・完全1行でトーナメント情報を表示 */}
@@ -543,20 +631,66 @@ export default function TournamentDrawPage() {
         >ロビーへ</button>
       </nav>
 
+      {/* ゲームモードバー — 現在のゲームを常時表示 */}
+      {meta?.currentMode && meta.phase !== 'waiting' && (() => {
+        const MODE_LABEL_MAP: Record<string, string> = {
+          '27': '2-7 Triple Draw', badugi: 'Badugi', mix: 'Mix (2-7↔Badugi)',
+          a5: 'A-5 Triple Draw', '27sd': '2-7 Single Draw', mix3: 'Mix-3',
+          'beast+': 'BEAST+', stud_mix: 'Stud Mix',
+          stud_s: '7 Card Stud', stud_e: 'Stud Hi/Lo', razz: 'Razz',
+        };
+        const MODE_COLOR_MAP: Record<string, string> = {
+          stud_s: '#50c0d0', stud_e: '#50a0d0', razz: '#70b080',
+          badugi: '#cc9966', '27': '#88bbee', a5: '#88dd88',
+          mix: '#aa88dd', mix3: '#aa88dd', '27sd': '#dd88aa',
+          'beast+': '#e0b050', stud_mix: '#50c0d0',
+        };
+        const label = MODE_LABEL_MAP[meta.currentMode] ?? meta.currentMode;
+        const color = MODE_COLOR_MAP[meta.currentMode] ?? '#88bbee';
+        return (
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: '2px 8px', flexShrink: 0,
+            background: 'rgba(0,0,0,0.30)',
+            borderBottom: `1px solid ${color}44`,
+            gap: 6,
+          }}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, flexShrink: 0, boxShadow: `0 0 4px ${color}` }} />
+            <span style={{ fontFamily: 'var(--font-title)', fontSize: 10, color, letterSpacing: '0.1em', fontWeight: 700 }}>
+              {label}
+            </span>
+          </div>
+        );
+      })()}
+
       {/* ゲームテーブル — flex:1 で残り全高さを使う */}
       {/* paddingTop: フラッシュバッジ（上方向40px飛び出す）がナビバーで隠れないよう最小余白を確保 */}
       <div style={{ flex:1, display:'flex', overflow:'visible', minHeight:0, paddingTop:28 }}>
-        <TournamentTable
-          players={players}
-          meta={meta}
-          timer={timer}
-          isSpectator={isSpectator}
-          onBetAction={handleBetAction}
-          onDrawCards={handleDrawCards}
-          onUpdateSelected={handleUpdateSelected}
-          blind={blind}
-          tournamentId={params.id}
-        />
+        {meta?.isStud ? (
+          <StudTable
+            key="stud-table"
+            players={players}
+            meta={meta}
+            timer={timer}
+            isSpectator={isSpectator}
+            onBetAction={handleBetAction}
+            blind={blind}
+            tournamentId={params.id}
+          />
+        ) : (
+          <TournamentTable
+            key="draw-table"
+            players={players}
+            meta={meta}
+            timer={timer}
+            isSpectator={isSpectator}
+            onBetAction={handleBetAction}
+            onDrawCards={handleDrawCards}
+            onUpdateSelected={handleUpdateSelected}
+            blind={blind}
+            tournamentId={params.id}
+          />
+        )}
       </div>
 
       {/* 一時的なアクションエラートースト（3秒で自動消去） */}
@@ -760,5 +894,6 @@ export default function TournamentDrawPage() {
       {/* 非表示Canvas（シェア画像生成用）*/}
       <canvas ref={shareCanvasRef} style={{ display: 'none' }} />
     </div>
+    </GameErrorBoundary>
   );
 }

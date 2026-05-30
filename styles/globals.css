@@ -64,3 +64,15 @@ body::before {
   70%  { opacity: 1; transform: translateX(-50%) translateY(0px); }
   100% { opacity: 0; transform: translateX(-50%) translateY(-8px); }
 }
+
+/* ナビバー マーキー（次ハンドでブラインドアップ通知） */
+@keyframes marqueeScroll {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(var(--marquee-dist, -100%)); }
+}
+
+/* pulse（点滅） */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.55; }
+}

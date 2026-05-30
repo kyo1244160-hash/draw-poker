@@ -1,20 +1,24 @@
 /**
  * Card.tsx — カード描画コンポーネント（4色デッキ対応）
  *
- * 4色デッキ:
- *   ♠ スペード  → 黒（濃紺）
- *   ♥ ハート   → 赤
- *   ♦ ダイヤ   → 青
- *   ♣ クラブ   → 緑
+ * デザイン（v2: BEAST+ 対応で全面刷新）:
+ *   4色デッキ:
+ *     ♠ スペード  → 黒（濃紺）
+ *     ♥ ハート   → 赤
+ *     ♦ ダイヤ   → 青
+ *     ♣ クラブ   → 緑
+ *   レイアウト:
+ *     左上・右下: スートマークのみ（数字なし、右下は180°回転）
+ *     中央:       ランク数字を大きく表示（スートマークなし）
+ *     裏面:       青グラデーション + ダイヤ柄
  *
- * 表示:
- *   左上: ランク文字（数字1つ）
- *   中央: スートマーク（大）
- *   裏面: 青グラデーション + ダイヤ柄
+ * スタッド用追加プロパティ:
+ *   isDown … true なら自分のダウンカード（金色の破線枠で区別）
  *
  * サイズプリセット:
- *   sm  38×56px  他プレイヤー用
- *   md  52×76px  中間
+ *   xs  26×38px  スタッド他プレイヤー重ねスロット等
+ *   sm  32×48px  ドロー他プレイヤー用
+ *   md  44×64px  スタッド他プレイヤーのアップカード用
  *   lg  66×96px  自分用（大）
  */
 
@@ -38,12 +42,15 @@ const RANK_LABEL: Record<string, string> = {
   T: '10', J: 'J', Q: 'Q', K: 'K', A: 'A',
 };
 
-/** サイズプリセット */
+/** サイズプリセット
+ *  rankSize  … 中央のランク数字サイズ
+ *  cornerSize… 角のスートマークサイズ
+ */
 const SIZE_PRESET = {
-  xs: { w: 26, h: 38, fontSize: 11, suitSize:  8, suitMult: 1.2 },
-  sm: { w: 32, h: 48, fontSize: 11, suitSize:  9, suitMult: 1.3 },
-  md: { w: 52, h: 76, fontSize: 17, suitSize: 15, suitMult: 2.5 },
-  lg: { w: 66, h: 96, fontSize: 21, suitSize: 19, suitMult: 2.5 },
+  xs: { w: 26, h: 38, rankSize: 17, cornerSize:  8 },
+  sm: { w: 32, h: 48, rankSize: 21, cornerSize: 10 },
+  md: { w: 44, h: 64, rankSize: 28, cornerSize: 12 },
+  lg: { w: 66, h: 96, rankSize: 40, cornerSize: 15 },
 } as const;
 
 type CardSize = 'xs' | 'sm' | 'md' | 'lg';
@@ -54,6 +61,7 @@ interface CardProps {
   selected?: boolean;
   clickable?:boolean;
   folded?:   boolean;
+  isDown?:   boolean;   // スタッド: 自分のダウンカード（破線枠）
   onClick?:  () => void;
 }
 
@@ -66,7 +74,8 @@ function parseCard(code: string): { rank: string; suit: string } | null {
 }
 
 const Card: React.FC<CardProps> = ({
-  code, size = 'md', selected = false, clickable = false, folded = false, onClick,
+  code, size = 'md', selected = false, clickable = false,
+  folded = false, isDown = false, onClick,
 }) => {
   const dim    = SIZE_PRESET[size];
   const parsed = parseCard(code);
@@ -74,6 +83,13 @@ const Card: React.FC<CardProps> = ({
   const color  = parsed ? SUIT_COLOR[parsed.suit]  : '#fff';
   const symbol = parsed ? SUIT_SYMBOL[parsed.suit] : '';
   const rank   = parsed ? (RANK_LABEL[parsed.rank] ?? parsed.rank) : '';
+
+  // ボーダー決定（優先順位: 選択 > ダウンカード破線 > 通常）
+  const border = selected
+    ? '2.5px solid #e84040'
+    : (isDown && !isBack)
+      ? '2px dashed #c9a84c'
+      : '1.5px solid rgba(0,0,0,0.22)';
 
   return (
     <div
@@ -87,9 +103,7 @@ const Card: React.FC<CardProps> = ({
         background: isBack
           ? 'linear-gradient(135deg, #1a4a8a 0%, #0d2d5c 50%, #1a4a8a 100%)'
           : '#fffdf6',
-        border: selected
-          ? '2.5px solid #e84040'
-          : '1.5px solid rgba(0,0,0,0.22)',
+        border,
         boxShadow: selected
           ? '0 0 14px rgba(232,64,64,0.65), 0 3px 8px rgba(0,0,0,0.5)'
           : '0 2px 8px rgba(0,0,0,0.45)',
@@ -107,40 +121,30 @@ const Card: React.FC<CardProps> = ({
           border: '1.5px solid rgba(255,255,255,0.25)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}>
-          <span style={{ fontSize: dim.fontSize * 1.3, color: 'rgba(255,255,255,0.3)', lineHeight: 1 }}>♦</span>
+          <span style={{ fontSize: dim.rankSize * 0.55, color: 'rgba(255,255,255,0.3)', lineHeight: 1 }}>♦</span>
         </div>
       ) : (
-        /* 表面 */
-        (size === 'xs' || size === 'sm') ? (
-          /* xs/sm: ランク＋スートを縦積み中央表示 */
+        /* 表面: 角マークのみ + 中央に大きなランク数字 */
+        <>
+          {/* 左上スートマーク */}
+          <div style={{ position: 'absolute', top: 3, left: 4, lineHeight: 1 }}>
+            <span style={{ fontSize: dim.cornerSize, color, lineHeight: 1 }}>{symbol}</span>
+          </div>
+          {/* 右下スートマーク（180°回転） */}
+          <div style={{ position: 'absolute', bottom: 3, right: 4, lineHeight: 1, transform: 'rotate(180deg)' }}>
+            <span style={{ fontSize: dim.cornerSize, color, lineHeight: 1 }}>{symbol}</span>
+          </div>
+          {/* 中央ランク数字 */}
           <div style={{
             position: 'absolute', inset: 0,
-            display: 'flex', flexDirection: 'column',
-            alignItems: 'center', justifyContent: 'center', gap: 2,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
             <span style={{
-              fontSize: dim.fontSize, fontWeight: '900', color,
+              fontSize: dim.rankSize, fontWeight: '900', color,
               fontFamily: 'Georgia, "Times New Roman", serif', lineHeight: 1,
             }}>{rank}</span>
-            <span style={{ fontSize: dim.suitSize * dim.suitMult, color, lineHeight: 1 }}>{symbol}</span>
           </div>
-        ) : (
-          /* md/lg: 左上にランク、中央に大きなスート */
-          <>
-            <div style={{ position: 'absolute', top: 3, left: 5, lineHeight: 1 }}>
-              <span style={{
-                fontSize: dim.fontSize, fontWeight: '900', color,
-                fontFamily: 'Georgia, "Times New Roman", serif', lineHeight: 1,
-              }}>{rank}</span>
-            </div>
-            <div style={{
-              position: 'absolute', inset: 0,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-            }}>
-              <span style={{ fontSize: dim.suitSize * dim.suitMult, color, lineHeight: 1 }}>{symbol}</span>
-            </div>
-          </>
-        )
+        </>
       )}
     </div>
   );

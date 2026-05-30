@@ -58,6 +58,9 @@ export interface PlayerState {
   isAllIn?: boolean;
   isPendingPlayer?: boolean;  // pendingPlayers待機中（次のハンドから参加）
   betSize?: number;
+  // スタッド系（BEAST+ / stud_mix）対応
+  studCards?: { code: string; up: boolean; folded?: boolean }[]; // カードごとの表裏情報
+  isBringIn?: boolean;        // 3rd street のブリングイン強制者
   // NL（27sd）対応: クライアントUI構築用情報。
   // isNL=true のときのみ minBet/minRaiseTotal/maxBetTotal が利用可能
   isNL?: boolean;
@@ -79,6 +82,7 @@ export interface GameMeta {
   pots?: PotEntry[];   // メイン/サイドポット内訳（オールイン時）
   currentBet?: number;
   raiseCount?: number;
+  maxRaises?: number;
   currentMode: string;
   handCount: number;
   dealerIndex?: number;
@@ -87,6 +91,12 @@ export interface GameMeta {
   isTournament?: boolean;
   tournamentId?: string;
   roomId?: string;     // Vol.11追加: PokerTable の roomId フィルタに使用
+  // スタッド系（BEAST+ / stud_mix）対応
+  isStud?: boolean;
+  street?: string | null;       // '3rd'|'4th'|'5th'|'6th'|'7th'|'showdown'
+  bringInIndex?: number;
+  ante?: number;
+  bringInAmount?: number;
   // NL（27sd）対応
   isNL?: boolean;
   bigBlind?: number;

@@ -2,7 +2,7 @@
 // app/components/TournamentInfoBar.tsx
 // ナビバー用コンパクト1行表示
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { BlindUpdate, TournamentStatus } from '../types/tournament';
 
 interface Props {
@@ -35,14 +35,71 @@ function useElapsed() {
   return elapsed;
 }
 
-/** pendingLevelUp中のカウントアップタイマーコンポーネント */
+/** pendingLevelUp中のカウントアップタイマー＋マーキー表示 */
 function PendingLevelUpTimer() {
   const elapsed = useElapsed();
+  const outerRef = useRef<HTMLDivElement>(null);
+  const innerRef = useRef<HTMLSpanElement>(null);
+  const [scrollStyle, setScrollStyle] = useState<React.CSSProperties>({});
+
+  // マーキーが必要か判定して animation を設定
+  useEffect(() => {
+    const outer = outerRef.current;
+    const inner = innerRef.current;
+    if (!outer || !inner) return;
+
+    const outerW = outer.offsetWidth;
+    const innerW = inner.scrollWidth;
+
+    if (innerW <= outerW) {
+      // 収まる → スクロール不要
+      setScrollStyle({});
+      return;
+    }
+
+    // スクロール距離 = テキスト幅（親の右端まで流れた後、完全に消えるまで）
+    // duration = テキスト幅 ÷ 35px/秒（読みやすい速度）
+    const dist = innerW;
+    const duration = Math.round((dist / 35) * 10) / 10; // 小数1桁
+
+    setScrollStyle({
+      '--marquee-dist': `-${dist}px`,
+      animation: `marqueeScroll ${duration}s linear infinite`,
+      // 1.5秒の停止後にスクロール開始（読む時間を確保）
+      animationDelay: '1.5s',
+      willChange: 'transform',
+    } as React.CSSProperties);
+  }, [elapsed]); // elapsed変化ごとに再計測（テキスト幅が変わるため）
+
   return (
-    <span style={{ fontFamily: 'var(--font-title)', fontSize: 11, color: '#ffcc44', fontWeight: 700, animation: 'pulse 1s infinite' }}>
-      ⬆ 次ハンドでブラインドアップ &nbsp;
-      <span style={{ color: '#ffee99', fontWeight: 400 }}>+{fmt(elapsed)}</span>
-    </span>
+    <div
+      ref={outerRef}
+      style={{
+        overflow: 'hidden',
+        flex: 1,
+        minWidth: 0,
+        // グラデーションで右端をフェードアウト（スクロール中の切れ目を自然に見せる）
+        maskImage: 'linear-gradient(to right, black 80%, transparent 100%)',
+        WebkitMaskImage: 'linear-gradient(to right, black 80%, transparent 100%)',
+      }}
+    >
+      <span
+        ref={innerRef}
+        style={{
+          display: 'inline-block',
+          whiteSpace: 'nowrap',
+          fontFamily: 'var(--font-title)',
+          fontSize: 11,
+          color: '#ffcc44',
+          fontWeight: 700,
+          ...scrollStyle,
+        }}
+      >
+        ⬆ 次ハンドでブラインドアップ &nbsp;
+        <span style={{ color: '#ffee99', fontWeight: 400 }}>+{fmt(elapsed)}</span>
+        &emsp;&emsp;{/* スクロール折り返しの間隔 */}
+      </span>
+    </div>
   );
 }
 
