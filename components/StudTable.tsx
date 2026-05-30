@@ -125,14 +125,16 @@ interface StudCard { code: string; up: boolean; folded?: boolean }
 
 /**
  * 他プレイヤーのカード列（xs 横1段）
- * xs(26px): 7枚フル = 重ね(16px) + up×4(26×4) + 7th(16px) + gap ≈ 146px
+ * xs(26px): 7枚フル = 重ね + up×4(26×4) + 7th + gap
  * overflow:'visible' で OTH_W を超えても見切れない
+ * 最初の2枚のダウンカードは 4px ずつずらして「2枚ある」ことを視認可能にする
  */
 function OtherStudCards({ cards, folded }: { cards: StudCard[]; folded?: boolean }) {
   if (!cards || cards.length === 0) return null;
-  // stackW: xs(26px) + オフセット2px×2 = 30px で2枚が重ならず収まる
-  const stackW = 30;
-  const h      = SIZE_PRESET.xs.h;
+  // stackW: xs(26px) + オフセット4px×(枚数-1) で重なりを視認可能にする
+  const FRONT_OFFSET = 4;
+  const w            = SIZE_PRESET.xs.w;
+  const h            = SIZE_PRESET.xs.h;
 
   const downFront: StudCard[] = [];
   const ups:       StudCard[] = [];
@@ -143,21 +145,24 @@ function OtherStudCards({ cards, folded }: { cards: StudCard[]; folded?: boolean
     else              ups.push(c);
   });
 
+  // ダウンフロントの幅 = カード幅 + ずらし分（2枚目以降のオフセット累積）
+  const frontW = w + FRONT_OFFSET * Math.max(0, downFront.length - 1);
+
   return (
     <div style={{ display: 'flex', gap: 2, alignItems: 'center', opacity: folded ? 0.5 : 1 }}>
       {downFront.length > 0 && (
-        <div style={{ position: 'relative', width: stackW, height: h, flexShrink: 0 }}>
+        <div style={{ position: 'relative', width: frontW, height: h, flexShrink: 0 }}>
           {downFront.map((c, i) => (
-            <div key={`df${i}`} style={{ position: 'absolute', top: i * 2, left: i * 2 }}>
-              <Card code={c.code} size="xs" folded={folded} />
+            <div key={`df${i}`} style={{ position: 'absolute', top: 0, left: i * FRONT_OFFSET }}>
+              <Card code={c.code} size="xs" folded={folded} isDown={!c.up} />
             </div>
           ))}
         </div>
       )}
       {ups.map((c, i) => <Card key={`up${i}`} code={c.code} size="xs" folded={folded} />)}
       {downBack.length > 0 && (
-        <div style={{ position: 'relative', width: stackW, height: h, flexShrink: 0 }}>
-          <Card code={downBack[0].code} size="xs" folded={folded} />
+        <div style={{ position: 'relative', width: w, height: h, flexShrink: 0 }}>
+          <Card code={downBack[0].code} size="xs" folded={folded} isDown={!downBack[0].up} />
         </div>
       )}
     </div>
@@ -322,7 +327,13 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
       }
       const rad = (ang * Math.PI) / 180;
       const bh = p.isSelf ? Math.floor(TH * 0.31) : Math.floor(TH * 0.25);
-      return { left: CX + RX * Math.cos(rad) - BW / 2, top: CY + RY * Math.sin(rad) - bh / 2 };
+      let left = CX + RX * Math.cos(rad) - BW / 2;
+      let top  = CY + RY * Math.sin(rad) - bh / 2;
+      // 見切れ防止: カード列(7枚)がボックス幅 BW を左右に超える分のマージンを確保
+      const MARGIN = p.isSelf ? 8 : 24;
+      left = Math.max(MARGIN, Math.min(left, TW - BW - MARGIN));
+      top  = Math.max(8, Math.min(top, TH - bh - 8));
+      return { left, top };
     };
 
     return (
@@ -475,7 +486,15 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
     const rad = (ang * Math.PI) / 180;
     const bw  = p.isSelf ? SELF_W : OTH_W;
     const bh  = p.isSelf ? SELF_H : OTH_H;
-    return { left: CX_M + RX_M * Math.cos(rad) - bw / 2, top: CY_M + RY_M * Math.sin(rad) - bh / 2 };
+    let left = CX_M + RX_M * Math.cos(rad) - bw / 2;
+    let top  = CY_M + RY_M * Math.sin(rad) - bh / 2;
+    // 画面端クランプ: ボックス（とカード）が左右にはみ出して見切れるのを防ぐ。
+    // 他プレイヤーのカード列(最大7枚)はボックス幅 OTH_W を中央基準で左右に
+    // 約20pxずつ超えるため、その分を MARGIN として確保する（自分は SELF_W に収まる）。
+    const MARGIN = p.isSelf ? 4 : 22;
+    left = Math.max(MARGIN, Math.min(left, TW_M - bw - MARGIN));
+    top  = Math.max(4, Math.min(top, TH_M - bh - 4));
+    return { left, top };
   };
 
 

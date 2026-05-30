@@ -296,7 +296,9 @@ function findWinner(players, mode = '27') {
 /**
  * プレイヤーリストから同点を含む全勝者を返す（スプリットポット対応）
  * @param {Array}    players   - { id, hand }[] フォールドしていないプレイヤー
- * @param {'27'|'badugi'} mode - ゲームモード
+ *   ⚠️ 注意: draw系は players[].hand を使う。スタッド系(studEvaluator)は
+ *   players[].cards を使うため、混同しないこと（技術的負債・将来統一予定）。
+ * @param {'27'|'badugi'|'a5'} mode - ゲームモード
  * @returns {Array} 最強手を持つプレイヤーの配列（引き分けなら複数）
  */
 function findWinners(players, mode = '27') {

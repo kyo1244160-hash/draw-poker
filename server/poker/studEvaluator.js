@@ -8,6 +8,13 @@
  *
  * 7枚から最良の5枚を選ぶ点が draw 系（手札=役）と根本的に異なる。
  *
+ * ⚠️ フィールド名の注意（技術的負債・要将来統一）:
+ *   本モジュールの勝者判定関数（findHiWinners/findLoWinners）は
+ *   players[].cards を参照する。一方 handEvaluator.js（draw系）は
+ *   players[].hand を参照する。同じ「プレイヤーの手札」概念で名前が異なるため、
+ *   呼び出し側はモジュールごとに正しいフィールド名を渡すこと。
+ *   将来テスト拡充後に 'cards' へ統一することを推奨。
+ *
  * ハイハンドの強さ表現:
  *   { cat, tiebreak } の比較で勝敗を決める。
  *   cat: カテゴリ（大きいほど強い、0=ハイカード 〜 8=ストレートフラッシュ）
@@ -73,13 +80,16 @@ function evalHi5(hand) {
   const nums  = hand.map((c) => RANK_HI[c[0]]).sort((a, b) => b - a);
   const suits = hand.map((c) => c.slice(-1));
 
-  const isFlush = suits.every((s) => s === suits[0]);
+  // ストレート・フラッシュは5枚揃って初めて成立する。
+  // 中間ストリート（3-4枚）では誤って成立させない。
+  const hasFive = hand.length >= 5;
+  const isFlush = hasFive && suits.every((s) => s === suits[0]);
 
   // ストレート判定（A-2-3-4-5 のホイール対応）
   const uniq = [...new Set(nums)].sort((a, b) => b - a);
   let isStraight = false;
   let straightHigh = 0;
-  if (uniq.length === 5) {
+  if (hasFive && uniq.length === 5) {
     if (uniq[0] - uniq[4] === 4) { isStraight = true; straightHigh = uniq[0]; }
     // ホイール: A-5-4-3-2 （A=14 を 1 扱い）
     else if (uniq[0] === 14 && uniq[1] === 5 && uniq[2] === 4 && uniq[3] === 3 && uniq[4] === 2) {
@@ -107,7 +117,12 @@ function evalHi5(hand) {
   return { cat: 0, tiebreak: nums };
 }
 
-/** ハイの強さ比較（負: A強い, 正: B強い, 0: 引分） */
+/** ハイの強さ比較（負: A強い, 正: B強い, 0: 引分）
+ *  注意: 異なる枚数で評価された手同士の比較は想定していない。
+ *  bestHi は5枚未満でも実カードで評価する（中間ストリート表示用）が、
+ *  勝者判定(findHiWinners)は必ずショーダウン=全員7枚の状態でのみ呼ばれるため、
+ *  枚数の異なる手が比較されることは実ゲームでは発生しない。
+ *  将来フォールド者を含めて比較する等の変更を加える場合は枚数を揃えること。 */
 function compareHi(a, b) {
   if (a.cat !== b.cat) return b.cat - a.cat;
   const len = Math.max(a.tiebreak.length, b.tiebreak.length);
@@ -121,18 +136,14 @@ function compareHi(a, b) {
 
 /** 7枚から最良のハイ5枚を選ぶ */
 function bestHi(cards) {
-  // 防御: 5枚未満の場合は手持ち全部で評価（パディングして最弱扱い）
-  if (!cards || cards.length < 5) {
-    const padded = [...(cards || [])];
-    // 評価できる最低5枚を確保（足りない分はダミーの最弱カードで埋める）
-    const dummies = ['2C', '3C', '4C', '5C', '7D'];
-    let di = 0;
-    while (padded.length < 5 && di < dummies.length) {
-      if (!padded.includes(dummies[di])) padded.push(dummies[di]);
-      di++;
-    }
-    if (padded.length < 5) return { ev: { cat: 0, tiebreak: [0] }, cards: padded };
-    return { ev: evalHi5(padded.slice(0, 5)), cards: padded.slice(0, 5) };
+  // 5枚未満（中間ストリート）: ダミーで水増しすると存在しないペア等を捏造してしまうため、
+  // 実際の手札だけで評価する。evalHi5 のカウント/ストレート判定は枚数非依存で動作する
+  // （uniq.length===5 でないとストレート/フラッシュにならないため、3-4枚では自然に役なし）。
+  if (!cards || cards.length === 0) {
+    return { ev: { cat: 0, tiebreak: [0] }, cards: [] };
+  }
+  if (cards.length < 5) {
+    return { ev: evalHi5(cards), cards: [...cards] };
   }
   const combos = combinations(cards, 5);
   let best = null;
@@ -156,10 +167,12 @@ const HI_CAT_NAME = [
  * 7枚から最良のロー5枚を選ぶ（A-5 ローボール、ストレート/フラッシュ無視）
  * @param {string[]} cards
  * @param {boolean}  requireEightOrBetter  true なら 8以下5枚が条件（stud_e用）
- * @returns {{qualifies:boolean, ranks:number[]}}
- *   ranks: 昇順5枚（比較時は降順に並べ替えて高い方から比較、低いほど強い）
+ * @param {boolean}  [bestEffort=false]  true なら5枚未満でも現状の最良ローを返す（Razz中間ストリート表示用）
+ * @returns {{qualifies:boolean, ranks:number[], partial?:boolean}}
+ *   ranks: 昇順（最大5枚）。比較時は降順に並べ替えて高い方から比較、低いほど強い
+ *   partial: true の場合、5枚未満の途中経過（Razz中間ストリート）
  */
-function bestLo(cards, requireEightOrBetter) {
+function bestLo(cards, requireEightOrBetter, bestEffort = false) {
   // 各ランクで最も低い5枚（重複ランクは1枚のみ有効）を貪欲に選ぶ
   // ロー最良 = 重複しない最も低い5ランク
   const byRank = new Map();
@@ -169,7 +182,14 @@ function bestLo(cards, requireEightOrBetter) {
   }
   const uniqRanks = [...byRank.keys()].sort((a, b) => a - b);
 
-  if (uniqRanks.length < 5) return { qualifies: false, ranks: [] };
+  if (uniqRanks.length < 5) {
+    // bestEffort（Razz中間ストリート表示）: 揃っているランクだけで部分的な手を返す。
+    // Razz には qualifier が無く、最終的に必ず手が成立するため「ノークオリファイ」とは呼ばない。
+    if (bestEffort) {
+      return { qualifies: false, partial: true, ranks: uniqRanks.slice(0, 5) };
+    }
+    return { qualifies: false, ranks: [] };
+  }
 
   const five = uniqRanks.slice(0, 5);
   if (requireEightOrBetter && five[4] > 8) return { qualifies: false, ranks: [] };
@@ -206,8 +226,9 @@ function loName(lo) {
  */
 function evaluateStudHand(cards, mode) {
   if (mode === 'razz') {
-    // Razz: ローのみ（qualifier 無し）。A-5、ストレート/フラッシュ無視
-    const lo = bestLo(cards, false);
+    // Razz: ローのみ（qualifier 無し）。A-5、ストレート/フラッシュ無視。
+    // bestEffort=true で5枚未満の中間ストリートでも現状の最良ローを返す。
+    const lo = bestLo(cards, false, true);
     return { hi: null, lo };
   }
   if (mode === 'stud_e') {
@@ -224,7 +245,14 @@ function evaluateStudHand(cards, mode) {
 function studHandName(cards, mode) {
   const ev = evaluateStudHand(cards, mode);
   if (mode === 'razz') {
-    return loName(ev.lo);
+    // Razz は qualifier 無し。5枚揃えば確定ロー、未満なら現状のカードを低い順に表示。
+    if (ev.lo.qualifies) return loName(ev.lo);
+    if (ev.lo.ranks && ev.lo.ranks.length > 0) {
+      // 中間ストリート: 現状の最良ロー候補を表示（例: "9-8-2"）
+      const desc = [...ev.lo.ranks].sort((a, b) => b - a);
+      return desc.map((n) => RANK_NAME[n]).join('-');
+    }
+    return '—';
   }
   if (mode === 'stud_e') {
     const hiName = ev.hi ? HI_CAT_NAME[ev.hi.ev.cat] : '';
@@ -261,6 +289,27 @@ function findLoWinners(players, mode) {
   if (mode === 'stud_s') return [];
   if (!players || players.length === 0) return [];
   const requireQual = mode === 'stud_e';
+
+  if (mode === 'razz') {
+    // Razz は qualifier 無し。全員が必ずロー手を持つ（7枚で5ユニーク未満の
+    // 極端なケースでも bestEffort で部分手を作り、ペア込みで比較する）。
+    // ペアが多いほど弱いローとして扱うため、ユニークランク数が多い方を優先。
+    const evals = players.map((p) => {
+      const lo = bestLo(p.cards, false, true);
+      return { id: p.id, lo, uniqCount: lo.ranks.length };
+    });
+    // ユニーク5枚揃っている者を優先。揃っていなければペアを含む最良手で比較。
+    const maxUniq = Math.max(...evals.map((e) => e.uniqCount));
+    const eligible = evals.filter((e) => e.uniqCount === maxUniq);
+    let best = [eligible[0]];
+    for (let i = 1; i < eligible.length; i++) {
+      const cmp = compareLo(eligible[i].lo, best[0].lo);
+      if (cmp < 0) best = [eligible[i]];
+      else if (cmp === 0) best.push(eligible[i]);
+    }
+    return best.map((e) => e.id);
+  }
+
   const evals = players
     .map((p) => ({ id: p.id, lo: bestLo(p.cards, requireQual) }))
     .filter((e) => e.lo.qualifies);

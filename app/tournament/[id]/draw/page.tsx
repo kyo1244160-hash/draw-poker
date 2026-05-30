@@ -30,6 +30,7 @@ export default function TournamentDrawPage() {
   const accountIdRef = useRef<string | null>(null); // 自分の accountId（/api/auth/session から取得）
   const tableIdRef = useRef<string | null>(null);  // サーバーから t:tournamentStarting で受信
   const prevModeRef = useRef<string | null>(null); // ゲームチェンジ検出用
+  const transferTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]); // テーブル移動時の再送タイマー管理
 
   // players と meta を1つのstateにまとめて1回のレンダリングで更新（カクつき防止）
   const [gameState,  setGameState]  = useState<{ players: PlayerState[]; meta: GameMeta | null }>({ players: [], meta: null });
@@ -134,10 +135,12 @@ export default function TournamentDrawPage() {
 
     // ゲーム状態（playersとmetaを1回のsetStateでまとめて更新）
     socket.on('gameState', (raw: unknown) => {
-      // ===== gameState ハンドラー全体を try-catch でラップ =====
-      // クライアントクラッシュの原因特定のため、エラー時に詳細を /api/debug/client-error へ送信
+      // ===== gameState ハンドラーの try-catch について =====
+      // 注意: これはハンドラー内の【同期エラー】のみ捕捉する観測用であり、
+      // レンダリングフェーズで発生するエラー（React error #310 等）は捕捉できない。
+      // それらは GameErrorBoundary が担当する。ここはペイロード処理の保険。
       try {
-      // 実行時型チェック: サーバーからの予期しないペイロードでクラッシュしないよう防御
+      // 実行時型チェック: サーバーからの予期しないペイロード形式を弾く（同期的に return）
       if (!raw || typeof raw !== 'object') return;
       const rawObj = raw as Record<string, unknown>;
       const pl = Array.isArray(rawObj.players) ? rawObj.players as PlayerState[] : [];
@@ -314,12 +317,17 @@ export default function TournamentDrawPage() {
       logAction('別テーブルへ移動しました');
       // 移動直後にgameStateをリセット（旧テーブルのshowdown画面に止まるバグ防止）
       setGameState({ players: [], meta: null });
+      // 【修正】テーブル移動はゲーム種変更ではないため prevModeRef もリセット。
+      // これを怠ると移動先で別ゲーム種が進行中の場合に誤った「ゲームが変わりました」通知が出る
+      prevModeRef.current = null;
       // 移動先のゲーム状態を取得
       socket.emit('getGameState', { roomId: toTableId });
       // join完了後に確実にgameStateが届くよう再送（フリーズ防止）
-      setTimeout(() => {
+      // 【修正】タイマーを ref で管理し、アンマウント時にクリーンアップする
+      const transferTimer = setTimeout(() => {
         socket.emit('getGameState', { roomId: toTableId });
       }, 600);
+      transferTimersRef.current.push(transferTimer);
     });
 
     // pending待機中のテーブル移動（ゲーム進行中テーブルへ移動 → 次のハンドまで待機）
@@ -456,6 +464,9 @@ export default function TournamentDrawPage() {
       socket.off('t:tournamentFinished');
       socket.off('kicked');
       socket.off('error');
+      // 【修正】テーブル移動再送タイマーをクリーンアップ（アンマウント後の emit 防止）
+      transferTimersRef.current.forEach(clearTimeout);
+      transferTimersRef.current = [];
     };
   // 依存配列を空にする意図:
   // 全ソケットハンドラは tableIdRef / eliminatedRef / fetchReadyRef 等の Ref を経由して

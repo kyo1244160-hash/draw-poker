@@ -1,0 +1,259 @@
+/**
+ * scripts/test-poker-logic.js
+ * チップ精算・手役評価の回帰テスト（Node 標準 assert のみ・依存ゼロ）
+ *
+ * 実行: node scripts/test-poker-logic.js
+ *
+ * 目的: チップ（=金銭）に直結する純粋関数の正しさを保証する。
+ *   - handEvaluator: ドロー系の勝者判定
+ *   - studEvaluator: スタッド系の Hi/Lo 勝者判定
+ *   - studManager._awardStudPots: チップ保存則（精算前後で総量不変）
+ *
+ * 各期待値は実装の実測値ではなく「ポーカーのルール上正しい結果」に基づく。
+ * テストが落ちた場合、実装かテストのどちらが誤っているかを必ず精査すること。
+ */
+
+const assert = require('assert');
+const he = require('../server/poker/handEvaluator');
+const se = require('../server/poker/studEvaluator');
+const sm = require('../server/poker/studManager');
+
+let passed = 0;
+let failed = 0;
+const failures = [];
+
+function test(name, fn) {
+  try {
+    fn();
+    passed++;
+    console.log(`  ✅ ${name}`);
+  } catch (err) {
+    failed++;
+    failures.push({ name, err });
+    console.log(`  ❌ ${name}`);
+    console.log(`     ${err.message}`);
+  }
+}
+
+function makeStudRoom(mode, players, pot) {
+  return { id: 'test-room-0000', currentMode: mode, mode, pot, dealerIndex: 0, players };
+}
+
+// チップ保存則アサーション: 精算前後で「全チップ + pot」が不変
+function assertChipConservation(room, players, label) {
+  const before = players.reduce((s, p) => s + p.chips, 0) + room.pot;
+  sm._awardStudPots(room, players.filter((p) => !p.folded && !p.sittingOut));
+  const after = players.reduce((s, p) => s + p.chips, 0) + room.pot;
+  assert.strictEqual(after, before, `${label}: チップ保存則違反 before=${before} after=${after}`);
+  assert.strictEqual(room.pot, 0, `${label}: 精算後 pot が 0 でない (${room.pot})`);
+}
+
+console.log('\n=== handEvaluator: 2-7 ローボール ===');
+
+test('7-5-4-3-2 がワンペアより強い（ローは低いほど強い）', () => {
+  const nuts = ['7S', '5H', '4D', '3C', '2S'];
+  const pair = ['2S', '2H', '5D', '4C', '3S'];
+  assert.ok(he.compare27Hands(nuts, pair) < 0, 'nuts が勝つべき');
+});
+
+test('findWinners が単独勝者を返す', () => {
+  const players = [
+    { id: 'a', hand: ['7S', '5H', '4D', '3C', '2S'] },
+    { id: 'b', hand: ['2S', '2H', '5D', '4C', '3S'] },
+  ];
+  const w = he.findWinners(players, '27');
+  assert.strictEqual(w.length, 1);
+  assert.strictEqual(w[0].id, 'a');
+});
+
+test('findWinners が引き分けで複数勝者を返す（スプリット）', () => {
+  const players = [
+    { id: 'x', hand: ['7S', '5H', '4D', '3C', '2S'] },
+    { id: 'y', hand: ['7H', '5S', '4C', '3D', '2H'] },
+  ];
+  const w = he.findWinners(players, '27');
+  assert.strictEqual(w.length, 2, '同点は2人勝者');
+});
+
+test('空配列で findWinners がクラッシュしない', () => {
+  assert.deepStrictEqual(he.findWinners([], '27'), []);
+  assert.deepStrictEqual(he.findWinners(null, '27'), []);
+});
+
+console.log('\n=== studEvaluator: スタッド Hi/Lo ===');
+
+test('7枚から最良5枚を選ぶ（両者同じストレートで引き分け）', () => {
+  // B: 2,3,4,5,6,8,9 → ストレート 2-3-4-5-6
+  // C: 2,2,3,3,4,5,6 → ストレート 2-3-4-5-6（ペアは無視され最良5枚はストレート）
+  const B = { id: 'b', cards: ['2C', '3D', '4H', '5S', '6C', '8D', '9H'] };
+  const C = { id: 'c', cards: ['2S', '2H', '3C', '3S', '4D', '5C', '6H'] };
+  const w = se.findHiWinners([B, C], 'stud_s');
+  assert.strictEqual(w.length, 2, '両者ストレートで引き分け');
+});
+
+test('razz では findHiWinners が空（ハイ無し）', () => {
+  const players = [{ id: 'a', cards: ['AS', '2H', '3D', '4C', '5S', '6D', '7H'] }];
+  assert.deepStrictEqual(se.findHiWinners(players, 'razz'), []);
+});
+
+test('stud_s では findLoWinners が空（ロー無し）', () => {
+  const players = [{ id: 'a', cards: ['AS', '2H', '3D', '4C', '5S', '6D', '7H'] }];
+  assert.deepStrictEqual(se.findLoWinners(players, 'stud_s'), []);
+});
+
+test('stud_e のローは8以下クオリファイ必須（9highは不成立）', () => {
+  // 9 を含むためローは A2345... ではなく、全カード9以上混じりで不成立を作る
+  const noLo = { id: 'a', cards: ['9S', 'TH', 'JD', 'QC', 'KS', 'AD', '9H'] };
+  const lo = se.findLoWinners([noLo], 'stud_e');
+  assert.strictEqual(lo.length, 0, '8以下5枚が無ければロー不成立');
+});
+
+console.log('\n=== Razz: ノークオリファイ表記の修正 ===');
+
+test('Razz は5枚未満でも「ノークオリファイ」と表示しない（中間ストリート）', () => {
+  // 2,9,8,8,K（8ペアで unique=4種）→ 旧実装は「ノークオリファイ」
+  const name = se.studHandName(['2C', '9H', '8H', '8D', 'KC'], 'razz');
+  assert.notStrictEqual(name, 'ノークオリファイ', 'Razzにノークオリファイは存在しない');
+  assert.strictEqual(name, 'K-9-8-2', '現状の最良ローを降順表示');
+});
+
+test('Razz 7枚は確定ローを表示', () => {
+  const name = se.studHandName(['2C', '9H', '8H', '8D', 'KC', '5S', '3D'], 'razz');
+  assert.strictEqual(name, '9-8-5-3-2', '7枚から最良5枚ロー');
+});
+
+test('Razz 3rd street（3枚）も表示できる', () => {
+  const name = se.studHandName(['2C', '9H', '8H'], 'razz');
+  assert.strictEqual(name, '9-8-2');
+});
+
+test('Razz 勝者判定: 5枚揃いが部分手に勝つ', () => {
+  const players = [
+    { id: 'a', cards: ['2C', '9H', '8H', '8D', 'KC'] },       // 部分(8ペア) K-9-8-2
+    { id: 'b', cards: ['AC', '3D', '5H', '7S', '9C'] },       // 完全 9-7-5-3-A
+  ];
+  const w = se.findLoWinners(players, 'razz');
+  assert.deepStrictEqual(w, ['b'], '5枚揃いの b が勝つ');
+});
+
+test('Razz 勝者判定: 全員ペアでも勝者が出る（保存則の前提）', () => {
+  const players = [
+    { id: 'a', cards: ['2C', '2D', '3H', '3S', '4C'] },  // unique {2,3,4}=3種
+    { id: 'b', cards: ['5C', '5D', '6H', '6S', '7C'] },  // unique {5,6,7}=3種
+  ];
+  const w = se.findLoWinners(players, 'razz');
+  assert.strictEqual(w.length, 1, '同じユニーク数なら低い方が勝つ');
+  assert.strictEqual(w[0], 'a', 'a (2-3-4) が b (5-6-7) より強い');
+});
+
+console.log('\n=== 中間ストリート手役の捏造防止（スクショ4バグ）===');
+
+test('3枚 A,2,4 はワンペアでなくハイカード（ダミー水増し禁止）', () => {
+  // 旧実装はダミーカード2C,3Cで水増しし、偽のペアを作っていた
+  assert.strictEqual(se.studHandName(['AD', '2H', '4S'], 'stud_e'), 'ハイカード');
+});
+
+test('同スート3枚はフラッシュにならない（5枚必須）', () => {
+  assert.strictEqual(se.studHandName(['AH', '2H', '4H'], 'stud_s'), 'ハイカード');
+});
+
+test('連続3枚はストレートにならない（5枚必須）', () => {
+  assert.strictEqual(se.studHandName(['2H', '3S', '4D'], 'stud_s'), 'ハイカード');
+});
+
+test('実ペア（4,4,7,K）は正しくワンペア', () => {
+  assert.strictEqual(se.studHandName(['4H', '4S', '7D', 'KC'], 'stud_s'), 'ワンペア');
+});
+
+test('5枚の同スートは正しくフラッシュ', () => {
+  assert.strictEqual(se.studHandName(['AH', '2H', '4H', '7H', '9H'], 'stud_s'), 'フラッシュ');
+});
+
+test('5枚の連続は正しくストレート', () => {
+  assert.strictEqual(se.studHandName(['2C', '3D', '4H', '5S', '6C'], 'stud_s'), 'ストレート');
+});
+
+test('7枚ショーダウンの勝者判定は正常（フォーカード > ストレート）', () => {
+  const players = [
+    { id: 'a', cards: ['AS', 'AH', 'AD', 'AC', 'KS', 'KH', 'QD'] },
+    { id: 'b', cards: ['2C', '3D', '4H', '5S', '6C', '8D', '9H'] },
+  ];
+  assert.deepStrictEqual(se.findHiWinners(players, 'stud_s'), ['a']);
+});
+
+test('stud_s 単独勝者（保存則）', () => {
+  const players = [
+    { id: 'a', name: 'A', chips: 100, folded: false, sittingOut: false, totalContribution: 50, cards: ['AS', 'KS', 'QS', 'JS', 'TS', '9S', '8S'] },
+    { id: 'b', name: 'B', chips: 100, folded: false, sittingOut: false, totalContribution: 50, cards: ['2C', '3D', '4H', '5S', '7C', '8D', '9H'] },
+  ];
+  const room = makeStudRoom('stud_s', players, 100);
+  assertChipConservation(room, players, 'stud_s単独');
+  assert.strictEqual(players[0].chips, 200, 'A がポット総取り');
+});
+
+test('サイドポット分割（保存則）', () => {
+  // A=30拠出(オールイン), B=60, C=60 → pot=150
+  const players = [
+    { id: 'a', name: 'A', chips: 0, folded: false, sittingOut: false, totalContribution: 30, cards: ['AS', 'AH', 'AD', 'AC', 'KS', 'KH', 'QD'] }, // フォーカード
+    { id: 'b', name: 'B', chips: 0, folded: false, sittingOut: false, totalContribution: 60, cards: ['2C', '3D', '4H', '5S', '6C', '8D', '9H'] },
+    { id: 'c', name: 'C', chips: 0, folded: false, sittingOut: false, totalContribution: 60, cards: ['2S', '2H', '3C', '3S', '4D', '5C', '6H'] },
+  ];
+  const room = makeStudRoom('stud_s', players, 150);
+  assertChipConservation(room, players, 'サイドポット');
+  // A は contribution=30 までのメインポット(30×3=90)を獲得
+  assert.strictEqual(players[0].chips, 90, 'A はメインポット90を獲得');
+});
+
+test('stud_e Hi/Lo スプリット（保存則）', () => {
+  const players = [
+    { id: 'a', name: 'A', chips: 0, folded: false, sittingOut: false, totalContribution: 50, cards: ['AS', 'AH', 'AD', 'KC', 'KS', 'QH', 'JD'] }, // フルハウス（ハイ）
+    { id: 'b', name: 'B', chips: 0, folded: false, sittingOut: false, totalContribution: 50, cards: ['AC', '2D', '3H', '4S', '5C', '7D', '8H'] }, // A2345（最強ロー）
+  ];
+  const room = makeStudRoom('stud_e', players, 100);
+  assertChipConservation(room, players, 'Hi/Loスプリット');
+  assert.strictEqual(players[0].chips, 50, 'A がハイ半分');
+  assert.strictEqual(players[1].chips, 50, 'B がロー半分');
+});
+
+test('全員フォールドの異常系（contestants空）でクラッシュしない', () => {
+  const players = [
+    { id: 'a', name: 'A', chips: 50, folded: true, sittingOut: false, totalContribution: 50, cards: ['AS', 'KS', 'QS', 'JS', 'TS', '9S', '8S'] },
+  ];
+  const room = makeStudRoom('stud_s', players, 50);
+  // contestants が空でも例外を投げず pot=0 にする想定
+  assert.doesNotThrow(() => {
+    sm._awardStudPots(room, players.filter((p) => !p.folded && !p.sittingOut));
+  });
+  assert.strictEqual(room.pot, 0, 'contestants空でも pot は 0 にリセット');
+});
+
+test('1人だけ残った場合は総取り', () => {
+  const players = [
+    { id: 'a', name: 'A', chips: 0, folded: false, sittingOut: false, totalContribution: 50, cards: ['AS', 'KS', 'QS', 'JS', 'TS', '9S', '8S'] },
+    { id: 'b', name: 'B', chips: 0, folded: true, sittingOut: false, totalContribution: 50, cards: ['2C', '3D', '4H', '5S', '7C', '8D', '9H'] },
+  ];
+  const room = makeStudRoom('stud_s', players, 100);
+  const before = players.reduce((s, p) => s + p.chips, 0) + room.pot;
+  sm._awardStudPots(room, players.filter((p) => !p.folded && !p.sittingOut));
+  const after = players.reduce((s, p) => s + p.chips, 0) + room.pot;
+  assert.strictEqual(after, before, '保存則');
+  assert.strictEqual(players[0].chips, 100, '残った1人が総取り');
+});
+
+// ==========================================================
+// 結果サマリー
+// ==========================================================
+console.log(`\n========================================`);
+console.log(`テスト結果: ${passed} passed, ${failed} failed`);
+console.log(`========================================`);
+
+if (failed > 0) {
+  console.log('\n失敗したテスト:');
+  failures.forEach(({ name, err }) => {
+    console.log(`  ❌ ${name}: ${err.message}`);
+  });
+  process.exit(1);
+} else {
+  console.log('✅ 全テスト合格');
+  process.exit(0);
+}
