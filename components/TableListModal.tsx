@@ -24,9 +24,10 @@ interface Props {
   loading:  boolean;
   data:     TableListData[];
   onClose:  () => void;
+  error?:   string | null;
 }
 
-export default function TableListModal({ open, loading, data, onClose }: Props) {
+export default function TableListModal({ open, loading, data, onClose, error }: Props) {
   if (!open) return null;
 
   return (
@@ -75,7 +76,7 @@ export default function TableListModal({ open, loading, data, onClose }: Props) 
 
         {!loading && data.length === 0 && (
           <div style={{textAlign:'center',color:'var(--cream-dim)',padding:'32px 0'}}>
-            テーブル情報を取得できませんでした
+            {error ?? 'テーブル情報を取得できませんでした'}
           </div>
         )}
 

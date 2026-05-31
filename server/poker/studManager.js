@@ -829,6 +829,23 @@ function syncFromGameManager(gmRoom, currentMode) {
   // プレイヤーを同期（チップ・名前・id・sittingOut を引き継ぐ）
   // 既存の studManager 側プレイヤー配列は破棄し、gameManager の順序で再構築する
   // （座席順を保つため）
+  //
+  // 【004 修正】pendingPlayers（ゲーム中テーブルに移動してきた待機プレイヤー）も
+  // ここで昇格させる。ドロー経路は startGame 内で pendingPlayers → players へ
+  // 昇格するが（gameManager line 374-375）、スタッド経路は startGame を通らず
+  // この syncFromGameManager がプレイヤー配列を構築するため、pendingPlayers を
+  // 取り込まないと移動してきたプレイヤーがスタッドハンドに永遠に参加できず、
+  // 「テーブル移動後ハンドが終わらない/参加できない」状態になる。
+  const _pendingCount = gmRoom.pendingPlayers?.length ?? 0;
+  if (_pendingCount > 0) {
+    log(`[stud-sync] ${gmRoom.id.slice(-8)} pendingPlayers ${_pendingCount}人を昇格: [${gmRoom.pendingPlayers.map(p => p.name).join(',')}]`);
+    // gameManager 側でも昇格させて players/pendingPlayers の一貫性を保つ
+    for (const pp of gmRoom.pendingPlayers) {
+      if (!gmRoom.players.some(p => p.id === pp.id)) gmRoom.players.push(pp);
+    }
+    gmRoom.pendingPlayers = [];
+  }
+
   room.players = gmRoom.players.map((gp) => ({
     id:         gp.id,
     name:       gp.name,

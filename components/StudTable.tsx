@@ -218,6 +218,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
   const [showTableList, setShowTableList] = useState(false);
   const [tableListLoading, setTableListLoading] = useState(false);
   const [tableListData, setTableListData]   = useState<any[]>([]);
+  const [tableListError, setTableListError] = useState<string | null>(null);
 
   useEffect(() => {
     const update = () => {
@@ -269,9 +270,27 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
 
   const openTableList = async () => {
     if (!tournamentId) return;
-    setShowTableList(true); setTableListLoading(true);
-    try { const res = await fetch(`/api/tournament/${tournamentId}/tables`); const d = await res.json(); setTableListData(d.tables ?? []); }
-    catch { setTableListData([]); }
+    setShowTableList(true); setTableListLoading(true); setTableListError(null);
+    try {
+      const res = await fetch(`/api/tournament/${tournamentId}/tables`);
+      if (!res.ok) {
+        // 503(サーバー未準備)/404 等を明示的に扱う
+        const _txt = await res.text().catch(() => '');
+        console.warn(`[tableList] HTTP ${res.status}: ${_txt}`);
+        setTableListData([]);
+        setTableListError(res.status === 503 ? 'サーバー準備中です。少し待って再度お試しください' : `取得に失敗しました (${res.status})`);
+      } else {
+        const d = await res.json();
+        const _tables = Array.isArray(d.tables) ? d.tables : [];
+        console.debug(`[tableList] ${_tables.length}テーブル取得`);
+        setTableListData(_tables);
+        if (_tables.length === 0) setTableListError('テーブル情報がまだありません');
+      }
+    } catch (e) {
+      console.warn('[tableList] fetch error', e);
+      setTableListData([]);
+      setTableListError('通信エラーが発生しました');
+    }
     setTableListLoading(false);
   };
 
@@ -442,10 +461,10 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
             {!isSpectator && isBetPhase && isMyTurn && self?.isAllIn && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--gold)', fontFamily: 'var(--font-title)', fontWeight: 700 }}>⚡ オールイン中（待機）</div>}
             {!isSpectator && isBetPhase && !isMyTurn && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--cream-dim)', fontFamily: 'var(--font-body)', fontStyle: 'italic' }}>{players.find(p => p.isMyTurn && !p.isSelf)?.name ?? ''}がアクション中...</div>}
             {isShowdown && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--cream-dim)', fontFamily: 'var(--font-body)', fontStyle: 'italic' }}>次のゲームを準備中...</div>}
-            {tournamentId && <button onClick={openTableList} style={{ fontFamily: 'var(--font-title)', fontSize: 10, letterSpacing: '0.08em', color: 'var(--gold-dim)', background: 'rgba(201,168,76,0.07)', border: '1px solid rgba(201,168,76,0.2)', borderRadius: 5, padding: '5px 0', cursor: 'pointer', width: '100%', marginTop: 4 }}>テーブル一覧</button>}
+            {tournamentId && <div style={{ borderTop: '1px solid rgba(201,168,76,0.12)', marginTop: 14, paddingTop: 10 }}><button onClick={openTableList} style={{ fontFamily: 'var(--font-title)', fontSize: 10, letterSpacing: '0.08em', color: 'var(--gold-dim)', background: 'rgba(201,168,76,0.07)', border: '1px solid rgba(201,168,76,0.2)', borderRadius: 5, padding: '7px 0', cursor: 'pointer', width: '100%' }}>テーブル一覧</button></div>}
           </div>
         </div>
-        <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} onClose={() => setShowTableList(false)} />
+        <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} error={tableListError} onClose={() => setShowTableList(false)} />
       </>
     );
   }
@@ -457,7 +476,10 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
   const vw    = window.innerWidth;
   const availH = containerSize.h > 0 ? containerSize.h : Math.max(200, window.innerHeight - 44);
   const ACT_W_M = 148;
-  const ACT_H_M = 110;
+  // 【006 修正】アクションパネルの予約高さ。旧値110ではボタン行＋ヒント＋
+  // テーブル一覧ボタン＋paddingの合計に足りず、テーブル領域がパネルに
+  // 食い込んでボタン上部が途切れていた。実コンテンツ高さに合わせて拡大。
+  const ACT_H_M = 150;
 
   let TW_M: number, TH_M: number;
   if (isPortrait) { TW_M = vw - 8; TH_M = availH - ACT_H_M - 4; }
@@ -486,6 +508,20 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
   const oth_m   = orderedOthers;
 
   const getPosMobile = (p: PlayerState) => {
+    // 【005 修正】portrait時、自プレイヤーは楕円配置（ang=90）だと
+    // top = CY_M + RY_M - SELF_H/2 ≈ 0.72*TH となり、画面下部に大きな空白が残り
+    // 自分の表示が中央寄り（上寄り）に見える。自プレイヤーだけ画面下端に
+    // 直接配置して、テーブル全体を縦いっぱいに使う。
+    if (p.isSelf && isPortrait) {
+      const bw = SELF_W;
+      let left = CX_M - bw / 2;
+      const MARGIN = 4;
+      left = Math.max(MARGIN, Math.min(left, TW_M - bw - MARGIN));
+      // 下端から少し浮かせて配置（カード見切れ防止のため底から SELF 高さ分確保）
+      const top = Math.max(4, TH_M - SELF_H - 6);
+      return { left, top };
+    }
+
     let ang: number;
     if (p.isSelf) { ang = 90; }
     else {
@@ -637,7 +673,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
   // ==========================================================
   function renderActionPanel() {
     return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', background: 'rgba(0,0,0,0.35)', borderTop: '1px solid rgba(201,168,76,0.2)', padding: '10px 8px 8px', overflow: 'visible', minHeight: 0 }}>
+    <div style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', background: 'rgba(0,0,0,0.45)', borderTop: '1px solid rgba(201,168,76,0.25)', padding: '12px 8px 10px', overflow: 'visible', minHeight: 0, position: 'relative', zIndex: 10 }}>
       <div style={{ fontSize: 9, color: 'var(--gold-dim)', fontFamily: 'var(--font-body)', marginBottom: 4 }}>
         {mode === 'stud_e' ? '★ Stud Hi/Lo: 8以下のローでポット折半' : mode === 'razz' ? '★ Razz: A-5ローボール、低い手が強い' : '★ 7 Card Stud: 高い手が強い'}
       </div>
@@ -663,8 +699,8 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
       {!isSpectator && isBetPhase && isMyTurn && self?.isAllIn && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--gold)', fontFamily: 'var(--font-title)', padding: '8px 0', fontWeight: 700 }}>⚡ オールイン中（待機）</div>}
       {!isSpectator && isBetPhase && !isMyTurn && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--cream-dim)', fontFamily: 'var(--font-body)', padding: '8px 0', fontStyle: 'italic' }}>{players.find(p => p.isMyTurn && !p.isSelf)?.name ?? ''}がアクション中...</div>}
       {isShowdown && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--cream-dim)', fontFamily: 'var(--font-body)', padding: '8px 0', fontStyle: 'italic' }}>次のゲームを準備中...</div>}
-      {/* テーブル一覧はアクションボタンと十分離す（marginTop拡大）。誤タップ防止。 */}
-      {tournamentId && <button onClick={openTableList} style={{ fontFamily: 'var(--font-title)', fontSize: 10, letterSpacing: '0.08em', color: 'var(--gold-dim)', background: 'rgba(201,168,76,0.07)', border: '1px solid rgba(201,168,76,0.2)', borderRadius: 5, padding: '5px 0', cursor: 'pointer', width: '100%', marginTop: 12 }}>テーブル一覧</button>}
+      {/* テーブル一覧はアクションボタンと十分離す（区切り線＋余白）。誤タップ防止。 */}
+      {tournamentId && <div style={{ borderTop: '1px solid rgba(201,168,76,0.12)', marginTop: 14, paddingTop: 10 }}><button onClick={openTableList} style={{ fontFamily: 'var(--font-title)', fontSize: 10, letterSpacing: '0.08em', color: 'var(--gold-dim)', background: 'rgba(201,168,76,0.07)', border: '1px solid rgba(201,168,76,0.2)', borderRadius: 5, padding: '7px 0', cursor: 'pointer', width: '100%' }}>テーブル一覧</button></div>}
     </div>
     );
   }
@@ -676,7 +712,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
           {renderMobileTable()}
           {renderActionPanel()}
         </div>
-        <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} onClose={() => setShowTableList(false)} />
+        <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} error={tableListError} onClose={() => setShowTableList(false)} />
       </>
     );
   }
@@ -689,7 +725,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
           {renderActionPanel()}
         </div>
       </div>
-      <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} onClose={() => setShowTableList(false)} />
+      <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} error={tableListError} onClose={() => setShowTableList(false)} />
     </>
   );
 }

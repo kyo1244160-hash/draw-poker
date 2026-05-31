@@ -23,6 +23,30 @@ import type {
 interface TimerState { remaining: number; limit: number; }
 interface ActionLog { id: number; text: string; }
 
+// ===== 【001/008 修正】スタッド系モード判定 =====
+// クライアント側の「単一の真実の源」。
+// meta.isStud は サーバー側 buildGameState/buildStudGameState の実装に依存し、
+// 過去に「currentMode=stud_e なのに isStud=undefined」という矛盾が発生した。
+// currentMode から導出することで、サーバーがどう送ってきても矛盾を吸収する。
+const STUD_MODES = ['stud_s', 'stud_e', 'razz'];
+function isStudCurrentMode(mode: string | null | undefined): boolean {
+  return !!mode && STUD_MODES.includes(mode);
+}
+/**
+ * meta からスタッドUIを表示すべきか判定する。
+ * 優先順位: currentMode（権威） → isStud（補助）。
+ * currentMode がスタッド系なら isStud の値に関わらず true。
+ * これにより isStud 欠落・矛盾時もドローUIへ誤切替しない。
+ */
+function shouldShowStudUI(meta: GameMeta | null): boolean {
+  if (!meta) return false;
+  if (isStudCurrentMode(meta.currentMode)) return true;
+  // currentMode が非スタッドでも isStud=true なら念のためスタッド扱い
+  // （将来モードが増えた場合の保険。currentMode 不明時のフォールバック）
+  if (meta.isStud && !meta.currentMode) return true;
+  return false;
+}
+
 // ===== ページ本体 =====
 export default function TournamentDrawPage() {
   const params   = useParams() as { id: string };
@@ -149,6 +173,29 @@ export default function TournamentDrawPage() {
       // 受信した gameState が現在のテーブルのものか確認（別テーブルからの誤配信を防止）
       if (m?.roomId && tableIdRef.current && m.roomId !== tableIdRef.current) {
         return;  // 別テーブルの gameState は無視
+      }
+      // 【001/008 デバッグ】isStud と currentMode の矛盾を検出してログ送信
+      // currentMode はスタッド系なのに isStud が falsy、またはその逆を観測する。
+      if (m) {
+        const _modeIsStud = isStudCurrentMode(m.currentMode);
+        const _flagIsStud = !!m.isStud;
+        const _willShowStud = shouldShowStudUI(m);
+        if (_modeIsStud !== _flagIsStud) {
+          // 矛盾検出 → サーバーに記録（恒久的には発生しないのが正常）
+          fetch('/api/debug/client-error', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              label: 'isStud-mismatch',
+              message: `currentMode=${m.currentMode} isStud=${m.isStud} → modeIsStud=${_modeIsStud} flagIsStud=${_flagIsStud} willShowStud=${_willShowStud}`,
+              stack: '', url: window.location.href, ts: new Date().toISOString(),
+              extra: { phase: m.phase, roomId: m.roomId },
+            }),
+          }).catch(() => {});
+        }
+        if (typeof console !== 'undefined' && console.debug) {
+          console.debug(`[gameState] mode=${m.currentMode} isStud=${m.isStud} phase=${m.phase} → showStud=${_willShowStud}`);
+        }
       }
       setGameState({ players: pl ?? [], meta: m ?? null });
       // ゲームチェンジ検出（ハンド開始時に currentMode が変化したら通知）
@@ -682,7 +729,7 @@ export default function TournamentDrawPage() {
       {/* ゲームテーブル — flex:1 で残り全高さを使う */}
       {/* paddingTop: フラッシュバッジ（上方向40px飛び出す）がナビバーで隠れないよう最小余白を確保 */}
       <div style={{ flex:1, display:'flex', overflow:'visible', minHeight:0, paddingTop:28 }}>
-        {meta?.isStud ? (
+        {shouldShowStudUI(meta) ? (
           <StudTable
             key="stud-table"
             players={players}

@@ -453,9 +453,91 @@ test('1人だけ残った場合は総取り', () => {
 });
 
 // ==========================================================
-// 結果サマリー
+// 【002/008 修正】モードローテーション: 人数非依存
 // ==========================================================
-console.log(`\n========================================`);
+console.log('\n=== モードローテーション: 人数変動でモードがズレない ===');
+const gm = require('../server/poker/gameManager');
+
+function makeMixRoom(mode, playerCount) {
+  const room = gm.getOrCreateRoom(`test-mix-${mode}-${Date.now()}-${Math.random()}`, { mode });
+  room.mode = mode;
+  room.players = Array.from({ length: playerCount }, (_, i) => ({
+    id: `p${i}`, name: `P${i}`, chips: 5000,
+  }));
+  return room;
+}
+
+test('beast+: 各モードが開始時人数分のハンド継続する', () => {
+  const room = makeMixRoom('beast+', 3);
+  const seq = ['badugi', 'stud_e', 'a5', 'stud_s', '27', 'razz'];
+  // 3人なので各モード3ハンド。最初の3ハンドは badugi のはず
+  for (let i = 0; i < 3; i++) {
+    const mode = gm.advanceModeRotation(room);
+    room._modeHandsDone = (room._modeHandsDone ?? 0) + 1;
+    assert.strictEqual(mode, 'badugi', `hand${i} は badugi のはず (実際=${mode})`);
+  }
+  // 4ハンド目で stud_e へ
+  const mode4 = gm.advanceModeRotation(room);
+  room._modeHandsDone = (room._modeHandsDone ?? 0) + 1;
+  assert.strictEqual(mode4, 'stud_e', `hand3 は stud_e のはず (実際=${mode4})`);
+});
+
+test('beast+: モード継続中に人数が変わってもモードがズレない', () => {
+  const room = makeMixRoom('beast+', 6);
+  // 6人 → badugi が6ハンド継続するはず
+  const modes = [];
+  for (let i = 0; i < 3; i++) {
+    modes.push(gm.advanceModeRotation(room));
+    room._modeHandsDone = (room._modeHandsDone ?? 0) + 1;
+  }
+  // 3ハンド消化後、人数が4人に減る（テーブルバランス）
+  room.players = room.players.slice(0, 4);
+  // 残り3ハンドも badugi のまま（開始時の6で固定されている）
+  for (let i = 0; i < 3; i++) {
+    modes.push(gm.advanceModeRotation(room));
+    room._modeHandsDone = (room._modeHandsDone ?? 0) + 1;
+  }
+  assert.ok(modes.every((m) => m === 'badugi'), `全6ハンドbadugiのはず (実際=${modes.join(',')})`);
+  // 7ハンド目で stud_e へ（新人数4で再固定）
+  const mode7 = gm.advanceModeRotation(room);
+  room._modeHandsDone = (room._modeHandsDone ?? 0) + 1;
+  assert.strictEqual(mode7, 'stud_e', `7ハンド目は stud_e のはず (実際=${mode7})`);
+});
+
+test('peekNextMode と advanceModeRotation の結果が一致する', () => {
+  const room = makeMixRoom('beast+', 4);
+  for (let i = 0; i < 30; i++) {
+    const peeked = gm.peekNextMode(room);
+    const actual = gm.advanceModeRotation(room);
+    room._modeHandsDone = (room._modeHandsDone ?? 0) + 1;
+    assert.strictEqual(peeked, actual, `hand${i}: peek=${peeked} actual=${actual} 不一致`);
+  }
+});
+
+test('stud_mix: スタッド3種が正しくローテーションする', () => {
+  const room = makeMixRoom('stud_mix', 2);
+  const got = [];
+  // 2人 → 各モード2ハンド。S,S,E,E,Razz,Razz
+  for (let i = 0; i < 6; i++) {
+    got.push(gm.advanceModeRotation(room));
+    room._modeHandsDone = (room._modeHandsDone ?? 0) + 1;
+  }
+  assert.deepStrictEqual(got, ['stud_s', 'stud_s', 'stud_e', 'stud_e', 'razz', 'razz'],
+    `stud_mix ローテーション不正 (実際=${got.join(',')})`);
+});
+
+test('Razz: A♠保持者は単独では絶対にBIにならない（002回帰）', () => {
+  // Razz で A♠ は最良カード。他に高いカードがあれば BI にならない。
+  const bi = se.findBringIn([
+    { id: 'HOGE', upCard: 'AS' },
+    { id: 'Ray',  upCard: 'JD' },
+    { id: 'Carl', upCard: '6C' },
+  ], 'razz');
+  assert.strictEqual(bi, 'Ray', `Razz: J保持者がBIのはず (実際=${bi})`);
+  assert.notStrictEqual(bi, 'HOGE', 'A♠保持者がBIになってはいけない');
+});
+
+
 console.log(`テスト結果: ${passed} passed, ${failed} failed`);
 console.log(`========================================`);
 

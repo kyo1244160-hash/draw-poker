@@ -48,7 +48,7 @@ const {
   buildGameState, removePlayer, canAutoStart, getAllRooms,
   incrementTimeout, resetTimeout,
   getRoomMode, getRoom, ensurePotsAwarded,
-  isStudMode, isMixMode, getMixCurrentMode,
+  isStudMode, isMixMode, getMixCurrentMode, advanceModeRotation, peekNextMode,
 } = require('./poker/gameManager');
 
 const studManager = require('./poker/studManager');
@@ -940,10 +940,25 @@ app.prepare().then(async () => {
       logDev(`[spectate] ${socket.id} → ${tableId}`);
 
       // 現在の状態を即配信（手札は伏せる）
+      // 【001/008 修正】スタッドがアクティブなテーブルを観戦する場合、
+      // ドロー版 buildGameState を呼ぶと isStud=false の meta が届き
+      // 観戦者にドローUIが誤表示される。_isStudActive で振り分ける。
+      if (_isStudActive(tableId)) {
+        const sr = studManager.getStudRoom(tableId);
+        if (sr) {
+          const sState   = studManager.buildStudGameState(sr, null);
+          const sMeta    = sState.find((x) => x._meta);
+          const sPlayers = sState.filter((x) => !x._meta);
+          logDev(`[spectate] ${tableId.slice(-8)} STUD観戦 mode=${sMeta?.currentMode} isStud=${sMeta?.isStud}`);
+          socket.emit('gameState', { players: sPlayers, meta: sMeta, isSpectator: true });
+          return;
+        }
+      }
       const room = getOrCreateRoom(tableId);
       const state   = buildGameState(room, null);  // null = 自分なし = 全部 '??'
       const meta    = state.find((x) => x._meta);
       const players = state.filter((x) => !x._meta);
+      logDev(`[spectate] ${tableId.slice(-8)} DRAW観戦 mode=${meta?.currentMode} isStud=${meta?.isStud}`);
       socket.emit('gameState', { players, meta, isSpectator: true });
     });
 
@@ -1546,28 +1561,67 @@ function _tryAutoStart(io, roomId) {
   }
   const onTimeout = _makeTimeoutHandler(io, roomId);
 
+  // ===== 【007 修正】1人取り残されたテーブルのデッドロック解消 =====
+  // balanceTables は showdown 後にしか呼ばれないが、active<2 のテーブルは
+  // ハンドが始まらず showdown に到達しないため、「もう1人参加を待っています」
+  // 画面で永遠に固まる。リトライも canAutoStart=false のため発火しない。
+  // ここで「開始不能（active<2）かつ複数テーブル存在」を検出したら
+  // balanceTables を能動的に呼び、他テーブルからプレイヤーを集約させる。
+  if (tournamentManager.isTournamentTable(roomId)) {
+    const _rStart = getOrCreateRoom(roomId);
+    const _activeCount = (_rStart?.players?.filter(p => !p.sittingOut).length ?? 0)
+                       + (_rStart?.pendingPlayers?.length ?? 0);
+    const _tBal = tournamentManager.getTournamentByTable(roomId);
+    if (_activeCount < 2 && _tBal && _tBal.tableIds.length > 1 && _tBal.status === 'running') {
+      log(`[007-fix] ${roomId.slice(-8)} active=${_activeCount}<2 かつ複数テーブル → balanceTables 発火`);
+      tournamentManager.balanceTables(_tBal.id);
+      // バランス後に再度開始を試みる（複数遅延でテーブル集約の完了を待つ）
+      for (const delay of [500, 1500, 3500]) {
+        setTimeout(() => {
+          const r = getOrCreateRoom(roomId);
+          if (r && r.phase === 'waiting' && canAutoStart(roomId)) {
+            log(`[007-fix] ${roomId.slice(-8)} balance後リトライ delay=${delay}`);
+            _tryAutoStart(io, roomId);
+          }
+        }, delay);
+      }
+      // このテーブルが解体された（tableIds から消えた）場合は開始処理を中断
+      const _tAfterBal = tournamentManager.getTournamentByTable(roomId);
+      if (!_tAfterBal || !_tAfterBal.tableIds.includes(roomId)) {
+        log(`[007-fix] ${roomId.slice(-8)} はバランスで解体された → 開始中断`);
+        return;
+      }
+      // まだ active<2 のままなら今回は開始せず、上のリトライに委ねる
+      const _rRecheck = getOrCreateRoom(roomId);
+      const _activeRecheck = (_rRecheck?.players?.filter(p => !p.sittingOut).length ?? 0)
+                           + (_rRecheck?.pendingPlayers?.length ?? 0);
+      if (_activeRecheck < 2) {
+        log(`[007-fix] ${roomId.slice(-8)} balance直後もまだactive=${_activeRecheck}<2 → リトライ待ち`);
+        return;
+      }
+    }
+  }
+
   // ===== スタッド系の先読みルーティング =====
-  // 次ハンドがスタッド系なら studManager でハンドを開始する。
-  //
-  // 【モード基準の統一・重要】
-  // startGame の実際の処理順序は:
-  //   1. getMixCurrentMode(現在のhandCount) で currentMode 確定
-  //   2. その後 handCount += 1
-  // である（コード上 currentMode確定が handCount+=1 より前）。
-  // したがってスタッド経路も「現在の handCount で getMixCurrentMode → 後で +1」に
-  // 揃える。peekNextMode（handCount+1 を先読み）は startGame の基準と1ずれるため、
-  // モード確定には使わず、あくまで「次がスタッドか」の事前判定にのみ用いる。
+  // 【002/008 修正】人数非依存ローテーションに対応。
+  // peekNextMode で「次ハンドのモード」を副作用なしで先読みし、
+  // スタッド系なら studManager 経由で開始する。
+  // モードの正式確定は advanceModeRotation（startGame と同じ前進処理）で行い、
+  // このハンドを _modeHandsDone に計上する。これにより人数変動で
+  // モードがズレる問題（razz→stud_s 誤判定=002, ハンド途中切替=008）を防ぐ。
   const _gmRoom = getRoom(roomId);
-  if (_gmRoom && isMixMode(_gmRoom.mode) && isStudMode(getMixCurrentMode(_gmRoom))) {
-    // startGame と同一基準: 現在の handCount でモード確定
-    const nextMode = getMixCurrentMode(_gmRoom);
+  if (_gmRoom && isMixMode(_gmRoom.mode) && isStudMode(peekNextMode(_gmRoom))) {
     // sittingOut リセット（startGame 相当の最小処理）
     for (const p of _gmRoom.players) {
       if (!p._waitZoneSkip) p.sittingOut = false;
     }
+    // モードを正式に前進・確定（startGame と同一処理）
+    const nextMode = advanceModeRotation(_gmRoom);
+    _gmRoom.currentMode = nextMode;
+    _gmRoom._modeHandsDone = (_gmRoom._modeHandsDone ?? 0) + 1;  // このハンドを消化
+    _gmRoom.handCount += 1;  // 表示・ログ用の総ハンド数も加算
+    log(`[stud] mode確定 roomId=${roomId.slice(-8)} mode=${nextMode} done=${_gmRoom._modeHandsDone}/${_gmRoom._modeHandsTotal} seqIdx=${_gmRoom._modeSeqIndex}`);
     const studRoom = studManager.syncFromGameManager(_gmRoom, nextMode);
-    // startGame と同様、モード確定後に handCount を +1 する
-    _gmRoom.handCount += 1;
     studRoom.handCount = _gmRoom.handCount;
     const started = studManager.startStudHand(studRoom, _makeStudTimeoutHandler(io, roomId), { skipHandCountIncrement: true });
     if (started) {
@@ -1579,9 +1633,10 @@ function _tryAutoStart(io, roomId) {
         if (_tSync) tournamentManager.broadcastBlind(_tSync.id);
       }
     } else {
-      // 開始失敗（active<2）: handCount を戻す
+      // 開始失敗（active<2）: モード前進とハンドカウントを巻き戻す
       _gmRoom.handCount -= 1;
-      log(`[stud] startStudHand NULL roomId=${roomId.slice(-8)} (active<2) handCount rolled back`);
+      _gmRoom._modeHandsDone = Math.max(0, (_gmRoom._modeHandsDone ?? 1) - 1);
+      log(`[stud] startStudHand NULL roomId=${roomId.slice(-8)} (active<2) mode/handCount rolled back`);
       // 【007対策】ドロー経路と同様にリトライをスケジュールする。
       // テーブルバランスでプレイヤー移動中などに一時的に active<2 となった場合、
       // リトライが無いと「もう1人待っています」画面で固まり続ける。

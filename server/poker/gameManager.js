@@ -115,42 +115,99 @@ function evaluateHand(hand, mode) {
  * スタッド系（stud_s/stud_e/razz）を返した場合、呼び出し側（index.js）が
  * studManager にルーティングする。
  */
-function getMixCurrentMode(room) {
-  const playerCount = Math.max(1, room.players.length);
-  if (room.mode === 'beast+') {
-    // B → E → A → S → T → Razz
-    const cycle = Math.floor(room.handCount / playerCount) % 6;
-    return ['badugi', 'stud_e', 'a5', 'stud_s', '27', 'razz'][cycle];
-  }
-  if (room.mode === 'stud_mix') {
-    // S → E → Razz
-    const cycle = Math.floor(room.handCount / playerCount) % 3;
-    return ['stud_s', 'stud_e', 'razz'][cycle];
-  }
-  if (room.mode === 'mix3') {
-    const cycle = Math.floor(room.handCount / playerCount) % 3;
-    return cycle === 0 ? '27' : cycle === 1 ? 'badugi' : 'a5';
-  }
-  // 既存 mix（2ゲームローテ）
-  const cycle = Math.floor(room.handCount / playerCount) % 2;
-  return cycle === 0 ? '27' : 'badugi';
+// ===== 【002/008 修正】Mix系モードのローテーションシーケンス定義 =====
+// 各 mix 親モードが順番に切り替えるサブモードの配列。
+// この配列の index を room._modeSeqIndex で管理する（人数非依存）。
+const MIX_SEQUENCES = {
+  'beast+':   ['badugi', 'stud_e', 'a5', 'stud_s', '27', 'razz'],
+  'stud_mix': ['stud_s', 'stud_e', 'razz'],
+  'mix3':     ['27', 'badugi', 'a5'],
+  'mix':      ['27', 'badugi'],
+};
+
+/** mix親モードのシーケンス配列を返す（非mixなら null） */
+function getMixSequence(mode) {
+  return MIX_SEQUENCES[mode] ?? null;
 }
 
 /**
- * 次ハンドの currentMode を「先読み」する（handCount をインクリメントせず計算）。
+ * mix モードの現在ゲームモード
+ * mix      : 2-7TD ↔ Badugi（2ゲームローテ）
+ * mix3     : 2-7TD → Badugi → A-5（3ゲームローテ）
+ * beast+   : Badugi → StudHi/Lo → A-5 → 7Stud → 2-7TD → Razz（6ゲームローテ）
+ * stud_mix : 7Stud → StudHi/Lo → Razz（3ゲームローテ・スタッドのみ）
+ *
+ * 【002/008 修正】人数非依存。room._modeSeqIndex を参照してモードを決定する。
+ * 旧実装は Math.floor(handCount / players.length) でモードを計算していたため、
+ * テーブルバランスで人数が変わると同じ handCount でもモードがズレ、
+ * ハンド途中のゲーム切替（008）や razz→stud_s 誤判定（002）を引き起こした。
+ *
+ * スタッド系（stud_s/stud_e/razz）を返した場合、呼び出し側（index.js）が
+ * studManager にルーティングする。
+ *
+ * 副作用なし（純粋な読み取り）。カウンタの前進は advanceModeRotation で行う。
+ */
+function getMixCurrentMode(room) {
+  const seq = getMixSequence(room.mode);
+  if (!seq) return room.mode;  // 非mix
+  const idx = ((room._modeSeqIndex ?? 0) % seq.length + seq.length) % seq.length;
+  return seq[idx];
+}
+
+/**
+ * 【002/008 修正】モードローテーションを1ステップ進めるか判定し、必要なら進める。
+ * 各モードを「モード開始時の人数」分のハンド続ける（従来仕様の意図を踏襲）。
+ * ただし継続ハンド数はモード開始時に固定するため、途中の人数変動で揺れない。
+ *
+ * ハンド開始の直前（startGame 内）で呼ぶこと。
+ * @returns {string} 確定した現在モード
+ */
+function advanceModeRotation(room) {
+  const seq = getMixSequence(room.mode);
+  if (!seq) return room.mode;  // 非mixは何もしない
+
+  // 未初期化（新規ルーム/最初のハンド）: 現人数で継続ハンド数を確定
+  if (!room._modeHandsTotal || room._modeHandsTotal <= 0) {
+    room._modeSeqIndex   = room._modeSeqIndex ?? 0;
+    room._modeHandsTotal = Math.max(1, room.players.length);
+    room._modeHandsDone  = 0;
+    logDev(`[mode-rot] init mode=${seq[room._modeSeqIndex % seq.length]} seqIdx=${room._modeSeqIndex} handsTotal=${room._modeHandsTotal}`);
+    return getMixCurrentMode(room);
+  }
+
+  // 現モードのハンドを消化済み → 次モードへ進む
+  if (room._modeHandsDone >= room._modeHandsTotal) {
+    const prevMode = getMixCurrentMode(room);
+    room._modeSeqIndex   = (room._modeSeqIndex + 1) % seq.length;
+    room._modeHandsTotal = Math.max(1, room.players.length);  // 新モード開始時の人数で再固定
+    room._modeHandsDone  = 0;
+    const newMode = getMixCurrentMode(room);
+    log(`[mode-rot] ${room.id.slice(-8)} ${prevMode} → ${newMode} (seqIdx=${room._modeSeqIndex}, handsTotal=${room._modeHandsTotal})`);
+  }
+  return getMixCurrentMode(room);
+}
+
+/**
+ * 次ハンドの currentMode を「先読み」する（カウンタを進めずに計算）。
  * index.js が startGame 前に「次がスタッドか？」を判定するために使用。
  * startStudHand に切り替えるべきかを startGame 呼び出し前に知る必要があるため。
+ *
+ * 【002/008 修正】handCount 操作トリックを廃止。advanceModeRotation と同じ
+ * 判定を副作用なしで先読みする。
  */
 function peekNextMode(room) {
-  if (!isMixMode(room.mode)) return room.mode;
-  // getMixCurrentMode は room.handCount を基準にするが、startGame では
-  // handCount += 1 の後に getMixCurrentMode が呼ばれる。
-  // ここでは「次のハンド」= handCount+1 時点のモードを返す。
-  const saved = room.handCount;
-  room.handCount = saved + 1;
-  const mode = getMixCurrentMode(room);
-  room.handCount = saved;
-  return mode;
+  const seq = getMixSequence(room.mode);
+  if (!seq) return room.mode;
+  // 未初期化なら現 seqIndex のモード
+  if (!room._modeHandsTotal || room._modeHandsTotal <= 0) {
+    return getMixCurrentMode(room);
+  }
+  // 現モードを消化しきっていれば次モードを先読み
+  if ((room._modeHandsDone ?? 0) >= room._modeHandsTotal) {
+    const nextIdx = ((room._modeSeqIndex ?? 0) + 1) % seq.length;
+    return seq[nextIdx];
+  }
+  return getMixCurrentMode(room);
 }
 
 // ===== ルームストレージ =====
@@ -200,6 +257,19 @@ function getOrCreateRoom(roomId, opts = {}) {
       startingChips:  opts.startingChips ?? STARTING_CHIPS,
       betSize:        opts.smallBet      ?? SMALL_BET,
       handCount:      0,
+      // ===== 【002/008 修正】モードローテーション専用カウンタ =====
+      // 旧実装は getMixCurrentMode が Math.floor(handCount / players.length) で
+      // モードを決めていたため、テーブルバランス（人数変動）で players.length が
+      // 変わると同じ handCount でもモードがズレた。
+      //   - 008: ハンド途中/切替時にモードが変わる
+      //   - 002: razz のつもりが stud_s 等にズレ、A♠保持者が誤ってBI判定される
+      // 恒久対応: 人数に依存しない独立カウンタでローテーションを管理する。
+      //   _modeSeqIndex   : 現在のモードのサイクル位置（mix系の配列インデックス）
+      //   _modeHandsTotal : 現モードを継続するハンド数（モード開始時の人数で固定）
+      //   _modeHandsDone  : 現モードで消化済みのハンド数
+      _modeSeqIndex:   0,
+      _modeHandsTotal: 0,   // 0 = 未初期化（最初の startGame で確定）
+      _modeHandsDone:  0,
       discardPile:   [],  // 捨て札（デッキ切れ時にリシャッフル）
       _potAwarded:    false,
       _timer:         null,
@@ -333,8 +403,15 @@ function startGame(roomId, onTimeout) {
   }
 
   // mix モード切替
-  if (isMixMode(room.mode)) room.currentMode = getMixCurrentMode(room);
-  else room.currentMode = room.mode;
+  // 【002/008 修正】人数非依存のローテーション。advanceModeRotation で
+  // 現モードを確定（必要なら次モードへ前進）し、このハンドを消化済みにする。
+  if (isMixMode(room.mode)) {
+    room.currentMode = advanceModeRotation(room);
+    room._modeHandsDone = (room._modeHandsDone ?? 0) + 1;  // このハンドを消化
+    logDev(`[mode-rot] ${roomId.slice(-8)} hand開始 mode=${room.currentMode} done=${room._modeHandsDone}/${room._modeHandsTotal} seqIdx=${room._modeSeqIndex}`);
+  } else {
+    room.currentMode = room.mode;
+  }
   // NLフラグ更新: currentMode が確定したので isNL を同期させる
   // （MIX-3 でローテーションした結果が NL になる仕様はないが、将来拡張に備えて常に同期）
   room.isNL = isNoLimitMode(room.currentMode);
@@ -1129,11 +1206,27 @@ function buildGameState(room, requesterId) {
     });
   }
 
+  // ===== 【001/008 修正】isStud を currentMode から導出して明示設定 =====
+  // 旧実装は isStud フィールド自体を設定せず undefined（falsy）にしていた。
+  // クライアントは meta.isStud だけで Stud/Draw UI を分岐するため、
+  // 「currentMode=stud_e なのに isStud=undefined」という矛盾した meta が
+  // ドロー側 buildGameState 経由で届くと、スタッド進行中でもドローUIに切り替わる。
+  // 恒久対応: isStud を currentMode から一意に導出し、単一の真実の源にする。
+  // これにより currentMode と isStud の不整合を構造的に排除する。
+  const _isStudByMode = isStudMode(room.currentMode);
+  if (_isStudByMode) {
+    // ドロー側 buildGameState がスタッドモードで呼ばれた = 誤ルーティングの兆候。
+    // 観測のためログを出す（恒久的にはこの経路に来ないのが正常）。
+    logDev(`[isStud-guard] buildGameState(DRAW) called with stud currentMode=${room.currentMode} room=${(room.id||'').slice(-8)} phase=${room.phase} → isStud:true を明示設定`);
+  }
+
   const meta = {
     _meta: true,
     phase:          room.phase,
     mode:           room.mode,
     currentMode:    room.currentMode,
+    // 【001/008】currentMode から導出。スタッド系なら必ず true。
+    isStud:         _isStudByMode,
     pot:            room.pot,
     pots:           _potsForDisplay,
     currentBet:     room.currentBet,
@@ -1366,6 +1459,7 @@ module.exports = {
   ensurePotsAwarded,
   // モード判定（他モジュールから共有利用するため公開）
   isNoLimitMode, isMixMode, isStudMode, peekNextMode, getMixCurrentMode,
+  advanceModeRotation, getMixSequence,
   STUD_MODES,
   STARTING_CHIPS, SMALL_BLIND, BIG_BLIND, SMALL_BET, BIG_BET, MAX_PLAYERS,
 };

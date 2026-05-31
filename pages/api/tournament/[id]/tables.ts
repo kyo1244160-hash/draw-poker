@@ -29,6 +29,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     players:        { name: string; chips: number; accountId: string | null; sittingOut?: boolean }[];
     pendingPlayers: { name: string; chips: number; accountId: string | null; sittingOut?: boolean }[];
   }> | undefined;
+  // スタッド進行中のテーブルは、最新チップが studRooms 側にある。
+  // ドロー側 rooms のチップは syncToGameManager（ハンド終了時）まで古いままなので、
+  // スタッド中は studRooms を優先してチップを引く。
+  const studRoomsMap = g.__pastisStudRooms as Map<string, {
+    phase: string;
+    players: { name: string; chips: number; accountId: string | null; sittingOut?: boolean }[];
+  }> | undefined;
 
   if (!tournamentsMap) {
     // サーバー起動直後など、まだ global が設定されていない場合
@@ -42,17 +49,38 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const room = roomsMap?.get(tableId);
     if (!room) return { tableId, players: [] };
 
+    // スタッドルームが進行中なら、そのチップを accountId/name で引けるよう索引化
+    const studRoom = studRoomsMap?.get(tableId);
+    const studActive = !!studRoom && studRoom.phase && studRoom.phase !== 'waiting';
+    const studChipByKey = new Map<string, number>();
+    if (studActive && studRoom) {
+      for (const sp of studRoom.players) {
+        if (sp.accountId) studChipByKey.set(`acc:${sp.accountId}`, sp.chips);
+        if (sp.name)      studChipByKey.set(`name:${sp.name}`, sp.chips);
+      }
+    }
+
     const allPlayers = [
       ...(room.players        ?? []),
       ...(room.pendingPlayers ?? []),
     ];
 
-    const players = allPlayers.map((p) => ({
-      name:       p.name,
-      chips:      p.chips,
-      isSelf:     accountId ? p.accountId === accountId : false,
-      sittingOut: p.sittingOut ?? false,
-    }));
+    const players = allPlayers.map((p) => {
+      // スタッド進行中は studRooms の最新チップを優先
+      let chips = p.chips;
+      if (studActive) {
+        const byAcc  = p.accountId ? studChipByKey.get(`acc:${p.accountId}`) : undefined;
+        const byName = studChipByKey.get(`name:${p.name}`);
+        if (byAcc !== undefined) chips = byAcc;
+        else if (byName !== undefined) chips = byName;
+      }
+      return {
+        name:       p.name,
+        chips,
+        isSelf:     accountId ? p.accountId === accountId : false,
+        sittingOut: p.sittingOut ?? false,
+      };
+    });
 
     return { tableId, players };
   });
