@@ -338,17 +338,20 @@ function findBringIn(players, mode) {
   const valid = players.filter((p) => p.upCard);
   if (valid.length === 0) return null;
 
-  const score = (c) => RANK_HI[c[0]] * 10 + SUIT_ORDER[c.slice(-1)];
-
   if (mode === 'razz') {
-    // 最も高いカードがブリングイン
+    // Razz: Ace は常に最低（最良）。最も「高い＝悪い」カードがブリングイン。
+    // RANK_LO（A=1, K=13）を使うことで、A♠ ではなく K 等の高位カードが選ばれる。
+    // タイは SUIT_ORDER（高いスートが負担）で決める。
+    const scoreLo = (c) => RANK_LO[c[0]] * 10 + SUIT_ORDER[c.slice(-1)];
     let target = valid[0];
-    for (const p of valid) if (score(p.upCard) > score(target.upCard)) target = p;
+    for (const p of valid) if (scoreLo(p.upCard) > scoreLo(target.upCard)) target = p;
     return target.id;
   }
-  // stud_s / stud_e: 最も低いカードがブリングイン
+  // stud_s / stud_e: 最も低いカードがブリングイン（A は高く扱う＝ブリングインにならない）
+  // RANK_HI（A=14）を使い、最小スコアの 2 等がブリングイン。
+  const scoreHi = (c) => RANK_HI[c[0]] * 10 + SUIT_ORDER[c.slice(-1)];
   let target = valid[0];
-  for (const p of valid) if (score(p.upCard) < score(target.upCard)) target = p;
+  for (const p of valid) if (scoreHi(p.upCard) < scoreHi(target.upCard)) target = p;
   return target.id;
 }
 

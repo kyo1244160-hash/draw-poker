@@ -906,6 +906,45 @@ function updateStudPlayerSocketId(roomId, accountId, nickname, newSocketId) {
   return true;
 }
 
+/**
+ * テーブルバランシングでプレイヤーが他テーブルへ移動した際に、
+ * studManager 側からも安全に削除する。
+ * studLeaveRoom と異なり「フォールド扱い」にはせず、純粋に座席から除く。
+ * actionIndex / fixedDealerIdx を正しく調整し、配列だけ縮める不整合を防ぐ。
+ *
+ * @param {string} roomId
+ * @param {string} playerId socket.id
+ * @param {string|null} accountId 照合補助
+ * @returns {boolean} 削除したら true
+ */
+function removePlayerForBalance(roomId, playerId, accountId) {
+  const room = studRooms.get(roomId);
+  if (!room || !Array.isArray(room.players)) return false;
+  const idx = room.players.findIndex(
+    (p) => p.id === playerId || (accountId && p.accountId === accountId)
+  );
+  if (idx === -1) return false;
+
+  // 手番だったプレイヤーを消す場合はタイマーを止める（呼び出し側で進行を再判定）
+  if (room.actionIndex === idx) _clearTimer(room);
+
+  room.players.splice(idx, 1);
+
+  // インデックス調整（studLeaveRoom と同等）
+  if (room.fixedDealerIdx === idx) room.fixedDealerIdx = -1;
+  else if (room.fixedDealerIdx > idx) room.fixedDealerIdx--;
+  if (room.actionIndex > idx) room.actionIndex--;
+  else if (room.actionIndex === idx) room.actionIndex = -1;
+
+  if (room.players.length === 0) {
+    _clearTimer(room);
+    room.phase = 'waiting';
+    room.pot = 0;
+    room.actionIndex = -1;
+  }
+  return true;
+}
+
 module.exports = {
   STUD_MODES,
   isStudMode,
@@ -924,6 +963,7 @@ module.exports = {
   syncFromGameManager,
   syncToGameManager,
   updateStudPlayerSocketId,
+  removePlayerForBalance,
   _awardStudPots,   // テスト用
   _nextActive,
 };

@@ -181,7 +181,59 @@ test('7枚ショーダウンの勝者判定は正常（フォーカード > ス�
   assert.deepStrictEqual(se.findHiWinners(players, 'stud_s'), ['a']);
 });
 
-console.log('\n=== チップ同期: 再接続でのid変更耐性（スタック残存飛び扱い対策）===');
+console.log('\n=== removePlayerForBalance: バランシング時の安全削除 ===');
+
+test('removePlayerForBalance: actionIndexより前の削除でactionIndexがデクリメント', () => {
+  const r = sm.ensureStudRoom('rb-test1', {});
+  r.players = [
+    { id: 'p0', accountId: 'a0', name: 'P0' },
+    { id: 'p1', accountId: 'a1', name: 'P1' },
+    { id: 'p2', accountId: 'a2', name: 'P2' },
+  ];
+  r.actionIndex = 2; r.fixedDealerIdx = 1; r.phase = 'bet3rd';
+  sm.removePlayerForBalance('rb-test1', 'p0', 'a0');
+  assert.strictEqual(r.actionIndex, 1, 'actionIndexがデクリメント');
+  assert.strictEqual(r.fixedDealerIdx, 0, 'fixedDealerIdxもデクリメント');
+  assert.strictEqual(r.players.length, 2);
+  sm.studRooms.delete('rb-test1');
+});
+
+test('removePlayerForBalance: actionIndex本人の削除で-1', () => {
+  const r = sm.ensureStudRoom('rb-test2', {});
+  r.players = [{ id: 'p0', accountId: 'a0', name: 'P0' }, { id: 'p1', accountId: 'a1', name: 'P1' }];
+  r.actionIndex = 1; r.phase = 'bet3rd';
+  sm.removePlayerForBalance('rb-test2', 'p1', 'a1');
+  assert.strictEqual(r.actionIndex, -1, 'actionIndex本人削除で-1');
+  sm.studRooms.delete('rb-test2');
+});
+
+test('removePlayerForBalance: 最後の1人削除でphase=waiting', () => {
+  const r = sm.ensureStudRoom('rb-test3', {});
+  r.players = [{ id: 'p0', accountId: 'a0', name: 'P0' }];
+  r.actionIndex = 0; r.phase = 'bet3rd'; r.pot = 500;
+  sm.removePlayerForBalance('rb-test3', 'p0', 'a0');
+  assert.strictEqual(r.phase, 'waiting', '空になったらwaiting');
+  assert.strictEqual(r.players.length, 0);
+  sm.studRooms.delete('rb-test3');
+});
+
+test('removePlayerForBalance: accountId照合（socket.id変更後も削除できる）', () => {
+  const r = sm.ensureStudRoom('rb-test4', {});
+  r.players = [{ id: 'OLD', accountId: 'a0', name: 'P0' }, { id: 'p1', accountId: 'a1', name: 'P1' }];
+  r.actionIndex = 0; r.phase = 'showdown';
+  const ok = sm.removePlayerForBalance('rb-test4', 'NEWID', 'a0');
+  assert.strictEqual(ok, true, 'accountId一致で削除成功');
+  assert.strictEqual(r.players.length, 1);
+  assert.strictEqual(r.players[0].name, 'P1');
+  sm.studRooms.delete('rb-test4');
+});
+
+test('removePlayerForBalance: 存在しないプレイヤーはfalse', () => {
+  const r = sm.ensureStudRoom('rb-test5', {});
+  r.players = [{ id: 'p0', accountId: 'a0', name: 'P0' }];
+  assert.strictEqual(sm.removePlayerForBalance('rb-test5', 'xxx', 'yyy'), false);
+  sm.studRooms.delete('rb-test5');
+});
 
 test('syncToGameManager は accountId で照合しチップを書き戻す（id変更後も成功）', () => {
   const room = sm.ensureStudRoom('test-sync-acc', {});
@@ -301,6 +353,44 @@ test('razz: ブリングインがポストされる（lowball変種でも強制�
   assert.ok(biIdx >= 0, 'razzでもブリングイン者が決まる');
   assert.strictEqual(room.players[biIdx].bet, room.bringInAmount, 'razz BI者がポスト済み');
   sm.studRooms.delete('test-razz-bringin');
+});
+
+console.log('\n=== ブリングイン判定: Razzのエース最低・stud_sのエース最高 ===');
+
+test('Razz: 最高(最悪)カード保持者がBI。A♠はBIにならない', () => {
+  // A♠(最良) / 6♣ / J♦ → J♦が最悪→BI
+  const players = [
+    { id: 'hoge', upCard: 'AS' },
+    { id: 'carl', upCard: '6C' },
+    { id: 'ray', upCard: 'JD' },
+  ];
+  assert.strictEqual(se.findBringIn(players, 'razz'), 'ray', 'Razzは最高札J♦がBI（A♠ではない）');
+});
+
+test('Razz: 全員同ランクはスート最高がBI', () => {
+  const players = [
+    { id: 'a', upCard: 'KS' },  // スペード最高
+    { id: 'b', upCard: 'KC' },
+  ];
+  assert.strictEqual(se.findBringIn(players, 'razz'), 'a', 'K♠がBI');
+});
+
+test('stud_s: 最低カードがBI。A♠はハイ扱いでBIにならない', () => {
+  const players = [
+    { id: 'p1', upCard: 'AS' },  // Aはハイ→BIにならない
+    { id: 'p2', upCard: '5C' },  // 5が最低→BI
+    { id: 'p3', upCard: 'KD' },
+  ];
+  assert.strictEqual(se.findBringIn(players, 'stud_s'), 'p2', '5♣が最低でBI');
+});
+
+test('stud_s: 2♣が最弱でBI', () => {
+  const players = [
+    { id: 'x', upCard: '2C' },
+    { id: 'y', upCard: '3D' },
+    { id: 'z', upCard: '7S' },
+  ];
+  assert.strictEqual(se.findBringIn(players, 'stud_s'), 'x', '2♣が最弱でBI');
 });
 
 test('stud_s 単独勝者（保存則）', () => {

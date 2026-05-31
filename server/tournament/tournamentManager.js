@@ -994,6 +994,7 @@ function balanceTables(tournamentId) {
 
   const { getOrCreateRoom: getRoom, leaveRoom: lr, joinRoom: jr } = require('../poker/gameManager');
   const { isTournamentBotId, moveBot } = require('./tournamentBotManager');
+  const _studManager = require('../poker/studManager');
 
   const MAX_PER_TABLE = 6;
 
@@ -1018,6 +1019,14 @@ function balanceTables(tournamentId) {
       logDev(`[TM] balance: dissolve skipped (in-progress phase=${room.phase}) ${tid.slice(-8)}`);
       return;
     }
+    // studManager 側が進行中の場合も解体しない（gameManager の phase と別管理のため）
+    {
+      const _sr = _studManager.getStudRoom(tid);
+      if (_sr && _sr.phase && _sr.phase !== 'waiting' && _sr.phase !== 'showdown') {
+        logDev(`[TM] balance: dissolve skipped (stud active phase=${_sr.phase}) ${tid.slice(-8)}`);
+        return;
+      }
+    }
 
     for (const p of [...room.players]) {
       // 移動先: 現テーブル以外で最も人数が少ないテーブル（毎回再計算）
@@ -1036,6 +1045,9 @@ function balanceTables(tournamentId) {
       const accId = p.accountId ?? p.id;
       if (_io) _io.to(tid).emit('t:playerLeft', { playerName: name });
       lr(p.id);
+      // 【テーブル重複対策】解体元の studManager 側からも安全に削除（actionIndex等を調整）。
+      // 直接 filter すると actionIndex がずれて手番不整合を起こすため専用関数を使う。
+      _studManager.removePlayerForBalance(tid, p.id, accId);
       jr(dest.id, p.id, name, { existingChips: chips, accountId: accId });
       if (isTournamentBotId(p.id)) moveBot(p.id, tid, dest.id);
       if (_io) {
@@ -1211,6 +1223,16 @@ function balanceTables(tournamentId) {
     // showdown または waiting 以外（ゲーム進行中）のテーブルからは移動しない
     // 次のshowdown後に再度balanceTablesが呼ばれるのを待つ
     if (roomMax.phase !== 'waiting' && roomMax.phase !== 'showdown') break;
+    // 【テーブル重複バグ対策】移動元がスタッド進行中の場合も移動しない。
+    // gameManager の room.phase が showdown/waiting でも、studManager 側
+    // (studRooms) が bet3rd 等で進行中だと、leaveRoom(gameManager) だけでは
+    // studRooms にプレイヤーが残り、移動先と二重に存在して stud-timeout を
+    // 起こし続ける（チップ残存で飛び扱いの原因）。スタッド進行中は移動を見送る。
+    const _studMax = _studManager.getStudRoom(maxT.tid);
+    if (_studMax && _studMax.phase && _studMax.phase !== 'waiting' && _studMax.phase !== 'showdown') {
+      logDev(`[TM] balance: skip move from ${maxT.tid.slice(-8)} (stud active phase=${_studMax.phase})`);
+      break;
+    }
     // ゲーム中でないプレイヤーを優先して移動（folded or sittingOut）
     const candidate = roomMax.players.find(p => p.folded || p.sittingOut) ?? roomMax.players[0];
     if (!candidate) break;
@@ -1221,6 +1243,11 @@ function balanceTables(tournamentId) {
     const accId = candidate.accountId ?? candidate.id;
     if (_io) _io.to(maxT.tid).emit('t:playerLeft', { playerName: name });
     lr(candidate.id);
+    // 【テーブル重複対策・二重防御】移動元の studRooms にプレイヤーが残らないよう削除。
+    // 上のガードで進行中スタッドは移動しないが、waiting/showdown 時でも studManager
+    // 側に残骸が残るケースに備えて確実に取り除く。直接 filter すると actionIndex が
+    // ずれて手番不整合を起こすため、専用関数で安全に削除する。
+    _studManager.removePlayerForBalance(maxT.tid, candidate.id, accId);
     jr(minT.tid, candidate.id, name, { existingChips: chips, accountId: accId });
     if (isTournamentBotId(candidate.id)) moveBot(candidate.id, maxT.tid, minT.tid);
 

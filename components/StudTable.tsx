@@ -637,7 +637,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
   // ==========================================================
   function renderActionPanel() {
     return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', background: 'rgba(0,0,0,0.35)', borderTop: '1px solid rgba(201,168,76,0.2)', padding: '6px 8px 8px', overflow: 'hidden', minHeight: 0 }}>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', background: 'rgba(0,0,0,0.35)', borderTop: '1px solid rgba(201,168,76,0.2)', padding: '10px 8px 8px', overflow: 'visible', minHeight: 0 }}>
       <div style={{ fontSize: 9, color: 'var(--gold-dim)', fontFamily: 'var(--font-body)', marginBottom: 4 }}>
         {mode === 'stud_e' ? '★ Stud Hi/Lo: 8以下のローでポット折半' : mode === 'razz' ? '★ Razz: A-5ローボール、低い手が強い' : '★ 7 Card Stud: 高い手が強い'}
       </div>
@@ -663,7 +663,8 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
       {!isSpectator && isBetPhase && isMyTurn && self?.isAllIn && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--gold)', fontFamily: 'var(--font-title)', padding: '8px 0', fontWeight: 700 }}>⚡ オールイン中（待機）</div>}
       {!isSpectator && isBetPhase && !isMyTurn && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--cream-dim)', fontFamily: 'var(--font-body)', padding: '8px 0', fontStyle: 'italic' }}>{players.find(p => p.isMyTurn && !p.isSelf)?.name ?? ''}がアクション中...</div>}
       {isShowdown && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--cream-dim)', fontFamily: 'var(--font-body)', padding: '8px 0', fontStyle: 'italic' }}>次のゲームを準備中...</div>}
-      {tournamentId && <button onClick={openTableList} style={{ fontFamily: 'var(--font-title)', fontSize: 10, letterSpacing: '0.08em', color: 'var(--gold-dim)', background: 'rgba(201,168,76,0.07)', border: '1px solid rgba(201,168,76,0.2)', borderRadius: 5, padding: '5px 0', cursor: 'pointer', width: '100%', marginTop: 4 }}>テーブル一覧</button>}
+      {/* テーブル一覧はアクションボタンと十分離す（marginTop拡大）。誤タップ防止。 */}
+      {tournamentId && <button onClick={openTableList} style={{ fontFamily: 'var(--font-title)', fontSize: 10, letterSpacing: '0.08em', color: 'var(--gold-dim)', background: 'rgba(201,168,76,0.07)', border: '1px solid rgba(201,168,76,0.2)', borderRadius: 5, padding: '5px 0', cursor: 'pointer', width: '100%', marginTop: 12 }}>テーブル一覧</button>}
     </div>
     );
   }

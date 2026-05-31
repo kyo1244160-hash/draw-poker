@@ -1345,7 +1345,8 @@ function _makeTimeoutHandler(io, roomId) {
         }
 
         if (tournamentManager.isTournamentTable(rid)) {
-          // トーナメント: 脱落扱いで強制退場
+          // 【仕様】3回連続タイムアウト = ゲームに参加していないとみなし、
+          // チップが残っていても脱落させる。
           tournamentManager.handleForcedLeave(rid, playerId, 'timeout-kick');
         } else {
           leaveRoom(playerId);
@@ -1581,6 +1582,18 @@ function _tryAutoStart(io, roomId) {
       // 開始失敗（active<2）: handCount を戻す
       _gmRoom.handCount -= 1;
       log(`[stud] startStudHand NULL roomId=${roomId.slice(-8)} (active<2) handCount rolled back`);
+      // 【007対策】ドロー経路と同様にリトライをスケジュールする。
+      // テーブルバランスでプレイヤー移動中などに一時的に active<2 となった場合、
+      // リトライが無いと「もう1人待っています」画面で固まり続ける。
+      if (tournamentManager.isTournamentTable(roomId)) {
+        setTimeout(() => {
+          const r = getOrCreateRoom(roomId);
+          if (r && (r.phase === 'waiting' || r.phase === 'showdown') && canAutoStart(roomId)) {
+            log(`[stud] startStudHand retry for ${roomId.slice(-8)}`);
+            _tryAutoStart(io, roomId);
+          }
+        }, 1500);
+      }
     }
     return;
   }
@@ -1686,6 +1699,14 @@ function _scheduleAutoStart(io, roomId) {
         const tForEnsure = tournamentManager.getTournamentByTable(roomId);
         if (tForEnsure) {
           for (const tid of tForEnsure.tableIds) ensurePotsAwarded(tid);
+          // 【指摘2対策】balanceTables の前に、showdown 状態で残っている
+          // スタッドルームを finishStudHand で waiting に戻す。
+          // これを怠ると balanceTables 時点で studRooms.phase=showdown のままとなり、
+          // 移動処理が studManager 状態を中途半端に扱う原因になる。
+          for (const tid of tForEnsure.tableIds) {
+            const _sr = studManager.getStudRoom(tid);
+            if (_sr && _sr.phase !== 'waiting') studManager.finishStudHand(tid);
+          }
         }
         tournamentManager.checkEliminations(roomId);
         const t = tournamentManager.getTournamentByTable(roomId);
