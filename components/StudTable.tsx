@@ -124,17 +124,18 @@ function btnStyle(v: 'gold' | 'gray' | 'red' | 'outline', compact?: boolean): Re
 interface StudCard { code: string; up: boolean; folded?: boolean }
 
 /**
- * 他プレイヤーのカード列（xs 横1段）
- * xs(26px): 7枚フル = 重ね + up×4(26×4) + 7th + gap
- * overflow:'visible' で OTH_W を超えても見切れない
- * 最初の2枚のダウンカードは 4px ずつずらして「2枚ある」ことを視認可能にする
+ * 他プレイヤーのカード列（横1段）
+ * size でカードサイズを指定（モバイル: xs=26px, PC: sm2=40px）
+ * overflow:'visible' で枠を超えても見切れない
+ * 最初の2枚のダウンカードは FRONT_OFFSET ずつずらして「2枚ある」ことを視認可能にする
  */
-function OtherStudCards({ cards, folded }: { cards: StudCard[]; folded?: boolean }) {
+function OtherStudCards({ cards, folded, size = 'xs' }: { cards: StudCard[]; folded?: boolean; size?: CardSize }) {
   if (!cards || cards.length === 0) return null;
-  // stackW: xs(26px) + オフセット4px×(枚数-1) で重なりを視認可能にする
-  const FRONT_OFFSET = 4;
-  const w            = SIZE_PRESET.xs.w;
-  const h            = SIZE_PRESET.xs.h;
+  // カードサイズに応じてオフセットを調整（大きいカードはずらし幅も広げる）
+  const FRONT_OFFSET = size === 'xs' ? 4 : 6;
+  const w            = SIZE_PRESET[size].w;
+  const h            = SIZE_PRESET[size].h;
+  const gap          = size === 'xs' ? 2 : 3;
 
   const downFront: StudCard[] = [];
   const ups:       StudCard[] = [];
@@ -149,20 +150,20 @@ function OtherStudCards({ cards, folded }: { cards: StudCard[]; folded?: boolean
   const frontW = w + FRONT_OFFSET * Math.max(0, downFront.length - 1);
 
   return (
-    <div style={{ display: 'flex', gap: 2, alignItems: 'center', opacity: folded ? 0.5 : 1 }}>
+    <div style={{ display: 'flex', gap, alignItems: 'center', opacity: folded ? 0.5 : 1 }}>
       {downFront.length > 0 && (
         <div style={{ position: 'relative', width: frontW, height: h, flexShrink: 0 }}>
           {downFront.map((c, i) => (
             <div key={`df${i}`} style={{ position: 'absolute', top: 0, left: i * FRONT_OFFSET }}>
-              <Card code={c.code} size="xs" folded={folded} isDown={!c.up} />
+              <Card code={c.code} size={size} folded={folded} isDown={!c.up} />
             </div>
           ))}
         </div>
       )}
-      {ups.map((c, i) => <Card key={`up${i}`} code={c.code} size="xs" folded={folded} />)}
+      {ups.map((c, i) => <Card key={`up${i}`} code={c.code} size={size} folded={folded} />)}
       {downBack.length > 0 && (
         <div style={{ position: 'relative', width: w, height: h, flexShrink: 0 }}>
-          <Card code={downBack[0].code} size="xs" folded={folded} isDown={!downBack[0].up} />
+          <Card code={downBack[0].code} size={size} folded={folded} isDown={!downBack[0].up} />
         </div>
       )}
     </div>
@@ -314,7 +315,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
     const CX    = TW / 2, CY = TH / 2 - 10;
     const ACT_W = 280;
     const RX    = TW * 0.353, RY = TH * 0.353;
-    const BW    = Math.max(175, Math.floor(TW * 0.21));
+    const BW    = Math.max(200, Math.floor(TW * 0.23));
     const others = orderedOthers;
 
     const getPos = (p: PlayerState) => {
@@ -395,7 +396,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
                     <div style={{ display: 'flex', justifyContent: 'center', gap: p.isSelf ? 4 : 3, flexWrap: 'nowrap', margin: '5px 0', overflow: 'visible' }}>
                       {p.isSelf
                         ? <SelfStudCards cards={studCards} size="lg" />
-                        : <OtherStudCards cards={studCards} folded={p.folded} />}
+                        : <OtherStudCards cards={studCards} folded={p.folded} size="sm2" />}
                     </div>
                     {isShowdown && p.result && !p.folded && <div style={{ fontSize: 13, color: p.isWinner ? 'var(--gold-bright)' : 'var(--cream-dim)', fontFamily: 'var(--font-title)', marginTop: 4 }}>{p.result}</div>}
                   </div>
@@ -426,7 +427,16 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
                 {canCheck
                   ? <button style={btnStyle('gray')} onClick={() => onBetAction('check')}>チェック</button>
                   : <button style={btnStyle('gray')} onClick={() => onBetAction('call')}>コール ({toCall})</button>}
-                {canRaise && <button style={btnStyle('gold')} onClick={() => onBetAction(canCheck ? 'bet' : 'raise')}>{canCheck ? `BET+${self?.betSize ?? ''}` : `RAISE+${self?.betSize ?? ''}`}</button>}
+                {canRaise && (() => {
+                  // 3rd street のコンプリートか、通常のベット/レイズかでラベルを変える
+                  const label = self?.isComplete
+                    ? `コンプリート (${self?.raiseToTotal ?? ''})`
+                    : canCheck
+                      ? `ベット (+${self?.betSize ?? ''})`
+                      : `レイズ (+${self?.betSize ?? ''})`;
+                  const action = canCheck ? 'bet' : 'raise';
+                  return <button style={btnStyle('gold')} onClick={() => onBetAction(action)}>{label}</button>;
+                })()}
               </div>
             )}
             {!isSpectator && isBetPhase && isMyTurn && self?.isAllIn && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--gold)', fontFamily: 'var(--font-title)', fontWeight: 700 }}>⚡ オールイン中（待機）</div>}
@@ -639,7 +649,15 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
           {canCheck
             ? <button style={{ ...btnStyle('gray', true), flex: 1 }} onClick={() => onBetAction('check')}>チェック</button>
             : <button style={{ ...btnStyle('gray', true), flex: 1 }} onClick={() => onBetAction('call')}>コール({toCall})</button>}
-          {canRaise && <button style={{ ...btnStyle('gold', true), flex: 1 }} onClick={() => onBetAction(canCheck ? 'bet' : 'raise')}>{canCheck ? `BET+${self?.betSize ?? ''}` : `RAISE+${self?.betSize ?? ''}`}</button>}
+          {canRaise && (() => {
+            const label = self?.isComplete
+              ? `コンプリート(${self?.raiseToTotal ?? ''})`
+              : canCheck
+                ? `ベット(+${self?.betSize ?? ''})`
+                : `レイズ(+${self?.betSize ?? ''})`;
+            const action = canCheck ? 'bet' : 'raise';
+            return <button style={{ ...btnStyle('gold', true), flex: 1 }} onClick={() => onBetAction(action)}>{label}</button>;
+          })()}
         </div>
       )}
       {!isSpectator && isBetPhase && isMyTurn && self?.isAllIn && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--gold)', fontFamily: 'var(--font-title)', padding: '8px 0', fontWeight: 700 }}>⚡ オールイン中（待機）</div>}

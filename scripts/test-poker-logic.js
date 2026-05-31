@@ -181,6 +181,128 @@ test('7枚ショーダウンの勝者判定は正常（フォーカード > ス�
   assert.deepStrictEqual(se.findHiWinners(players, 'stud_s'), ['a']);
 });
 
+console.log('\n=== チップ同期: 再接続でのid変更耐性（スタック残存飛び扱い対策）===');
+
+test('syncToGameManager は accountId で照合しチップを書き戻す（id変更後も成功）', () => {
+  const room = sm.ensureStudRoom('test-sync-acc', {});
+  room.currentMode = 'stud_s'; room.mode = 'stud_s';
+  room.smallBet = 400; room.bigBet = 800; room.handCount = 5;
+  room.players = [
+    { id: 'OLD_SOCKET_1', accountId: 'acc-1', name: 'HOGE', chips: 5400, sittingOut: false },
+    { id: 'OLD_SOCKET_2', accountId: 'acc-2', name: 'Fujita', chips: 4600, sittingOut: false },
+  ];
+  // gameManager 側は再接続で socket.id が変わっている状況を再現
+  const gmRoom = {
+    id: 'test-sync-acc',
+    handCount: 0,
+    players: [
+      { id: 'NEW_SOCKET_1', accountId: 'acc-1', name: 'HOGE', chips: 0 },   // id変更・チップ古い
+      { id: 'NEW_SOCKET_2', accountId: 'acc-2', name: 'Fujita', chips: 0 },
+    ],
+  };
+  sm.syncToGameManager(gmRoom);
+  // accountId 照合で正しくチップが書き戻される（id が違っても）
+  assert.strictEqual(gmRoom.players[0].chips, 5400, 'HOGEのチップがaccountId経由で復元');
+  assert.strictEqual(gmRoom.players[1].chips, 4600, 'FujitaのチップがaccountId経由で復元');
+  sm.studRooms.delete('test-sync-acc');
+});
+
+test('updateStudPlayerSocketId が studManager 側の id を更新する', () => {
+  const room = sm.ensureStudRoom('test-update-id', {});
+  room.players = [
+    { id: 'OLD', accountId: 'acc-x', name: 'HOGE', chips: 5400, sittingOut: false, disconnected: true },
+  ];
+  const updated = sm.updateStudPlayerSocketId('test-update-id', 'acc-x', 'HOGE', 'NEW');
+  assert.strictEqual(updated, true, '更新成功');
+  assert.strictEqual(room.players[0].id, 'NEW', 'idがNEWに更新');
+  assert.strictEqual(room.players[0].disconnected, false, 'disconnectedも解除');
+  sm.studRooms.delete('test-update-id');
+});
+
+test('syncToGameManager: id一致のみ（accountIdなし）でも従来通り動作', () => {
+  const room = sm.ensureStudRoom('test-sync-id', {});
+  room.handCount = 3;
+  room.players = [
+    { id: 'SOCK_1', accountId: null, name: 'Bot1', chips: 3000, sittingOut: false },
+  ];
+  const gmRoom = {
+    id: 'test-sync-id', handCount: 0,
+    players: [{ id: 'SOCK_1', accountId: null, name: 'Bot1', chips: 0 }],
+  };
+  sm.syncToGameManager(gmRoom);
+  assert.strictEqual(gmRoom.players[0].chips, 3000, 'id照合でチップ復元');
+  sm.studRooms.delete('test-sync-id');
+});
+
+test('3rd street: ブリングインがポストされ左隣から開始、BI者にオプションが回る', () => {
+  const room = sm.ensureStudRoom('test-bringin-flow', {});
+  room.currentMode = 'stud_s'; room.mode = 'stud_s';
+  room.smallBet = 400; room.bigBet = 800; room.handCount = 0;
+  room.players = [
+    { id: 'p1', name: 'A', chips: 5000, sittingOut: false },
+    { id: 'p2', name: 'B', chips: 5000, sittingOut: false },
+    { id: 'p3', name: 'C', chips: 5000, sittingOut: false },
+  ];
+  sm.startStudHand(room, () => {}, { skipHandCountIncrement: true });
+
+  const biIdx = room.bringInIndex;
+  assert.ok(biIdx >= 0, 'ブリングイン者が決まる');
+  assert.strictEqual(room.currentBet, room.bringInAmount, 'currentBet = ブリングイン額');
+  assert.strictEqual(room.players[biIdx].bet, room.bringInAmount, 'BI者が強制ポスト済み');
+  assert.notStrictEqual(room.actionIndex, biIdx, '開始はBI者の左隣');
+
+  let sawOption = false;
+  let guard = 0;
+  while (room.phase === 'bet3rd' && guard < 12) {
+    guard++;
+    const idx = room.actionIndex;
+    if (idx === biIdx) sawOption = true;
+    const cur = room.players[idx];
+    const toCall = room.currentBet - cur.bet;
+    const r = sm.studBetAction(room.id, cur.id, toCall > 0 ? 'call' : 'check', 0);
+    assert.ok(r, `studBetAction成功(${cur.name})`);
+  }
+  assert.ok(sawOption, 'BI者にオプションが回った');
+  assert.strictEqual(room.phase, 'bet4th', '3rd完了で4thへ');
+  sm.studRooms.delete('test-bringin-flow');
+});
+
+test('3rd street: コンプリート時 isComplete=true・raiseToTotal=smallBet', () => {
+  const room = sm.ensureStudRoom('test-complete', {});
+  room.currentMode = 'stud_s'; room.mode = 'stud_s';
+  room.smallBet = 400; room.bigBet = 800; room.handCount = 0;
+  room.players = [
+    { id: 'p1', name: 'A', chips: 5000, sittingOut: false },
+    { id: 'p2', name: 'B', chips: 5000, sittingOut: false },
+    { id: 'p3', name: 'C', chips: 5000, sittingOut: false },
+  ];
+  sm.startStudHand(room, () => {}, { skipHandCountIncrement: true });
+
+  const actor = room.players[room.actionIndex];
+  const state = sm.buildStudGameState(room, actor.id);
+  const self = state.find((s) => s.isSelf);
+  assert.strictEqual(self.isComplete, true, '3rdのbet/raiseはコンプリート');
+  assert.strictEqual(self.raiseToTotal, room.smallBet, 'コンプリートはsmallBetまで');
+  assert.strictEqual(self.canRaise, true, 'コンプリート可能');
+  sm.studRooms.delete('test-complete');
+});
+
+test('razz: ブリングインがポストされる（lowball変種でも強制ベット成立）', () => {
+  const room = sm.ensureStudRoom('test-razz-bringin', {});
+  room.currentMode = 'razz'; room.mode = 'razz';
+  room.smallBet = 400; room.bigBet = 800; room.handCount = 0;
+  room.players = [
+    { id: 'p1', name: 'A', chips: 5000, sittingOut: false },
+    { id: 'p2', name: 'B', chips: 5000, sittingOut: false },
+    { id: 'p3', name: 'C', chips: 5000, sittingOut: false },
+  ];
+  sm.startStudHand(room, () => {}, { skipHandCountIncrement: true });
+  const biIdx = room.bringInIndex;
+  assert.ok(biIdx >= 0, 'razzでもブリングイン者が決まる');
+  assert.strictEqual(room.players[biIdx].bet, room.bringInAmount, 'razz BI者がポスト済み');
+  sm.studRooms.delete('test-razz-bringin');
+});
+
 test('stud_s 単独勝者（保存則）', () => {
   const players = [
     { id: 'a', name: 'A', chips: 100, folded: false, sittingOut: false, totalContribution: 50, cards: ['AS', 'KS', 'QS', 'JS', 'TS', '9S', '8S'] },

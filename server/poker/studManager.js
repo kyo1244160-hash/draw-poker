@@ -297,13 +297,17 @@ function _advanceBetAction(room) {
     return;
   }
 
-  const allActed = active.every((p) => p.acted);
+  // アクション可能（chips>0）な未行動者で判定する。
+  // オールイン済み(chips<=0)はアクションできないため allActed の対象外。
+  const canAct = active.filter((p) => p.chips > 0);
+  const allActed = canAct.every((p) => p.acted);
   if (allActed) { _nextPhase(room); return; }
 
   let next = (room.actionIndex + 1) % room.players.length;
   for (let t = 0; t < room.players.length; t++) {
     const p = room.players[next];
-    if (p && !p.folded && !p.sittingOut && !p.acted) {
+    // chips<=0（オールイン）は手番をスキップ。これを怠るとタイムアウトまでフリーズ。
+    if (p && !p.folded && !p.sittingOut && !p.acted && p.chips > 0) {
       room.actionIndex = next;
       _startTimer(room);
       return;
@@ -355,7 +359,10 @@ function _nextPhase(room) {
   room.betSize = isSmallBetStreet(next) ? room.smallBet : room.bigBet;
   for (const p of room.players) {
     p.bet = 0;
-    p.acted = (p.sittingOut || p.folded) ? true : false;
+    // 【フリーズ防止】オールイン済み（chips<=0）のプレイヤーは以降アクション不可。
+    // acted=false に戻すと _advanceBetAction が手番を回してタイムアウトまで
+    // 待ち続け、テーブルがフリーズする。chips<=0 は acted=true 固定にする。
+    p.acted = (p.sittingOut || p.folded || p.chips <= 0) ? true : false;
   }
 
   // 4th street以降は最強の見えている手から先頭アクション
@@ -623,16 +630,30 @@ function buildStudGameState(room, requesterId) {
       isWinner: isShowdown && winnerIds != null && winnerIds.has(p.id),
       isDealer: myIdx === dealerIdx,
       isSB: false, isBB: false,
-      ...(isSelf ? {
-        toCall: p.chips <= 0 ? 0 : toCall,
-        canCheck: isBetPhase && (toCall === 0 || p.chips <= 0),
-        isAllIn: p.chips <= 0 && !p.folded,
-        canRaise: isBetPhase && p.chips > 0
+      ...(isSelf ? (() => {
+        const _canRaise = isBetPhase && p.chips > 0
           && room.raiseCount < MAX_RAISES
-          && room.players.some((op) => op.id !== p.id && !op.folded && !op.sittingOut && op.chips > 0),
-        betSize: room.betSize,
-        isNL: false,
-      } : {}),
+          && room.players.some((op) => op.id !== p.id && !op.folded && !op.sittingOut && op.chips > 0);
+        // 3rd street でブリングインのみ（currentBet < betSize）の場合、
+        // bet/raise アクションは「コンプリート」（smallBet まで引き上げ）になる。
+        // それ以外は通常のレイズ（currentBet + betSize）。
+        const _isComplete = room.phase === 'bet3rd' && room.currentBet < room.betSize;
+        const _raiseTotal = _isComplete ? room.betSize : (room.currentBet + room.betSize);
+        // 実際に必要なチップ（コール/レイズ時に投じる額）
+        const _raiseCost  = Math.max(0, _raiseTotal - p.bet);
+        return {
+          toCall: p.chips <= 0 ? 0 : Math.min(toCall, p.chips),
+          canCheck: isBetPhase && (toCall === 0 || p.chips <= 0),
+          isAllIn: p.chips <= 0 && !p.folded,
+          canRaise: _canRaise,
+          // UI表示用: コンプリートかレイズかの区別と、投じるチップ額
+          isComplete: _isComplete,
+          raiseToTotal: _raiseTotal,
+          raiseCost: Math.min(_raiseCost, p.chips),
+          betSize: room.betSize,
+          isNL: false,
+        };
+      })() : {}),
       ...(isMyTurn ? { timerRemaining } : {}),
     };
   });
@@ -828,18 +849,61 @@ function syncFromGameManager(gmRoom, currentMode) {
  * スタッドハンド終了後、studManager のチップを gameManager のルームへ書き戻す。
  * 次が再びスタッドでも、ドロー系でも、チップの連続性を保証する。
  *
+ * 【重要】照合は accountId を優先する。ハンド進行中に再接続で socket.id（player.id）が
+ * 更新されると、id だけで照合するとチップ書き戻しに失敗し、gameManager 側のチップが
+ * 古いまま残る → checkEliminations が誤って chips<=0 と判定し、チップが残っている
+ * プレイヤーを脱落させる（「スタック残存で飛び扱い」バグ）。
+ *
  * @param {object} gmRoom gameManager のルーム
  */
 function syncToGameManager(gmRoom) {
   const room = studRooms.get(gmRoom.id);
   if (!room) return;
-  // id をキーにチップを書き戻す
-  const chipById = new Map(room.players.map((p) => [p.id, p.chips]));
+  // accountId と id の両方でチップを引けるようにする（accountId 優先）
+  const chipByAccount = new Map();
+  const chipById      = new Map();
+  for (const p of room.players) {
+    if (p.accountId) chipByAccount.set(p.accountId, p.chips);
+    if (p.id)        chipById.set(p.id, p.chips);
+  }
   for (const gp of gmRoom.players) {
-    if (chipById.has(gp.id)) gp.chips = chipById.get(gp.id);
+    if (gp.accountId && chipByAccount.has(gp.accountId)) {
+      gp.chips = chipByAccount.get(gp.accountId);
+    } else if (chipById.has(gp.id)) {
+      gp.chips = chipById.get(gp.id);
+    } else {
+      // どちらでも一致しない = 同期漏れ。チップを破壊しないよう警告だけ出して既存値を保持。
+      log(`[stud-sync] WARN: ${gp.name} (id=${String(gp.id).slice(-8)}, accId=${gp.accountId}) not found in studRoom — chips left as ${gp.chips}`);
+    }
   }
   // handCount を同期（studManager 側で +1 されているため）
   gmRoom.handCount = room.handCount;
+}
+
+/**
+ * 再接続時に studManager 側プレイヤーの socket.id を更新する。
+ * gameManager 側だけ id を更新して studManager 側を放置すると、
+ * 手番照合（studBetAction の socketId 一致）が失敗して操作不能になり、
+ * チップ書き戻し（syncToGameManager）も id 不一致で失敗する。
+ *
+ * @param {string} roomId
+ * @param {string} accountId 照合キー（accountId 優先、なければ nickname）
+ * @param {string} nickname
+ * @param {string} newSocketId 新しい socket.id
+ * @returns {boolean} 更新したら true
+ */
+function updateStudPlayerSocketId(roomId, accountId, nickname, newSocketId) {
+  const room = studRooms.get(roomId);
+  if (!room) return false;
+  const p = room.players.find(
+    (x) => (accountId && x.accountId === accountId) || (nickname && x.name === nickname)
+  );
+  if (!p) return false;
+  if (p.id === newSocketId) return false;
+  // 手番中だった場合に備え、actionIndex は配列インデックス基準なので id 変更で影響なし
+  p.id = newSocketId;
+  if (p.disconnected) p.disconnected = false;
+  return true;
 }
 
 module.exports = {
@@ -859,6 +923,7 @@ module.exports = {
   studLeaveRoom,
   syncFromGameManager,
   syncToGameManager,
+  updateStudPlayerSocketId,
   _awardStudPots,   // テスト用
   _nextActive,
 };

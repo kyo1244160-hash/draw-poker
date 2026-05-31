@@ -338,6 +338,9 @@ app.prepare().then(async () => {
             _cancelTournamentDisconnectGrace(activePlayer.id);
             activePlayer.id = socket.id;
             activePlayer.disconnected = false;
+            // スタッド進行中の場合、studManager 側の id も同期する。
+            // これを怠ると手番照合・チップ書き戻しが id 不一致で失敗する。
+            studManager.updateStudPlayerSocketId(tableId, user.accountId, user.nickname, socket.id);
             logDev(`[t:getMyTable] ${user.nickname}: player.id updated → ${socket.id}`);
           }
           // _disconnectedChips に退避されたチップを復元（leaveRoom済みプレイヤーは activePlayer=null になるため別途処理）
@@ -423,6 +426,7 @@ app.prepare().then(async () => {
                 _cancelTournamentDisconnectGrace(_ap.id);
                 _ap.id = socket.id;
                 _ap.disconnected = false;
+                studManager.updateStudPlayerSocketId(retryTableId, user.accountId, user.nickname, socket.id);
                 log(`[t:getMyTable-retry] ${user.nickname}: player.id updated → ${socket.id}`);
               }
               socket.join(retryTableId);
@@ -535,6 +539,7 @@ app.prepare().then(async () => {
             if (existingPlayer) {
               existingPlayer.id = socket.id;
               existingPlayer.disconnected = false;
+              studManager.updateStudPlayerSocketId(existingTidFinal, user.accountId, user.nickname, socket.id);
             }
             socket.join(existingTidFinal);
             const statusPayloadF = tournamentManager.getTournamentStatusPayload(tournamentId);
@@ -544,7 +549,24 @@ app.prepare().then(async () => {
             socket.emit('t:tournamentStarting', { tournamentId, tableId: existingTidFinal });
             _broadcast(io, existingTidFinal);
           } else {
-            // 本当に新規: 空きテーブルを探して配置
+            // 本当に新規: まず DB のエントリー登録を確認する。
+            // 【重要・セキュリティ】レイトレジ受付中(lateRegOpen)でも、実際に
+            // エントリー登録していないユーザーを着席させてはならない。
+            // この確認が無いと、未登録ユーザーが t:getMyTable を送るだけで
+            // 進行中トーナメントに勝手に座れてしまう（既知バグ）。
+            let _isRegistered = false;
+            try {
+              _isRegistered = await require('./db/tournament').isRegistered(tournamentId, user.accountId);
+            } catch (e) {
+              log(`[lateReg] ${user.nickname}: isRegistered check failed: ${e?.message ?? e}`);
+              _isRegistered = false; // 確認失敗時は安全側（着席させない）
+            }
+            if (!_isRegistered) {
+              log(`[lateReg] ${user.nickname}: NOT registered → reject placement (notFound)`);
+              socket.emit('t:tournamentNotFound', { tournamentId });
+              return;
+            }
+            // 空きテーブルを探して配置
             let destTid = t.tableIds
               .map(tid => {
                 const r = getOrCreateRoom(tid);
