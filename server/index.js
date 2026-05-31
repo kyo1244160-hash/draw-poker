@@ -806,9 +806,13 @@ app.prepare().then(async () => {
 
     // ----- ベットアクション -----
     const VALID_ACTIONS = new Set(['fold','check','call','bet','raise']);
+    // 【ブリングイン選択制】スタッド3rd street の義務者専用アクション
+    const VALID_STUD_ACTIONS = new Set(['fold','check','call','bet','raise','bringIn','complete']);
     socket.on('betAction', ({ roomId, action, amount }) => {
       if (!roomId || typeof roomId !== 'string' || roomId.length > 64) return;
-      if (!action || !VALID_ACTIONS.has(action)) return;
+      // スタッドアクティブなら bringIn/complete も許可、それ以外は従来通り
+      const _validSet = _isStudActive(roomId) ? VALID_STUD_ACTIONS : VALID_ACTIONS;
+      if (!action || !_validSet.has(action)) return;
 
       // ===== スタッド系ルーティング =====
       if (_isStudActive(roomId)) {

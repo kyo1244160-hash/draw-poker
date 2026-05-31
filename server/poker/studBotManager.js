@@ -162,6 +162,13 @@ function decideStudBetAction(room, player) {
   const threat = boardThreat(room, player.id);
   const toCall = room.currentBet - player.bet;
 
+  // 【ブリングイン選択制】義務者の手番: bringIn か complete を選ぶ。
+  // 通常は最小ブリングイン。強い見せ札のときだけたまにコンプリート。
+  if (player.mustBringIn) {
+    if (strength > 0.7 && Math.random() < 0.35) return 'complete';
+    return 'bringIn';
+  }
+
   // 正味スコア = 自分の強さ - 相手脅威*0.5
   const net = strength - threat * 0.4;
 

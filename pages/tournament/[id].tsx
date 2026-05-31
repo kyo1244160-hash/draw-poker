@@ -69,6 +69,7 @@ export default function TournamentLobby() {
   const [isEliminated, setIsEliminated] = useState(false);
   const isEliminatedRef = useRef(false);  // ソケットコールバック内から参照するためのref
   const fetchReadyRef   = useRef(false);  // fetchData 完了前に t:tournamentStarting で誤遷移を防ぐ
+  const registeredRef   = useRef(false);  // 【参加登録バグ修正】未登録者の誤遷移を防ぐためソケットコールバックから参照
 
   // ===== データ取得 =====
   const fetchData = useCallback(async () => {
@@ -80,6 +81,7 @@ export default function TournamentLobby() {
       setTournament(data.tournament);
       setEntries(data.entries ?? []);
       setRegistered(data.registered ?? false);
+      registeredRef.current = data.registered ?? false;  // ref同期（誤遷移防止）
       // isEliminated: APIのメモリ参照が失敗した場合のフォールバックとして
       // トーナメント進行中に結果エントリ(myEntry)が存在すれば脱落済みとみなす
       const eliminated =
@@ -126,6 +128,16 @@ export default function TournamentLobby() {
       if (tournamentId !== id) return;
       if (!fetchReadyRef.current) return;
       if (isEliminatedRef.current) return;
+      // 【参加登録バグ修正】未登録のままこの画面を開いている場合、
+      // t:tournamentStarting（全体ブロードキャスト）で draw へ遷移すると
+      // サーバーで「未登録」と判定され t:tournamentNotFound → ロビー強制送還される。
+      // 登録済みのユーザーのみ draw へ遷移させる。
+      // 未登録ユーザーは画面に留め、fetchData で「レイトレジスト受付中」等の
+      // 最新状態に更新して、その場で参加登録できるようにする。
+      if (!registeredRef.current) {
+        fetchData();  // status=running / late_reg 状態へ画面を更新
+        return;
+      }
       router.push(`/tournament/${tournamentId}/draw`);
     };
 
@@ -156,6 +168,7 @@ export default function TournamentLobby() {
     if (!res.ok) { setActionMsg(data.error); setBusy(false); return; }
     setEntries(data.entries);
     setRegistered(true);
+    registeredRef.current = true;  // ref同期
     setActionMsg('✅ 参加登録しました');
     setBusy(false);
     // レイトレジスト: 登録後すぐにspectateページへ遷移（テーブル配置まで観戦しながら待機）
@@ -175,6 +188,7 @@ export default function TournamentLobby() {
     if (!res.ok) { setActionMsg(data.error); setBusy(false); return; }
     setEntries(data.entries);
     setRegistered(false);
+    registeredRef.current = false;  // ref同期
     setActionMsg('登録をキャンセルしました');
     setBusy(false);
   };

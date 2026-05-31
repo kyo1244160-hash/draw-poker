@@ -129,13 +129,24 @@ interface StudCard { code: string; up: boolean; folded?: boolean }
  * overflow:'visible' で枠を超えても見切れない
  * 最初の2枚のダウンカードは FRONT_OFFSET ずつずらして「2枚ある」ことを視認可能にする
  */
-function OtherStudCards({ cards, folded, size = 'xs' }: { cards: StudCard[]; folded?: boolean; size?: CardSize }) {
+function OtherStudCards({ cards, folded, size = 'xs', revealAll = false }: { cards: StudCard[]; folded?: boolean; size?: CardSize; revealAll?: boolean }) {
   if (!cards || cards.length === 0) return null;
   // カードサイズに応じてオフセットを調整（大きいカードはずらし幅も広げる）
   const FRONT_OFFSET = size === 'xs' ? 4 : 6;
   const w            = SIZE_PRESET[size].w;
   const h            = SIZE_PRESET[size].h;
   const gap          = size === 'xs' ? 2 : 3;
+
+  // 【ショーダウン修正】ショーダウンで全カードが表になる場合は、
+  // 伏せカードの重ね表示（FRONT_OFFSETでずらす）をやめて全カードを横一列に
+  // 並べる。重ねたままだと下のカードが隠れて手役を確認できない（frame_0484）。
+  if (revealAll) {
+    return (
+      <div style={{ display: 'flex', gap, alignItems: 'center', justifyContent: 'center', flexWrap: 'nowrap', opacity: folded ? 0.5 : 1 }}>
+        {cards.map((c, i) => <Card key={`r${i}`} code={c.code} size={size} folded={folded} isDown={!c.up} />)}
+      </div>
+    );
+  }
 
   const downFront: StudCard[] = [];
   const ups:       StudCard[] = [];
@@ -197,10 +208,12 @@ interface Props {
 // actionFlash ラベル（TournamentTable と同一）
 const ACTION_LABEL: Record<string, string> = {
   fold: 'フォールド', check: 'チェック', call: 'コール', bet: 'ベット', raise: 'レイズ',
+  bringIn: 'ブリングイン', complete: 'コンプリート',
 };
 const ACTION_COLOR: Record<string, string> = {
   フォールド: 'rgba(139,26,26,0.92)', チェック: 'rgba(30,100,60,0.92)',
   コール: 'rgba(30,80,160,0.92)', ベット: 'rgba(160,120,10,0.92)', レイズ: 'rgba(160,60,10,0.92)',
+  ブリングイン: 'rgba(184,90,16,0.94)', コンプリート: 'rgba(160,120,10,0.92)',
 };
 
 const STREET_LABEL: Record<string, string> = {
@@ -267,6 +280,10 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
       flashTimersRef.current = [];
     };
   }, []);
+
+  // ブリングイン/コンプリートのフラッシュは、サーバーが送る playerAction
+  // （action='bringIn'|'complete'）を上記 onAction が ACTION_LABEL で
+  // 日本語表示するため、ここでの自動表示は不要（二重表示を避ける）。
 
   const openTableList = async () => {
     if (!tournamentId) return;
@@ -415,7 +432,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
                     <div style={{ display: 'flex', justifyContent: 'center', gap: p.isSelf ? 4 : 3, flexWrap: 'nowrap', margin: '5px 0', overflow: 'visible' }}>
                       {p.isSelf
                         ? <SelfStudCards cards={studCards} size="lg" />
-                        : <OtherStudCards cards={studCards} folded={p.folded} size="sm2" />}
+                        : <OtherStudCards cards={studCards} folded={p.folded} size="sm2" revealAll={isShowdown && !p.folded} />}
                     </div>
                     {isShowdown && p.result && !p.folded && <div style={{ fontSize: 13, color: p.isWinner ? 'var(--gold-bright)' : 'var(--cream-dim)', fontFamily: 'var(--font-title)', marginTop: 4 }}>{p.result}</div>}
                   </div>
@@ -442,20 +459,30 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
             {!isSpectator && phase === 'waiting' && <div style={{ textAlign: 'center', fontSize: 13, color: 'var(--cream-dim)', fontFamily: 'var(--font-body)' }}>{players.length < 2 ? 'もう1人参加を待っています' : 'ゲームを準備中...'}</div>}
             {!isSpectator && isBetPhase && isMyTurn && !self?.isAllIn && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {!canCheck && <button style={btnStyle('red')} onClick={() => onBetAction('fold')}>フォールド</button>}
-                {canCheck
-                  ? <button style={btnStyle('gray')} onClick={() => onBetAction('check')}>チェック</button>
-                  : <button style={btnStyle('gray')} onClick={() => onBetAction('call')}>コール ({toCall})</button>}
-                {canRaise && (() => {
-                  // 3rd street のコンプリートか、通常のベット/レイズかでラベルを変える
-                  const label = self?.isComplete
-                    ? `コンプリート (${self?.raiseToTotal ?? ''})`
-                    : canCheck
-                      ? `ベット (+${self?.betSize ?? ''})`
-                      : `レイズ (+${self?.betSize ?? ''})`;
-                  const action = canCheck ? 'bet' : 'raise';
-                  return <button style={btnStyle('gold')} onClick={() => onBetAction(action)}>{label}</button>;
-                })()}
+                {self?.mustBringIn ? (
+                  /* 【ブリングイン選択制】義務者: ブリングイン or コンプリートのみ（フォールド不可・支払い義務あり） */
+                  <>
+                    <button style={btnStyle('gray')} onClick={() => onBetAction('bringIn')}>ブリングイン ({self?.bringInCost ?? 0})</button>
+                    <button style={btnStyle('gold')} onClick={() => onBetAction('complete')}>コンプリート ({self?.completeCost ?? 0})</button>
+                  </>
+                ) : (
+                  <>
+                    {!canCheck && <button style={btnStyle('red')} onClick={() => onBetAction('fold')}>フォールド</button>}
+                    {canCheck
+                      ? <button style={btnStyle('gray')} onClick={() => onBetAction('check')}>チェック</button>
+                      : <button style={btnStyle('gray')} onClick={() => onBetAction('call')}>コール ({toCall})</button>}
+                    {canRaise && (() => {
+                      // 3rd street のコンプリートか、通常のベット/レイズかでラベルを変える
+                      const label = self?.isComplete
+                        ? `コンプリート (${self?.raiseToTotal ?? ''})`
+                        : canCheck
+                          ? `ベット (+${self?.betSize ?? ''})`
+                          : `レイズ (+${self?.betSize ?? ''})`;
+                      const action = canCheck ? 'bet' : 'raise';
+                      return <button style={btnStyle('gold')} onClick={() => onBetAction(action)}>{label}</button>;
+                    })()}
+                  </>
+                )}
               </div>
             )}
             {!isSpectator && isBetPhase && isMyTurn && self?.isAllIn && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--gold)', fontFamily: 'var(--font-title)', fontWeight: 700 }}>⚡ オールイン中（待機）</div>}
@@ -476,10 +503,10 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
   const vw    = window.innerWidth;
   const availH = containerSize.h > 0 ? containerSize.h : Math.max(200, window.innerHeight - 44);
   const ACT_W_M = 148;
-  // 【006 修正】アクションパネルの予約高さ。旧値110ではボタン行＋ヒント＋
-  // テーブル一覧ボタン＋paddingの合計に足りず、テーブル領域がパネルに
-  // 食い込んでボタン上部が途切れていた。実コンテンツ高さに合わせて拡大。
-  const ACT_H_M = 150;
+  // ドロー系(TournamentTable)と同じ予約高さ 110 に統一する。
+  // これによりテーブル高さ TH_M がドロー系と一致し、自プレイヤーの表示位置も
+  // ドロー系と揃う。ボタン途切れ(006)はパネル側の構造(後述)で解決する。
+  const ACT_H_M = 110;
 
   let TW_M: number, TH_M: number;
   if (isPortrait) { TW_M = vw - 8; TH_M = availH - ACT_H_M - 4; }
@@ -508,20 +535,10 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
   const oth_m   = orderedOthers;
 
   const getPosMobile = (p: PlayerState) => {
-    // 【005 修正】portrait時、自プレイヤーは楕円配置（ang=90）だと
-    // top = CY_M + RY_M - SELF_H/2 ≈ 0.72*TH となり、画面下部に大きな空白が残り
-    // 自分の表示が中央寄り（上寄り）に見える。自プレイヤーだけ画面下端に
-    // 直接配置して、テーブル全体を縦いっぱいに使う。
-    if (p.isSelf && isPortrait) {
-      const bw = SELF_W;
-      let left = CX_M - bw / 2;
-      const MARGIN = 4;
-      left = Math.max(MARGIN, Math.min(left, TW_M - bw - MARGIN));
-      // 下端から少し浮かせて配置（カード見切れ防止のため底から SELF 高さ分確保）
-      const top = Math.max(4, TH_M - SELF_H - 6);
-      return { left, top };
-    }
-
+    // 自プレイヤー位置はドロー系(TournamentTable)と完全に同一にする。
+    // ang=90, top = CY_M + RY_M - SELF_H/2。座標定数(CY_M/RY_M/SELF_H)も
+    // ドロー系と同値。以前スタッドだけ下端配置にしたが、ドロー系と高さが
+    // 揃わず「スタッドが高い/低い」と不一致になるため統一する。
     let ang: number;
     if (p.isSelf) { ang = 90; }
     else {
@@ -535,8 +552,6 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
     let left = CX_M + RX_M * Math.cos(rad) - bw / 2;
     let top  = CY_M + RY_M * Math.sin(rad) - bh / 2;
     // 画面端クランプ: ボックス（とカード）が左右にはみ出して見切れるのを防ぐ。
-    // 他プレイヤーのカード列(最大7枚)はボックス幅 OTH_W を中央基準で左右に
-    // 約20pxずつ超えるため、その分を MARGIN として確保する（自分は SELF_W に収まる）。
     const MARGIN = p.isSelf ? 4 : 22;
     left = Math.max(MARGIN, Math.min(left, TW_M - bw - MARGIN));
     top  = Math.max(4, Math.min(top, TH_M - bh - 4));
@@ -603,7 +618,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
           <div style={{ display: 'flex', justifyContent: 'center', marginTop: 2, overflow: 'visible', position: 'relative', zIndex: 1 }}>
             {p.isSelf
               ? <SelfStudCards cards={studCards} size="sm" />
-              : <OtherStudCards cards={studCards} folded={p.folded} />}
+              : <OtherStudCards cards={studCards} folded={p.folded} revealAll={isShowdown && !p.folded} />}
           </div>
 
           {/* 修正3: 自分の手役は常時表示、相手はショーダウン時のみ */}
@@ -673,13 +688,20 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
   // ==========================================================
   function renderActionPanel() {
     return (
-    <div style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', background: 'rgba(0,0,0,0.45)', borderTop: '1px solid rgba(201,168,76,0.25)', padding: '12px 8px 10px', overflow: 'visible', minHeight: 0, position: 'relative', zIndex: 10 }}>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', background: 'rgba(0,0,0,0.45)', borderTop: '1px solid rgba(201,168,76,0.25)', padding: '12px 8px 10px', overflow: 'visible', minHeight: 0, position: 'relative', zIndex: 10 }}>
       <div style={{ fontSize: 9, color: 'var(--gold-dim)', fontFamily: 'var(--font-body)', marginBottom: 4 }}>
         {mode === 'stud_e' ? '★ Stud Hi/Lo: 8以下のローでポット折半' : mode === 'razz' ? '★ Razz: A-5ローボール、低い手が強い' : '★ 7 Card Stud: 高い手が強い'}
       </div>
       {isSpectator && <div style={{ textAlign: 'center', fontSize: 12, color: '#b088ff', border: '1px solid #6644aa', borderRadius: 6, padding: '6px 0' }}>観戦中</div>}
       {!isSpectator && phase === 'waiting' && <div style={{ textAlign: 'center', fontSize: 13, color: 'var(--cream-dim)', fontFamily: 'var(--font-body)', padding: '8px 0' }}>{players.length < 2 ? 'もう1人参加を待っています' : 'ゲームを準備中...'}</div>}
       {!isSpectator && isBetPhase && isMyTurn && !self?.isAllIn && (
+        self?.mustBringIn ? (
+          /* 【ブリングイン選択制】義務者: ブリングイン or コンプリートのみ（フォールド不可・支払い義務あり） */
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button style={{ ...btnStyle('gray', true), flex: 1 }} onClick={() => onBetAction('bringIn')}>ブリングイン({self?.bringInCost ?? 0})</button>
+            <button style={{ ...btnStyle('gold', true), flex: 1 }} onClick={() => onBetAction('complete')}>コンプリート({self?.completeCost ?? 0})</button>
+          </div>
+        ) : (
         <div style={{ display: 'flex', gap: 6 }}>
           {!canCheck && <button style={{ ...btnStyle('red', true), flex: 1 }} onClick={() => onBetAction('fold')}>フォールド</button>}
           {canCheck
@@ -695,6 +717,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
             return <button style={{ ...btnStyle('gold', true), flex: 1 }} onClick={() => onBetAction(action)}>{label}</button>;
           })()}
         </div>
+        )
       )}
       {!isSpectator && isBetPhase && isMyTurn && self?.isAllIn && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--gold)', fontFamily: 'var(--font-title)', padding: '8px 0', fontWeight: 700 }}>⚡ オールイン中（待機）</div>}
       {!isSpectator && isBetPhase && !isMyTurn && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--cream-dim)', fontFamily: 'var(--font-body)', padding: '8px 0', fontStyle: 'italic' }}>{players.find(p => p.isMyTurn && !p.isSelf)?.name ?? ''}がアクション中...</div>}

@@ -286,7 +286,7 @@ test('syncToGameManager: id一致のみ（accountIdなし）でも従来通り�
   sm.studRooms.delete('test-sync-id');
 });
 
-test('3rd street: ブリングインがポストされ左隣から開始、BI者にオプションが回る', () => {
+test('3rd street【選択制】: BI者から開始、bringInで最小ポスト、左隣へ進む', () => {
   const room = sm.ensureStudRoom('test-bringin-flow', {});
   room.currentMode = 'stud_s'; room.mode = 'stud_s';
   room.smallBet = 400; room.bigBet = 800; room.handCount = 0;
@@ -299,27 +299,34 @@ test('3rd street: ブリングインがポストされ左隣から開始、BI者
 
   const biIdx = room.bringInIndex;
   assert.ok(biIdx >= 0, 'ブリングイン者が決まる');
-  assert.strictEqual(room.currentBet, room.bringInAmount, 'currentBet = ブリングイン額');
-  assert.strictEqual(room.players[biIdx].bet, room.bringInAmount, 'BI者が強制ポスト済み');
-  assert.notStrictEqual(room.actionIndex, biIdx, '開始はBI者の左隣');
+  // 【選択制】開始時は強制ポストされない（bet=0, currentBet=0）
+  assert.strictEqual(room.currentBet, 0, '開始時 currentBet=0（強制ポストなし）');
+  assert.strictEqual(room.players[biIdx].bet, 0, 'BI者はまだポストしていない');
+  assert.strictEqual(room.players[biIdx].mustBringIn, true, 'BI者は選択待ち');
+  // 【選択制】アクションはBI者本人から始まる
+  assert.strictEqual(room.actionIndex, biIdx, '開始はBI者本人');
 
-  let sawOption = false;
+  // BI者が bringIn を選択
+  const biPlayer = room.players[biIdx];
+  const r1 = sm.studBetAction(room.id, biPlayer.id, 'bringIn', 0);
+  assert.ok(r1, 'bringIn成功');
+  assert.strictEqual(room.players[biIdx].bet, room.bringInAmount, 'bringInで最小額ポスト');
+  assert.strictEqual(room.players[biIdx].mustBringIn, false, '選択完了');
+
+  // 残りを進める
   let guard = 0;
   while (room.phase === 'bet3rd' && guard < 12) {
     guard++;
-    const idx = room.actionIndex;
-    if (idx === biIdx) sawOption = true;
-    const cur = room.players[idx];
+    const cur = room.players[room.actionIndex];
     const toCall = room.currentBet - cur.bet;
     const r = sm.studBetAction(room.id, cur.id, toCall > 0 ? 'call' : 'check', 0);
     assert.ok(r, `studBetAction成功(${cur.name})`);
   }
-  assert.ok(sawOption, 'BI者にオプションが回った');
   assert.strictEqual(room.phase, 'bet4th', '3rd完了で4thへ');
   sm.studRooms.delete('test-bringin-flow');
 });
 
-test('3rd street: コンプリート時 isComplete=true・raiseToTotal=smallBet', () => {
+test('3rd street【選択制】: BI者がcompleteでスモールベット・raiseCount=1', () => {
   const room = sm.ensureStudRoom('test-complete', {});
   room.currentMode = 'stud_s'; room.mode = 'stud_s';
   room.smallBet = 400; room.bigBet = 800; room.handCount = 0;
@@ -330,16 +337,25 @@ test('3rd street: コンプリート時 isComplete=true・raiseToTotal=smallBet'
   ];
   sm.startStudHand(room, () => {}, { skipHandCountIncrement: true });
 
-  const actor = room.players[room.actionIndex];
-  const state = sm.buildStudGameState(room, actor.id);
+  // BI者の手番で buildStudGameState を見ると mustBringIn と選択肢額が出る
+  const biIdx = room.bringInIndex;
+  const biPlayer = room.players[biIdx];
+  const state = sm.buildStudGameState(room, biPlayer.id);
   const self = state.find((s) => s.isSelf);
-  assert.strictEqual(self.isComplete, true, '3rdのbet/raiseはコンプリート');
-  assert.strictEqual(self.raiseToTotal, room.smallBet, 'コンプリートはsmallBetまで');
-  assert.strictEqual(self.canRaise, true, 'コンプリート可能');
+  assert.strictEqual(self.mustBringIn, true, 'BI者はmustBringIn');
+  assert.strictEqual(self.bringInCost, room.bringInAmount, 'ブリングイン額が出る');
+  assert.strictEqual(self.completeCost, room.smallBet, 'コンプリート額=smallBet');
+
+  // complete を選択 → スモールベット全額、raiseCount=1
+  const r = sm.studBetAction(room.id, biPlayer.id, 'complete', 0);
+  assert.ok(r, 'complete成功');
+  assert.strictEqual(room.players[biIdx].bet, room.smallBet, 'completeでsmallBet全額');
+  assert.strictEqual(room.currentBet, room.smallBet, 'currentBet=smallBet');
+  assert.strictEqual(room.raiseCount, 1, 'completeでraiseCount=1');
   sm.studRooms.delete('test-complete');
 });
 
-test('razz: ブリングインがポストされる（lowball変種でも強制ベット成立）', () => {
+test('razz【選択制】: BI者は選択待ちで開始時はポストしない', () => {
   const room = sm.ensureStudRoom('test-razz-bringin', {});
   room.currentMode = 'razz'; room.mode = 'razz';
   room.smallBet = 400; room.bigBet = 800; room.handCount = 0;
@@ -351,7 +367,9 @@ test('razz: ブリングインがポストされる（lowball変種でも強制�
   sm.startStudHand(room, () => {}, { skipHandCountIncrement: true });
   const biIdx = room.bringInIndex;
   assert.ok(biIdx >= 0, 'razzでもブリングイン者が決まる');
-  assert.strictEqual(room.players[biIdx].bet, room.bringInAmount, 'razz BI者がポスト済み');
+  assert.strictEqual(room.players[biIdx].bet, 0, 'razz: 開始時は未ポスト（選択制）');
+  assert.strictEqual(room.players[biIdx].mustBringIn, true, 'razz: BI者は選択待ち');
+  assert.strictEqual(room.actionIndex, biIdx, 'razz: BI者本人から開始');
   sm.studRooms.delete('test-razz-bringin');
 });
 

@@ -160,6 +160,7 @@ function startStudHand(room, onTimeout, opts = {}) {
     p.acted   = !!p.sittingOut;
     p.totalContribution = 0;
     p.isBringIn = false;
+    p.mustBringIn = false;  // 【ブリングイン選択制】前ハンドの義務フラグを必ずクリア
     if (!p.sittingOut) {
       const a = Math.min(room.ante, p.chips);
       p.chips -= a; room.pot += a; p.totalContribution += a;
@@ -179,17 +180,20 @@ function startStudHand(room, onTimeout, opts = {}) {
   );
 
   room.phase      = 'bet3rd';
-  room.currentBet = room.bringInAmount;
+  // 【ブリングイン選択制】強制ポストせず currentBet=0 で開始する。
+  // 最弱ドアカードのプレイヤー(bringInTarget)が最初にアクションし、
+  // 「ブリングイン(最小額)」か「コンプリート(スモールベット)」を選ぶ。
+  // 正式ルール(pokernews/pagat等で確認): bring-in player は強制ではなく
+  // bring-in か complete を選択でき、その後通常のベッティングに移る。
+  room.currentBet = 0;
   room.betSize    = room.smallBet;
   room.raiseCount = 0;
 
-  // ブリングインを強制ポスト
+  // ブリングイン対象者をマーク（強制ポストはしない。義務の表示と手番起点に使う）
   const biIdx = room.players.findIndex((p) => p.id === bringInTarget);
   if (biIdx >= 0) {
-    const p = room.players[biIdx];
-    const actual = Math.min(room.bringInAmount, p.chips);
-    p.chips -= actual; p.bet += actual; room.pot += actual; p.totalContribution += actual;
-    p.isBringIn = true;
+    room.players[biIdx].isBringIn = true;   // 「ブリングイン義務者」マーク
+    room.players[biIdx].mustBringIn = true; // まだポストしていない（選択待ち）
   }
 
   // ポジション記録（スタッドはブリングインが起点、ボタンは便宜上ブリングイン者）
@@ -197,13 +201,14 @@ function startStudHand(room, onTimeout, opts = {}) {
   room.fixedDealerIdx = biIdx;
   room.bringInIndex   = biIdx;
 
-  // acted 初期化（ブリングイン者も option のため acted=false）
+  // acted 初期化
   for (const p of room.players) {
     p.acted = (p.sittingOut || p.folded) ? true : false;
   }
 
-  // アクション開始 = ブリングインの左隣
-  room.actionIndex = _nextActive(room, biIdx);
+  // 【ブリングイン選択制】アクションはブリングイン者「から」開始する
+  // （従来は左隣からだったが、選択権を与えるため本人から）
+  room.actionIndex = biIdx >= 0 ? biIdx : _nextActive(room, room.dealerIndex);
   _startTimer(room);
 
   return room;
@@ -222,6 +227,67 @@ function studBetAction(roomId, socketId, action, amount) {
   if (!player || player.folded) return null;
 
   const toCall = room.currentBet - player.bet;
+
+  // ===== 【ブリングイン選択制】ブリングイン義務者の専用アクション =====
+  // mustBringIn=true の手番では bringIn / complete / fold のみ許可。
+  // bringIn  : 最小額(bringInAmount)をポスト。レイズとしてカウントしない。
+  // complete : スモールベット全額をポスト。これは「最初のベット」扱い。
+  if (player.mustBringIn) {
+    if (action === 'bringIn') {
+      const amt = Math.min(room.bringInAmount, player.chips);
+      player.chips -= amt; player.bet += amt; room.pot += amt;
+      player.totalContribution += amt;
+      room.currentBet = Math.max(room.currentBet, player.bet);
+      player.mustBringIn = false;
+      player.acted = true;
+      // bring-in はレイズではない。他プレイヤーはまだ未行動のまま。
+      _clearTimer(room);
+      _advanceBetAction(room);
+      return room;
+    }
+    if (action === 'complete') {
+      const amt = Math.min(room.smallBet, player.chips);
+      player.chips -= amt; player.bet += amt; room.pot += amt;
+      player.totalContribution += amt;
+      const prevBet = room.currentBet;
+      room.currentBet = Math.max(room.currentBet, player.bet);
+      player.mustBringIn = false;
+      player.acted = true;
+      // 【Medium-1修正】complete がフルスモールベット額に達した場合のみ
+      // 「最初のフルベット」としてレイズカウントを開始し、他プレイヤーの
+      // acted をリセットして call/raise/fold を要求する。
+      // チップ不足で smallBet 未満のショートオールインになった場合は、
+      // フルベット未満なのでレイズ権を再オープンしない（正式ルール）。
+      if (player.bet >= room.smallBet) {
+        room.raiseCount = 1;
+        for (let i = 0; i < room.players.length; i++) {
+          if (i !== myIndex && !room.players[i].folded && !room.players[i].sittingOut) {
+            room.players[i].acted = false;
+          }
+        }
+      } else if (room.currentBet > prevBet) {
+        // ショートオールインで currentBet が上がった場合: まだ currentBet に
+        // 満たないプレイヤーのみ acted リセット（コール/フォールド要求）。
+        for (let i = 0; i < room.players.length; i++) {
+          const op = room.players[i];
+          if (i !== myIndex && !op.folded && !op.sittingOut && op.bet < room.currentBet) {
+            op.acted = false;
+          }
+        }
+      }
+      _clearTimer(room);
+      _advanceBetAction(room);
+      return room;
+    }
+    if (action === 'fold') {
+      // 【仕様確定】ブリングイン義務者はフォールドできない。
+      // ブリングインは強制義務であり、フォールドで回避することは正式ルール上不可。
+      // 義務者が選べるのは bringIn（最小額）か complete（スモールベット）のみ。
+      return null;
+    }
+    // それ以外のアクションも不許可
+    return null;
+  }
 
   if (action === 'fold') {
     if (toCall === 0) return null; // チェック可能な場面のフォールド禁止
@@ -652,6 +718,10 @@ function buildStudGameState(room, requesterId) {
           raiseCost: Math.min(_raiseCost, p.chips),
           betSize: room.betSize,
           isNL: false,
+          // 【ブリングイン選択制】義務者の手番なら bringIn/complete を選択可能
+          mustBringIn: !!p.mustBringIn,
+          bringInCost: p.mustBringIn ? Math.min(room.bringInAmount, p.chips) : 0,
+          completeCost: p.mustBringIn ? Math.min(room.smallBet, p.chips) : 0,
         };
       })() : {}),
       ...(isMyTurn ? { timerRemaining } : {}),
@@ -721,6 +791,12 @@ function handleStudTimeout(roomId, socketId) {
   if (!room) return null;
   const p = room.players.find((x) => x.id === socketId);
   if (!p) return null;
+  // 【ブリングイン選択制】義務者がタイムアウトした場合、check/fold では
+  // studBetAction の義務者分岐に弾かれて処理されず、タイムアウトループに
+  // 陥る。最も保守的な選択である最小ブリングインを自動実行する。
+  if (p.mustBringIn) {
+    return studBetAction(roomId, socketId, 'bringIn', 0);
+  }
   const toCall = room.currentBet - p.bet;
   return studBetAction(roomId, socketId, toCall > 0 ? 'fold' : 'check', 0);
 }
@@ -856,7 +932,7 @@ function syncFromGameManager(gmRoom, currentMode) {
     accountId:  gp.accountId ?? null,
     // スタッド用フィールドは startStudHand で初期化される
     cards: [], faceUp: [], bet: 0, folded: false, acted: false,
-    totalContribution: 0, isBringIn: false,
+    totalContribution: 0, isBringIn: false, mustBringIn: false,
   }));
 
   return room;

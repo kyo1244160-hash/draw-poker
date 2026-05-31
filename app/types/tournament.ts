@@ -65,6 +65,9 @@ export interface PlayerState {
   isComplete?: boolean;       // bet/raiseアクションがコンプリート(3rd street)かどうか
   raiseToTotal?: number;      // コンプリート/レイズ後の合計ベット額
   raiseCost?: number;         // 実際に投じるチップ額（raiseToTotal - 現在のbet）
+  mustBringIn?: boolean;      // 【ブリングイン選択制】ブリングイン義務者の手番（bringIn/complete選択待ち）
+  bringInCost?: number;       // ブリングイン額（最小）
+  completeCost?: number;      // コンプリート額（スモールベット）
   // NL（27sd）対応: クライアントUI構築用情報。
   // isNL=true のときのみ minBet/minRaiseTotal/maxBetTotal が利用可能
   isNL?: boolean;
