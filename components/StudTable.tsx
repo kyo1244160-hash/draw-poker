@@ -137,13 +137,25 @@ function OtherStudCards({ cards, folded, size = 'xs', revealAll = false }: { car
   const h            = SIZE_PRESET[size].h;
   const gap          = size === 'xs' ? 2 : 3;
 
-  // 【ショーダウン修正】ショーダウンで全カードが表になる場合は、
-  // 伏せカードの重ね表示（FRONT_OFFSETでずらす）をやめて全カードを横一列に
-  // 並べる。重ねたままだと下のカードが隠れて手役を確認できない（frame_0484）。
+  // 【ショーダウン詰め込み修正】7枚展開時に画面端を超えないように、
+  // gap を 0 にし、サイズに応じてカードを少し重ねる。
+  // xs/sm はカード中央に数字・スートが表示されるため重ねるのは不可
+  //   （後ろのカードの中央が前のカードに隠れて見えなくなる）。
+  // sm2/md/lg は左上に数字、中央にスートのため右側を少し重ねても情報は残る。
+  //
+  // 7枚並べた場合の幅計算:
+  //   xs (26px) × 7 + gap 0       = 182px (元: 194px, -12px)
+  //   sm (32px) × 7 + gap 0       = 224px (元: 230px,  -6px)
+  //   sm2(40px) × 7 - overlap 4×6 = 256px (元: 298px, -42px)
   if (revealAll) {
+    const overlap = (size === 'sm2' || size === 'md' || size === 'lg') ? 4 : 0;
     return (
-      <div style={{ display: 'flex', gap, alignItems: 'center', justifyContent: 'center', flexWrap: 'nowrap', opacity: folded ? 0.5 : 1 }}>
-        {cards.map((c, i) => <Card key={`r${i}`} code={c.code} size={size} folded={folded} isDown={!c.up} />)}
+      <div style={{ display: 'flex', gap: 0, alignItems: 'center', justifyContent: 'center', flexWrap: 'nowrap', opacity: folded ? 0.5 : 1 }}>
+        {cards.map((c, i) => (
+          <div key={`r${i}`} style={{ marginLeft: i === 0 ? 0 : -overlap, position: 'relative', zIndex: i, flexShrink: 0 }}>
+            <Card code={c.code} size={size} folded={folded} isDown={!c.up} />
+          </div>
+        ))}
       </div>
     );
   }
@@ -535,10 +547,19 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
   const oth_m   = orderedOthers;
 
   const getPosMobile = (p: PlayerState) => {
-    // 自プレイヤー位置はドロー系(TournamentTable)と完全に同一にする。
-    // ang=90, top = CY_M + RY_M - SELF_H/2。座標定数(CY_M/RY_M/SELF_H)も
-    // ドロー系と同値。以前スタッドだけ下端配置にしたが、ドロー系と高さが
-    // 揃わず「スタッドが高い/低い」と不一致になるため統一する。
+    // 【005修正】portrait時の自プレイヤーは画面下端に直接配置。
+    // landscape時はドロー系と同一（ang=90）。
+    // ドロー系は自プレイヤーを楕円中心下（ang=90）に配置するため、
+    // アクションパネルの上に来る形になり問題ない。
+    // スタッド系も同様にすることで、両システム間での違和感を解消。
+    if (p.isSelf && isPortrait) {
+      // portrait: 自プレイヤーを画面下端に直接配置
+      // アクションパネル直上のスペースを有効活用
+      const left = (TW_M - SELF_W) / 2;
+      const top = TH_M - SELF_H - 4;
+      return { left, top };
+    }
+    // その他（自プレイヤー・landscape / 他プレイヤー）: 通常の楕円配置
     let ang: number;
     if (p.isSelf) { ang = 90; }
     else {
