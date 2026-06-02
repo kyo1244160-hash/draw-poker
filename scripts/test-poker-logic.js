@@ -445,6 +445,55 @@ test('stud_e Hi/Lo スプリット（保存則）', () => {
   assert.strictEqual(players[1].chips, 50, 'B がロー半分');
 });
 
+test('3段階サイドポット: オールイン者+フォールド者混在（保存則）', () => {
+  // A=20拠出(オールイン,勝ち最強), B=50拠出(オールイン), C=100拠出(コール), D=100拠出だがフォールド
+  // pot = 20 + 50 + 100 + 100 = 270
+  // メインポット(level20): 20×4=80 → A資格(最強)で総取り
+  // level50: (50-20)×3(B,C,D拠出)=90 → A脱落(20まで), B資格(2番手)で獲得
+  // level100: (100-50)×2(C,D)=100 → C資格(Dはフォールド)で獲得
+  const players = [
+    { id: 'a', name: 'A', chips: 0, folded: false, sittingOut: false, totalContribution: 20, cards: ['AS', 'AH', 'AD', 'AC', 'KS', 'KH', 'QD'] }, // フォーカードA(最強)
+    { id: 'b', name: 'B', chips: 0, folded: false, sittingOut: false, totalContribution: 50, cards: ['KS', 'KH', 'KD', 'KC', 'QS', 'QH', 'JD'] }, // フォーカードK(2番手)
+    { id: 'c', name: 'C', chips: 0, folded: false, sittingOut: false, totalContribution: 100, cards: ['2C', '3D', '4H', '5S', '7C', '8D', '9H'] }, // ノーペア(最弱)
+    { id: 'd', name: 'D', chips: 0, folded: true,  sittingOut: false, totalContribution: 100, cards: ['2S', '2H', '3C', '3S', '4D', '5C', '6H'] }, // フォールド
+  ];
+  const room = makeStudRoom('stud_s', players, 270);
+  assertChipConservation(room, players, '3段階サイドポット');
+  // メインポット80(A) + level50ポット90(B) + level100ポット100(C)
+  assert.strictEqual(players[0].chips, 80,  'A=メインポット80');
+  assert.strictEqual(players[1].chips, 90,  'B=level50ポット90');
+  assert.strictEqual(players[2].chips, 100, 'C=level100ポット100');
+  assert.strictEqual(players[3].chips, 0,   'D=フォールドで0');
+});
+
+test('オールインフォールド: 部分拠出後にフォールドしたプレイヤーの拠出もポットに含まれる（保存則）', () => {
+  // A=30拠出後フォールド, B=100, C=100 → pot=230
+  // A の30はポットに残る。B vs C で全額争う。
+  const players = [
+    { id: 'a', name: 'A', chips: 0, folded: true,  sittingOut: false, totalContribution: 30,  cards: ['2S', '3H', '4D', '5C', '7S', '8H', '9D'] },
+    { id: 'b', name: 'B', chips: 0, folded: false, sittingOut: false, totalContribution: 100, cards: ['AS', 'AH', 'AD', 'AC', 'KS', 'KH', 'QD'] }, // フォーカード(勝ち)
+    { id: 'c', name: 'C', chips: 0, folded: false, sittingOut: false, totalContribution: 100, cards: ['2C', '2D', '3H', '3S', '4D', '5C', '6H'] },
+  ];
+  const room = makeStudRoom('stud_s', players, 230);
+  assertChipConservation(room, players, 'オールインフォールド拠出');
+  assert.strictEqual(players[1].chips, 230, 'B が全ポット230を獲得（Aの拠出含む）');
+});
+
+test('全員同額オールインでスプリット（保存則・端数処理）', () => {
+  // 3人が33ずつ拠出 pot=99、stud_s で A と B が同点勝者
+  const players = [
+    { id: 'a', name: 'A', chips: 0, folded: false, sittingOut: false, totalContribution: 33, cards: ['AS', 'AH', 'KD', 'KC', 'QS', 'JH', '9D'] }, // 2ペアAK
+    { id: 'b', name: 'B', chips: 0, folded: false, sittingOut: false, totalContribution: 33, cards: ['AD', 'AC', 'KS', 'KH', 'QD', 'JC', '9S'] }, // 2ペアAK(同点)
+    { id: 'c', name: 'C', chips: 0, folded: false, sittingOut: false, totalContribution: 33, cards: ['2C', '3D', '4H', '5S', '7C', '8D', 'TH'] }, // ノーペア(負け)
+  ];
+  const room = makeStudRoom('stud_s', players, 99);
+  assertChipConservation(room, players, '同額スプリット端数');
+  // 99を2人で分割 → 49+50（端数1はdealerIndex起点で最初の勝者へ）
+  const total = players[0].chips + players[1].chips;
+  assert.strictEqual(total, 99, 'A+B で全ポット99');
+  assert.strictEqual(players[2].chips, 0, 'C は0');
+});
+
 test('全員フォールドの異常系（contestants空）でクラッシュしない', () => {
   const players = [
     { id: 'a', name: 'A', chips: 50, folded: true, sittingOut: false, totalContribution: 50, cards: ['AS', 'KS', 'QS', 'JS', 'TS', '9S', '8S'] },

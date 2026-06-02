@@ -162,6 +162,41 @@ function getMixCurrentMode(room) {
  * ハンド開始の直前（startGame 内）で呼ぶこと。
  * @returns {string} 確定した現在モード
  */
+/**
+ * ディーラーボタンを次のアクティブプレイヤーへ1つ進める純粋関数。
+ * startGame（ドロー系）とスタッド経路（index.js）の両方から呼ぶことで、
+ * どちらのゲームでもボタンが毎ハンド移動することを保証する。
+ *
+ * - dealerIndex < 0（初回）: アクティブプレイヤーからランダムに選ぶ
+ * - それ以降: 現在位置から時計回りで次の非 sittingOut プレイヤーへ
+ *
+ * @param {object} room gameManager のルーム
+ * @returns {number} 新しい dealerIndex
+ */
+function advanceDealerButton(room) {
+  if (!room.players || room.players.length === 0) {
+    room.dealerIndex = -1;
+    return -1;
+  }
+  if (room.dealerIndex < 0) {
+    const activeIndices = room.players
+      .map((p, i) => ({ p, i }))
+      .filter(({ p }) => !p.sittingOut)
+      .map(({ i }) => i);
+    room.dealerIndex = activeIndices.length > 0
+      ? activeIndices[Math.floor(Math.random() * activeIndices.length)]
+      : 0;
+  } else {
+    let next = (room.dealerIndex + 1) % room.players.length;
+    for (let t = 0; t < room.players.length; t++) {
+      if (!room.players[next]?.sittingOut) break;
+      next = (next + 1) % room.players.length;
+    }
+    room.dealerIndex = next;
+  }
+  return room.dealerIndex;
+}
+
 function advanceModeRotation(room) {
   const seq = getMixSequence(room.mode);
   if (!seq) return room.mode;  // 非mixは何もしない
@@ -429,22 +464,8 @@ function startGame(roomId, onTimeout) {
   // 本番のBOT行動検証や手役判定の追跡に必要
   log(`[ROUND] room=${roomId.slice(-12)} mode=${room.mode} currentMode=${room.currentMode}${room.isNL ? ' (NL)' : ''} hand=${room.handCount} players=${room.players.length}`);
 
-  // ディーラーボタン前進
-  if (room.dealerIndex < 0) {
-    // 初回ハンド: アクティブプレイヤーの中からランダムに選ぶ
-    const activeIndices = room.players
-      .map((p, i) => ({ p, i }))
-      .filter(({ p }) => !p.sittingOut)
-      .map(({ i }) => i);
-    room.dealerIndex = activeIndices[Math.floor(Math.random() * activeIndices.length)] ?? 0;
-  } else {
-    let next = (room.dealerIndex + 1) % room.players.length;
-    for (let t = 0; t < room.players.length; t++) {
-      if (!room.players[next]?.sittingOut) break;
-      next = (next + 1) % room.players.length;
-    }
-    room.dealerIndex = next;
-  }
+  // ディーラーボタン前進（共通関数。スタッド経路も同じ関数を使う）
+  advanceDealerButton(room);
 
   // 手札配布・リセット
   // トーナメントテーブルはチップを持ち越す（リセット禁止）
@@ -1459,7 +1480,7 @@ module.exports = {
   ensurePotsAwarded,
   // モード判定（他モジュールから共有利用するため公開）
   isNoLimitMode, isMixMode, isStudMode, peekNextMode, getMixCurrentMode,
-  advanceModeRotation, getMixSequence,
+  advanceModeRotation, advanceDealerButton, getMixSequence,
   STUD_MODES,
   STARTING_CHIPS, SMALL_BLIND, BIG_BLIND, SMALL_BET, BIG_BET, MAX_PLAYERS,
 };

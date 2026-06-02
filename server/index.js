@@ -49,6 +49,7 @@ const {
   incrementTimeout, resetTimeout,
   getRoomMode, getRoom, ensurePotsAwarded,
   isStudMode, isMixMode, getMixCurrentMode, advanceModeRotation, peekNextMode,
+  advanceDealerButton,
 } = require('./poker/gameManager');
 
 const studManager = require('./poker/studManager');
@@ -586,7 +587,14 @@ app.prepare().then(async () => {
               tournamentManager.incrementTotalPlayers(tournamentId, 1);
               socket.emit('t:tournamentStarting', { tournamentId, tableId: destTid });
               io.to(destTid).emit('t:playerArrived', { playerName: nickname });
-              _broadcast(io, destTid);
+              // 【lateReg broadcast修正】スタッドハンド進行中は _broadcast を遅延させる。
+              // 進行中に _broadcast(→_broadcastStud→triggerStudBotActions) を呼ぶと
+              // BOTアクションチェーンが干渉してフリーズする場合があるため。
+              if (_isStudHandInProgress(destTid)) {
+                setTimeout(() => _broadcast(io, destTid), 3100);
+              } else {
+                _broadcast(io, destTid);
+              }
               if (canAutoStart(destTid)) _tryAutoStart(io, destTid);
               log(`[lateReg] ${nickname} placed at ${destTid.slice(-8)}`);
               // レイトレジスト参加直後に残り人数を送信（SNG等でも即座に表示されるよう）
@@ -1276,8 +1284,25 @@ function _makeStudTimeoutHandler(io, roomId) {
     log(`[stud-timeout] ${playerId.slice(-12)} in ${rid.slice(-8)} at ${phase}`);
     const acted = !!studManager.handleStudTimeout(rid, playerId);
     if (!acted) {
-      log(`[stud-timeout-skip] ${playerId}: already resolved`);
-      return;
+      // handleStudTimeout が null を返すケース:
+      //   1. 既に他の経路でターンが進んでいる（正常）
+      //   2. プレイヤーが studRoom.players に見つからない（socket未確立の遅延参加者等）
+      //      → このまま return するとテーブルが永久フリーズする
+      // ケース2 の救済: studRoom の現在の actionIndex のプレイヤーを強制 fold させる。
+      const _sr = studManager.getStudRoom(rid);
+      const _cur = _sr?.players[_sr?.actionIndex ?? -1];
+      if (_sr && _cur && _sr.phase !== 'showdown' && _sr.phase !== 'waiting') {
+        log(`[stud-timeout-force] ${playerId.slice(-12)} not found → force fold for actionIndex[${_sr.actionIndex}]=${_cur.name}`);
+        const _forced = !!studManager.handleStudTimeout(rid, _cur.id);
+        if (!_forced) {
+          // それでも失敗（全員 acted など）→ フェーズを強制進行させる
+          log(`[stud-timeout-force] force also failed, phase=${_sr.phase} → advancing`);
+          studManager.forceAdvancePhase(rid);
+        }
+      } else {
+        log(`[stud-timeout-skip] ${playerId}: already resolved`);
+        return;
+      }
     }
     _broadcast(io, rid);
     const room = studManager.getStudRoom(rid);
@@ -1522,9 +1547,21 @@ function _tryAutoStart(io, roomId) {
   // スタッドハンドは showdown 後も studRooms に phase='showdown' で残るため、
   // 次ハンドの開始前に必ず waiting へ戻す。これを怠ると _isStudActive が
   // true を返し続け、次がドロー系でも _broadcastStud に誤ルーティングされる。
+  //
+  // 【重要・二重ハンド進行バグ修正】
+  // phase が showdown のときのみ finishStudHand を呼ぶ。bet系・deal系（進行中）の
+  // ときに finishStudHand を呼ぶと、進行中のハンドを強制終了して次ハンドを始めて
+  // しまい、BOTのアクションチェーンが切れてフリーズする（lateReg参加時に多発）。
+  // 進行中の場合はそのまま return し、ハンド完了後の _onStudShowdown→
+  // _scheduleAutoStart に開始を委ねる。
   {
     const _sr = studManager.getStudRoom(roomId);
-    if (_sr && _sr.phase !== 'waiting') {
+    if (_sr && _sr.phase !== 'waiting' && _sr.phase !== 'showdown') {
+      // 進行中ハンドがある → 開始処理をスキップ（ハンド破壊を防ぐ）
+      log(`[auto-start] ${roomId.slice(-8)} スタッドハンド進行中(phase=${_sr.phase}) → 開始スキップ`);
+      return;
+    }
+    if (_sr && _sr.phase === 'showdown') {
       studManager.finishStudHand(roomId);
     }
   }
@@ -1615,21 +1652,36 @@ function _tryAutoStart(io, roomId) {
   // モードがズレる問題（razz→stud_s 誤判定=002, ハンド途中切替=008）を防ぐ。
   const _gmRoom = getRoom(roomId);
   if (_gmRoom && isMixMode(_gmRoom.mode) && isStudMode(peekNextMode(_gmRoom))) {
-    // sittingOut リセット（startGame 相当の最小処理）
+    // sittingOut リセット（startGame 相当の最小処理・gameManager L411-419 と同一）
+    // _waitZoneSkip=true のプレイヤー（pendingPlayersから来た参加待ち）は
+    // このハンドも sittingOut=true のままにして、フラグをクリアする。
+    // フラグがクリアされるため次のハンドからは sittingOut=false になり正式参加。
     for (const p of _gmRoom.players) {
-      if (!p._waitZoneSkip) p.sittingOut = false;
+      if (p._waitZoneSkip) {
+        p.sittingOut    = true;   // このハンドも待機
+        p._waitZoneSkip = false;  // 次ハンドからは参加（gameManager startGame と同じ）
+      } else {
+        p.sittingOut = false;
+      }
     }
     // モードを正式に前進・確定（startGame と同一処理）
     const nextMode = advanceModeRotation(_gmRoom);
     _gmRoom.currentMode = nextMode;
     _gmRoom._modeHandsDone = (_gmRoom._modeHandsDone ?? 0) + 1;  // このハンドを消化
     _gmRoom.handCount += 1;  // 表示・ログ用の総ハンド数も加算
+    // 【ディーラーボタン移動】スタッド経路は startGame を通らないため、
+    // ここで明示的にボタンを前進させる。これを怠るとスタッド連続区間で
+    // ボタンが固定されてしまう（startGame と同じ advanceDealerButton を使用）。
+    advanceDealerButton(_gmRoom);
+    log(`[stud] dealer button → idx=${_gmRoom.dealerIndex} (${_gmRoom.players[_gmRoom.dealerIndex]?.name ?? '?'})`);
     log(`[stud] mode確定 roomId=${roomId.slice(-8)} mode=${nextMode} done=${_gmRoom._modeHandsDone}/${_gmRoom._modeHandsTotal} seqIdx=${_gmRoom._modeSeqIndex}`);
     const studRoom = studManager.syncFromGameManager(_gmRoom, nextMode);
     studRoom.handCount = _gmRoom.handCount;
     const started = studManager.startStudHand(studRoom, _makeStudTimeoutHandler(io, roomId), { skipHandCountIncrement: true });
     if (started) {
+      const _dbgPlayers = studRoom.players.map(p => `${p.name}(so=${p.sittingOut},fd=${p.folded},act=${p.acted})`).join(',');
       log(`[stud] startStudHand SUCCESS roomId=${roomId.slice(-8)} mode=${nextMode} players=${studRoom.players.length} handCount=${studRoom.handCount}`);
+      log(`[stud-players] ${roomId.slice(-8)}: ${_dbgPlayers}`);
       _broadcast(io, roomId);
       io.to(roomId).emit('gameStarted');
       if (tournamentManager.isTournamentTable(roomId)) {
@@ -1646,8 +1698,8 @@ function _tryAutoStart(io, roomId) {
       // リトライが無いと「もう1人待っています」画面で固まり続ける。
       if (tournamentManager.isTournamentTable(roomId)) {
         setTimeout(() => {
-          const r = getOrCreateRoom(roomId);
-          if (r && (r.phase === 'waiting' || r.phase === 'showdown') && canAutoStart(roomId)) {
+          // 進行中のハンドを破壊しないよう共通ガードで確認してからリトライ
+          if (_canSafelyRetryAutoStart(roomId)) {
             log(`[stud] startStudHand retry for ${roomId.slice(-8)}`);
             _tryAutoStart(io, roomId);
           }
@@ -1680,8 +1732,7 @@ function _tryAutoStart(io, roomId) {
     const _rNull = getOrCreateRoom(roomId);
     log(`[stuck-debug] startGame NULL roomId=${roomId.slice(-8)} players=${_rNull?.players.map(p => `${p.name}(sittingOut=${p.sittingOut},waitZone=${p._waitZoneSkip})`).join(',')}`);
     setTimeout(() => {
-      const r = getOrCreateRoom(roomId);
-      if (r && (r.phase === 'waiting' || r.phase === 'showdown') && canAutoStart(roomId)) {
+      if (_canSafelyRetryAutoStart(roomId)) {
         log(`[stuck-debug] startGame retry for ${roomId.slice(-8)}`);
         _tryAutoStart(io, roomId);
       }
@@ -1746,10 +1797,14 @@ function _scheduleAutoStart(io, roomId) {
   if (room?.isZoomTable) {
     if (canAutoStart(roomId)) _tryAutoStart(io, roomId);
   } else {
-    if (_pendingAutoStart.has(roomId)) return;
+    if (_pendingAutoStart.has(roomId)) {
+      log(`[auto-start] ${roomId.slice(-8)} _scheduleAutoStart skip (already pending)`);
+      return;
+    }
     _pendingAutoStart.add(roomId);
     setTimeout(() => {
       _pendingAutoStart.delete(roomId);
+      log(`[auto-start] ${roomId.slice(-8)} 3s timer fired, canAutoStart=${canAutoStart(roomId)}`);
       // トーナメント: 脱落チェック → テーブルバランシング → 自動スタート
       if (tournamentManager.isTournamentTable(roomId)) {
         // balanceTables でチップを移動する前に、全テーブルのポットを確実に精算する。
@@ -1786,6 +1841,34 @@ function _isStudActive(roomId) {
   return !!sr && sr.phase !== 'waiting';
 }
 
+/**
+ * スタッドハンドが「ベット/配布の進行中」か判定する。
+ * waiting（ハンド未開始）でも showdown（精算済み・次ハンド開始可能）でもない、
+ * 途中状態（ante・bet系・deal系）のときのみ true。
+ *
+ * 自動開始リトライ（_tryAutoStart の再呼び出し）の前にこれを確認することで、
+ * 進行中のハンドを finishStudHand で破壊してしまう二重起動バグを防ぐ。
+ */
+function _isStudHandInProgress(roomId) {
+  const sr = studManager.studRooms.get(roomId);
+  if (!sr) return false;
+  return sr.phase !== 'waiting' && sr.phase !== 'showdown';
+}
+
+/**
+ * 自動開始リトライを安全に発火してよいか判定する共通ガード。
+ * - スタッドハンドが進行中なら false（破壊防止）
+ * - gameManager 側が waiting/showdown かつ canAutoStart なら true
+ */
+function _canSafelyRetryAutoStart(roomId) {
+  if (_isStudHandInProgress(roomId)) return false;
+  // getRoom（生成しない版）を使う。リトライ判定のためにルームを新規生成する
+  // 副作用を避ける。ルームが存在しないなら開始すべきものは無い。
+  const r = getRoom(roomId);
+  const phaseOk = !!r && (r.phase === 'waiting' || r.phase === 'showdown');
+  return phaseOk && canAutoStart(roomId);
+}
+
 /** 単一ソケットへ現在のゲーム状態を送る（スタッド/ドロー自動判定） */
 function _emitStateToSocket(socket, tableId) {
   if (_isStudActive(tableId)) {
@@ -1809,6 +1892,15 @@ function _emitStateToSocket(socket, tableId) {
 function _broadcastStud(io, roomId) {
   const room = studManager.getStudRoom(roomId);
   if (!room) return;
+  // デバッグ: 現在のactionIndexが人間プレイヤーの場合に警告
+  if (room.phase && room.phase.startsWith('bet')) {
+    const _cur = room.players[room.actionIndex];
+    if (_cur && !_cur.isBot && !_cur.sittingOut && !_cur.folded) {
+      const _gmR = getRoom(roomId);
+      const _isPending = _gmR?.pendingPlayers?.some(pp => pp.id === _cur.id || pp.name === _cur.name);
+      log(`[stud-action] ${roomId.slice(-8)} phase=${room.phase} actionIdx=${room.actionIndex} cur=${_cur.name} isBot=${_cur.isBot} sittingOut=${_cur.sittingOut} folded=${_cur.folded} isPending=${_isPending ?? false} isMyTurn=${_cur.isMyTurn ?? false}`);
+    }
+  }
 
   let anySocketSent = false;
   for (const player of room.players) {
@@ -1820,6 +1912,35 @@ function _broadcastStud(io, roomId) {
     const players = state.filter((x) => !x._meta);
     s.emit('gameState', { players, meta });
   }
+
+  // 【pendingPlayers観戦中バグ修正】gmRoom.pendingPlayers にいるプレイヤーは
+  // studRoom.players にまだ含まれていないため、上のループで gameState が送られず
+  // クライアントが isSpectator:true の状態を受け取って観戦中表示になる。
+  // pendingPlayers の socket には studRoom の状態を requesterId 付きで送信することで
+  // isSelf=true のプレイヤーが含まれ、クライアントの観戦中フラグが解除される。
+  const _gmRoomForPending = getRoom(roomId);
+  if (_gmRoomForPending?.pendingPlayers?.length > 0) {
+    for (const pp of _gmRoomForPending.pendingPlayers) {
+      const s = io.sockets.sockets.get(pp.id);
+      if (!s) continue;
+      // buildStudGameState に pendingPlayer の socket.id を渡して isSelf=true を生成する。
+      // studRoom.players には含まれていないが、isPendingPlayer フラグで待機中として表示。
+      // この状態では isSelf プレイヤーが返らないため、独自のプレイヤー情報を追加する。
+      const _baseState = studManager.buildStudGameState(room, null);
+      const _baseMeta  = _baseState.find((x) => x._meta);
+      const _basePlayers = _baseState.filter((x) => !x._meta);
+      // 自プレイヤーとして pending エントリを追加（待機中として表示）
+      const _selfEntry = {
+        id: pp.id, name: pp.name, chips: pp.chips ?? 0,
+        isSelf: true, isPendingPlayer: true,
+        folded: false, sittingOut: true, isMyTurn: false,
+        cards: [], faceUp: [], bet: 0, totalContribution: 0,
+        isBringIn: false, isDealer: false,
+      };
+      s.emit('gameState', { players: [..._basePlayers, _selfEntry], meta: _baseMeta });
+      anySocketSent = true;
+    }
+  }
   // BOT-only: showdown で精算を確実に実行
   if (!anySocketSent && room.phase === 'showdown' && !room._potAwarded) {
     studManager.buildStudGameState(room, null);
@@ -1828,7 +1949,14 @@ function _broadcastStud(io, roomId) {
   // 観戦者へ配信（手札伏せ）
   const spectators = _spectators.get(roomId);
   if (spectators && spectators.size > 0) {
-    const playerSocketIds = new Set(room.players.map((p) => p.id));
+    // playerSocketIds: studRoom.players + gmRoom.pendingPlayers の両方を含める。
+    // pendingPlayers のソケットにも既に gameState を送信済みのため、
+    // 観戦者配信で isSpectator:true で上書きされないようスキップ対象にする。
+    const _gmRoomSpec = getRoom(roomId);
+    const playerSocketIds = new Set([
+      ...room.players.map((p) => p.id),
+      ...(_gmRoomSpec?.pendingPlayers?.map((p) => p.id) ?? []),
+    ]);
     const state   = studManager.buildStudGameState(room, null);
     const meta    = state.find((x) => x._meta);
     const players = state.filter((x) => !x._meta);
@@ -1863,6 +1991,13 @@ function _broadcastStud(io, roomId) {
 function _onStudShowdown(io, roomId) {
   const sr = studManager.getStudRoom(roomId);
   if (!sr) return;
+  // 二重呼び出し防止: 既に精算済みなら再実行しない
+  if (sr._onStudShowdownCalled) {
+    log(`[stud-showdown] ${roomId.slice(-8)} already called, skip`);
+    return;
+  }
+  sr._onStudShowdownCalled = true;
+  log(`[stud-showdown] ${roomId.slice(-8)} _onStudShowdown called`);
   // 精算確実化
   studManager.buildStudGameState(sr, null);
   // チップを gameManager のルームへ書き戻す（チップ連続性）
@@ -1877,7 +2012,41 @@ function _onStudShowdown(io, roomId) {
     tournamentManager.checkEliminations(roomId);
   }
   io.to(roomId).emit('showdown');
+  log(`[stud-showdown] ${roomId.slice(-8)} calling _scheduleAutoStart, pending=${_pendingAutoStart.has(roomId)}`);
+  // この showdown のハンド番号を記録。バックアップタイマー発火時に
+  // 「まだ同じハンドのまま（=次ハンドが始まっていない）」かを判定するために使う。
+  const _showdownHandCount = sr.handCount;
   _scheduleAutoStart(io, roomId);
+  // 【フリーズ防止バックアップ】_scheduleAutoStart が何らかの理由で次ハンドを
+  // 開始できなかった場合のための保険。ただし以下を厳密に確認してから発火する:
+  //   1. studRoom が依然 showdown/waiting（進行中のハンドを破壊しない）
+  //   2. handCount が showdown 時点から変わっていない（次ハンドが始まっていない）
+  // これを怠ると、既に始まった次ハンドを finishStudHand で強制終了してしまう
+  // （bet3rd 進行中に _tryAutoStart が呼ばれてハンドが飛ぶ二重起動バグ）。
+  setTimeout(() => {
+    const _sr2 = studManager.getStudRoom(roomId);
+    if (!_sr2) return;
+    // 判定ロジック:
+    // 1. srPhase が進行中（bet系・deal系）→ 絶対に介入しない（進行中ハンドを破壊しない）
+    // 2. handCount が増加 かつ srPhase が waiting/showdown →
+    //    次ハンドが始まったが完了して次が必要な状態 → _canSafelyRetryAutoStart で再チェック
+    // 3. handCount が同じ → showdown のまま固まっている → 介入が必要
+    //
+    // 【修正】handChanged=true だけではスキップしない。srPhase が進行中かどうかで判断する。
+    // 旧実装: handChanged=true ならスキップ → hand=N が完了して waiting になっても
+    //         スキップしてしまい次ハンドが始まらないフリーズが発生していた。
+    const _inProgress = _isStudHandInProgress(roomId);
+    log(`[stud-showdown-retry] ${roomId.slice(-8)} backup check: srPhase=${_sr2.phase} handCount=${_sr2.handCount}(was ${_showdownHandCount}) inProgress=${_inProgress} canRetry=${_canSafelyRetryAutoStart(roomId)}`);
+    if (_inProgress) {
+      log(`[stud-showdown-retry] ${roomId.slice(-8)} ハンド進行中 → スキップ`);
+      return;
+    }
+    // 共通ガード: 進行中ハンドの破壊を防ぎつつ、開始可能なら発火
+    if (_canSafelyRetryAutoStart(roomId)) {
+      log(`[stud-showdown-retry] ${roomId.slice(-8)} 次ハンド開始可能 → _tryAutoStart 発火`);
+      _tryAutoStart(io, roomId);
+    }
+  }, 7000);
 }
 
 function _broadcastLobbyUpdate(io, roomId) {

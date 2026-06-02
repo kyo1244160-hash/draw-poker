@@ -215,13 +215,20 @@ export default function TournamentDrawPage() {
       }
       // isSpectator 更新:
       //   - isSelf プレイヤーが見つかった場合は必ず false（spectate→lateReg参加後の観戦モード解除）
+      //   - isPendingPlayer=true の場合も false（次のハンドから参加予定）
       //   - isSelf が見つからず isSpectatorFlag=true の場合のみ true にする
+      // isSelf=true が含まれていれば必ず観戦モード解除（sittingOut=true でも）。
+      // isPendingPlayer=true も同様（次ハンドから参加予定）。
+      // isSpectatorFlag=true でも isSelf/pending があれば解除を優先する。
       const selfPlayer = pl?.find((p: PlayerState) => p.isSelf);
-      if (selfPlayer) {
-        setIsSpectator(false);  // プレイヤーとして参加中 → 観戦モード強制解除
-      } else if (isSpectatorFlag) {
+      const pendingPlayer = pl?.find((p: PlayerState) => p.isPendingPlayer);
+      if (selfPlayer || pendingPlayer) {
+        setIsSpectator(false);
+      } else if (isSpectatorFlag === true) {
+        // isSelf が一度も見つかっていない場合のみ観戦中にする
         setIsSpectator(true);
       }
+      // isSpectatorFlag が undefined（送信されていない）の場合は現状維持
       if (selfPlayer && !selfPlayer.isPendingPlayer) setPendingTransfer(null);
 
       // フォールバック: t:eliminated が届かなかった場合の脱落検出

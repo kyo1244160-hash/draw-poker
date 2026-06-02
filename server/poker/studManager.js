@@ -140,6 +140,10 @@ function startStudHand(room, onTimeout, opts = {}) {
   room.pot          = 0;
   room._potAwarded  = false;
   room._onTimeout   = onTimeout;
+  // 【恒久対応】showdown 後処理フラグをハンド開始時に必ずクリアする。
+  // finishStudHand 経由でないリセット（テーブル再作成・sync再構築）でも
+  // 確実にクリアされるよう、最も確実な startStudHand 先頭でも行う（二重保証）。
+  room._onStudShowdownCalled = false;
   // handCount: 呼び出し側で既に確定済みの場合は増やさない（モード基準統一のため）。
   // 単体テストや単独起動時は従来通りここで +1 する。
   if (!opts.skipHandCountIncrement) room.handCount += 1;
@@ -196,9 +200,15 @@ function startStudHand(room, onTimeout, opts = {}) {
     room.players[biIdx].mustBringIn = true; // まだポストしていない（選択待ち）
   }
 
-  // ポジション記録（スタッドはブリングインが起点、ボタンは便宜上ブリングイン者）
+  // ポジション記録
+  // 【ディーラーボタン仕様】スタッド系でもドロー系と同じく1ハンドごとにボタンを次のプレイヤーへ移動する。
+  // ボタンが1周したらゲームチェンジ（モード変更）の目安となる。
+  // fixedDealerIdx はボタン表示用（ゲーム中に変わらない固定値）。
+  // dealerIndex はタイマー起点等に使うが biIdx（ブリングイン者）を設定。
+  // ブリングインとボタンは独立: ボタン移動はgameManager側で行われ syncFromGameManager で引き継ぐ。
+  // （syncFromGameManager 呼び出し前に gameManager.dealerIndex が +1 済み）
+  room.fixedDealerIdx = room.dealerIndex >= 0 ? room.dealerIndex : biIdx;
   room.dealerIndex    = biIdx;
-  room.fixedDealerIdx = biIdx;
   room.bringInIndex   = biIdx;
 
   // acted 初期化
@@ -812,6 +822,21 @@ function handleStudTimeout(roomId, socketId) {
  *
  * @returns {boolean} リセットを実行したら true
  */
+/**
+ * タイムアウトが完全に失敗した場合（playerId が見つからない等）の
+ * 緊急フェーズ強制進行。_advanceBetAction 相当だが、全員 acted 扱いで
+ * 次フェーズへ移行させる。
+ */
+function forceAdvancePhase(roomId) {
+  const room = studRooms.get(roomId);
+  if (!room) return;
+  if (room.phase === 'showdown' || room.phase === 'waiting') return;
+  log(`[stud-force] forceAdvancePhase roomId=${roomId.slice(-8)} phase=${room.phase}`);
+  // 全員 acted=true にして _advanceBetAction を呼ぶ
+  for (const p of room.players) p.acted = true;
+  _advanceBetAction(room);
+}
+
 function finishStudHand(roomId) {
   const room = studRooms.get(roomId);
   if (!room) return false;
@@ -826,6 +851,7 @@ function finishStudHand(roomId) {
   room.actionIndex = -1;
   room.currentBet  = 0;
   room.raiseCount  = 0;
+  room._onStudShowdownCalled = false;  // 次ハンドに備えてリセット
   return true;
 }
 
@@ -915,8 +941,21 @@ function syncFromGameManager(gmRoom, currentMode) {
   const _pendingCount = gmRoom.pendingPlayers?.length ?? 0;
   if (_pendingCount > 0) {
     log(`[stud-sync] ${gmRoom.id.slice(-8)} pendingPlayers ${_pendingCount}人を昇格: [${gmRoom.pendingPlayers.map(p => p.name).join(',')}]`);
-    // gameManager 側でも昇格させて players/pendingPlayers の一貫性を保つ
+    // gameManager 側でも昇格させて players/pendingPlayers の一貫性を保つ。
+    // 【遅延参加フリーズ修正】pendingPlayers から昇格したプレイヤーは
+    // 「このハンドには参加できない」状態のため sittingOut=true にする。
+    // sittingOut=true であれば startStudHand で folded=true / acted=true となり
+    // _advanceBetAction の手番から除外される。
+    // 次ハンド開始時に _tryAutoStart 内の sittingOut リセット処理で
+    // sittingOut=false になり、正式参加となる。
     for (const pp of gmRoom.pendingPlayers) {
+      // 【_waitZoneSkip】pendingPlayersから来たプレイヤーは「このハンドは待機、
+      // 次ハンドから参加」を示す _waitZoneSkip=true をセットする。
+      // これにより _tryAutoStart のsittingOutリセット（L1656）でスキップされ、
+      // 今ハンドは sittingOut=true のままになる。
+      // ドロー系の gameManager.startGame と同じ仕組みを流用する。
+      pp.sittingOut    = true;
+      pp._waitZoneSkip = true;  // 次ハンドのリセット時に false に戻る
       if (!gmRoom.players.some(p => p.id === pp.id)) gmRoom.players.push(pp);
     }
     gmRoom.pendingPlayers = [];
@@ -930,10 +969,18 @@ function syncFromGameManager(gmRoom, currentMode) {
     disconnected: gp.disconnected ?? false,
     isBot:      gp.isBot ?? false,
     accountId:  gp.accountId ?? null,
-    // スタッド用フィールドは startStudHand で初期化される
-    cards: [], faceUp: [], bet: 0, folded: false, acted: false,
+    // スタッド用フィールドは startStudHand で初期化される。
+    // ただし sittingOut=true のプレイヤー（pendingPlayers 昇格者）は
+    // 進行中ハンドで手番を回されないよう folded=true/acted=true を先行設定。
+    cards: [], faceUp: [], bet: 0,
+    folded: !!gp.sittingOut, acted: !!gp.sittingOut,
     totalContribution: 0, isBringIn: false, mustBringIn: false,
   }));
+
+  // gameManager 側で既に +1 移動済みの dealerIndex を引き継ぐ。
+  // startStudHand で fixedDealerIdx = room.dealerIndex として使われるため、
+  // ここで正しく設定しておくことでボタンが毎ハンド次のプレイヤーへ移動する。
+  room.dealerIndex = gmRoom.dealerIndex ?? -1;
 
   return room;
 }
@@ -1052,6 +1099,7 @@ module.exports = {
   buildStudGameState,
   handleStudTimeout,
   finishStudHand,
+  forceAdvancePhase,
   studLeaveRoom,
   syncFromGameManager,
   syncToGameManager,
