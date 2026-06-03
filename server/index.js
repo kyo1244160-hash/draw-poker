@@ -1920,16 +1920,19 @@ function _broadcastStud(io, roomId) {
   // isSelf=true のプレイヤーが含まれ、クライアントの観戦中フラグが解除される。
   const _gmRoomForPending = getRoom(roomId);
   if (_gmRoomForPending?.pendingPlayers?.length > 0) {
+    const _studPlayerIds = new Set(room.players.map((p) => p.id));
+    log(`[pending-broadcast] ${roomId.slice(-8)} pendingPlayers=${_gmRoomForPending.pendingPlayers.map(p=>p.name).join(',')}`);
     for (const pp of _gmRoomForPending.pendingPlayers) {
+      // 既に studRoom.players に含まれているなら上のループで送信済み → スキップ（二重送信防止）
+      if (_studPlayerIds.has(pp.id)) continue;
       const s = io.sockets.sockets.get(pp.id);
+      log(`[pending-broadcast] ${roomId.slice(-8)} ${pp.name} id=${pp.id.slice(-8)} socket=${s ? 'found' : 'NOT_FOUND'}`);
       if (!s) continue;
-      // buildStudGameState に pendingPlayer の socket.id を渡して isSelf=true を生成する。
-      // studRoom.players には含まれていないが、isPendingPlayer フラグで待機中として表示。
-      // この状態では isSelf プレイヤーが返らないため、独自のプレイヤー情報を追加する。
+      // buildStudGameState に null を渡してベース状態（全員 isSelf=false）を作り、
+      // pendingPlayer 自身のエントリ（isSelf=true, isPendingPlayer=true）を追加する。
       const _baseState = studManager.buildStudGameState(room, null);
       const _baseMeta  = _baseState.find((x) => x._meta);
       const _basePlayers = _baseState.filter((x) => !x._meta);
-      // 自プレイヤーとして pending エントリを追加（待機中として表示）
       const _selfEntry = {
         id: pp.id, name: pp.name, chips: pp.chips ?? 0,
         isSelf: true, isPendingPlayer: true,

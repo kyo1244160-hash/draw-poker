@@ -133,6 +133,16 @@ function ensureStudRoom(roomId, sharedRoom) {
  * @param {function} onTimeout タイムアウトコールバック (roomId, phase, socketId)
  */
 function startStudHand(room, onTimeout, opts = {}) {
+  // 【最重要・順序保証】_studWaitOnce（lateReg参加者の待機フラグ）の処理は
+  // activePlayers 計算より前に行う。後で行うと activePlayers に既に含まれて
+  // しまい、待機させたいプレイヤーにカードが配られ手番が回ってフリーズする。
+  for (const p of room.players) {
+    if (p._studWaitOnce) {
+      p.sittingOut    = true;
+      p._studWaitOnce = false;  // 次ハンドからは通常参加
+    }
+  }
+
   const activePlayers = room.players.filter((p) => !p.sittingOut);
   if (activePlayers.length < 2) return null;
 
@@ -832,8 +842,23 @@ function forceAdvancePhase(roomId) {
   if (!room) return;
   if (room.phase === 'showdown' || room.phase === 'waiting') return;
   log(`[stud-force] forceAdvancePhase roomId=${roomId.slice(-8)} phase=${room.phase}`);
-  // 全員 acted=true にして _advanceBetAction を呼ぶ
-  for (const p of room.players) p.acted = true;
+  // 【ポット整合性保護】currentBet に満たない（コール未了の）プレイヤーは
+  // フォールド扱いにする。単に acted=true にするだけだと、ベット不一致のまま
+  // 次フェーズ／ショーダウンに進み、サイドポット計算が壊れる恐れがある。
+  for (const p of room.players) {
+    if (p.folded || p.sittingOut) { p.acted = true; continue; }
+    // mustBringIn のプレイヤーが残っている場合、ブリングイン未徴収のまま進むと
+    // ポット不整合になる。強制脱出時はそのプレイヤーを fold 扱いにする
+    // （通常は handleStudTimeout が手前でブリングインを自動ポストするためここには来ない）。
+    if (p.mustBringIn) {
+      log(`[stud-force] WARN: ${p.name} は mustBringIn 未処理のまま強制fold（異常脱出）`);
+      p.folded = true;
+    } else if ((p.bet ?? 0) < (room.currentBet ?? 0)) {
+      // コール未了 → フォールド（強制脱出時の安全側処理）
+      p.folded = true;
+    }
+    p.acted = true;
+  }
   _advanceBetAction(room);
 }
 
@@ -949,16 +974,25 @@ function syncFromGameManager(gmRoom, currentMode) {
     // 次ハンド開始時に _tryAutoStart 内の sittingOut リセット処理で
     // sittingOut=false になり、正式参加となる。
     for (const pp of gmRoom.pendingPlayers) {
-      // 【_waitZoneSkip】pendingPlayersから来たプレイヤーは「このハンドは待機、
-      // 次ハンドから参加」を示す _waitZoneSkip=true をセットする。
-      // これにより _tryAutoStart のsittingOutリセット（L1656）でスキップされ、
-      // 今ハンドは sittingOut=true のままになる。
-      // ドロー系の gameManager.startGame と同じ仕組みを流用する。
+      // lateReg参加者は「次のstartStudHand開始まで待機」を _studWaitOnce で管理。
+      // _studWaitOnce は startStudHand 冒頭で一度だけ適用・クリアされる（確実）。
+      // _waitZoneSkip は使わない（_tryAutoStart のリセットループと二重管理になり
+      // hand=N+1 でも待機が継続してしまうバグの原因になるため）。
       pp.sittingOut    = true;
-      pp._waitZoneSkip = true;  // 次ハンドのリセット時に false に戻る
+      pp._studWaitOnce = true;
       if (!gmRoom.players.some(p => p.id === pp.id)) gmRoom.players.push(pp);
     }
     gmRoom.pendingPlayers = [];
+  }
+
+  // _studWaitOnce を studRoom へ引き継ぐための退避と、gmRoom 側のクリアを
+  // map() の外で行う（map コールバック内で外部オブジェクトを変更する副作用を避ける）。
+  // gmRoom 側を残したままだと次回 syncFromGameManager で再び待機扱いになり、
+  // 永久に参加できなくなるため、退避後に必ずクリアする。
+  const _waitOnceById = new Map();
+  for (const gp of gmRoom.players) {
+    _waitOnceById.set(gp.id, !!gp._studWaitOnce);
+    gp._studWaitOnce = false;
   }
 
   room.players = gmRoom.players.map((gp) => ({
@@ -969,6 +1003,7 @@ function syncFromGameManager(gmRoom, currentMode) {
     disconnected: gp.disconnected ?? false,
     isBot:      gp.isBot ?? false,
     accountId:  gp.accountId ?? null,
+    _studWaitOnce: _waitOnceById.get(gp.id) ?? false,
     // スタッド用フィールドは startStudHand で初期化される。
     // ただし sittingOut=true のプレイヤー（pendingPlayers 昇格者）は
     // 進行中ハンドで手番を回されないよう folded=true/acted=true を先行設定。
@@ -1006,11 +1041,16 @@ function syncToGameManager(gmRoom) {
     if (p.accountId) chipByAccount.set(p.accountId, p.chips);
     if (p.id)        chipById.set(p.id, p.chips);
   }
+  // pendingPlayers（次ハンドから参加する待機者）のidセット。
+  // これらは studRoom にまだ存在しなくて当然なので WARN を出さない。
+  const _pendingIds = new Set((gmRoom.pendingPlayers ?? []).map((p) => p.id));
   for (const gp of gmRoom.players) {
     if (gp.accountId && chipByAccount.has(gp.accountId)) {
       gp.chips = chipByAccount.get(gp.accountId);
     } else if (chipById.has(gp.id)) {
       gp.chips = chipById.get(gp.id);
+    } else if (_pendingIds.has(gp.id) || gp._studWaitOnce) {
+      // lateReg 待機中（このハンドには不参加）→ studRoom にいなくて正常。WARN不要。
     } else {
       // どちらでも一致しない = 同期漏れ。チップを破壊しないよう警告だけ出して既存値を保持。
       log(`[stud-sync] WARN: ${gp.name} (id=${String(gp.id).slice(-8)}, accId=${gp.accountId}) not found in studRoom — chips left as ${gp.chips}`);
