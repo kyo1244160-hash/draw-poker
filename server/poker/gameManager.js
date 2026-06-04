@@ -373,22 +373,17 @@ function joinRoom(roomId, socketId, name, opts = {}) {
 
   room.players.push(newPlayer);
 
-  // RRoP Rule 16: テーブルバランシングで移動してきたプレイヤーの待機ゾーン判定
-  // 待機ゾーン = BTN席〜SB席（両端含む）。BB席以降は即参加。
-  // showdown・waiting いずれのフェーズでも適用（waitingはdealer/SBを前ハンドから引き継ぐ）
-  // ヘッズアップ（2人以下）はBTN=SBのため待機ゾーンなし
-  // レイトレジストプレイヤーもバランシング移動と同じRRoP Rule 16を適用
-  // BOT（tbot::プレフィックス）は RRoP Rule 16 を適用しない。
-  // BOT が waitZone になると startGame が null を返し続けてゲームが開始しないため。
+  // 【デッドボタン】新規/移動プレイヤーが次ハンドで SB または BTN 位置に就く場合のみ
+  // 1ハンド待機させる（トーナメント正式ルール: SB席・BTN席の新規はボタン通過まで待つ。
+  // BB席はBBを払って即参加、UTG〜COも即参加）。BB基準のブラインド進行（assignBlindsByBB）
+  // により、配列末尾に追加される通常の新規は SB/BTN に就かず、即参加（BB位置ならBB負担）となる。
+  // これにより「6人目がSBで入る」「同じ人が連続BB」の両方が発生しない。
+  // ヘッズアップ（2人以下）はBTN=SBのため待機なし。BOTは待機させない
+  // （BOTが待機すると人数不足でゲームが開始しなくなるため）。
   const _isBot = typeof socketId === 'string' && socketId.startsWith('tbot::');
   if (!_isBot && room.dealerIndex >= 0 && room.players.length > 2) {
-    const n         = room.players.length;
-    const myIdx     = n - 1;
-    // ハンド中（showdown含む）は固定ポジションを使用。waiting中はdealerIndexから算出
-    const dealerRef = room.fixedDealerIdx >= 0 ? room.fixedDealerIdx : room.dealerIndex;
-    const sbRef     = room.fixedSbIdx     >= 0 ? room.fixedSbIdx
-                    : _nextActiveFromSafe(room, dealerRef);
-    if (_isInRRoPWaitZone(myIdx, dealerRef, sbRef, n)) {
+    const myIdx = room.players.length - 1;
+    if (_shouldWaitForButton(room, myIdx)) {
       newPlayer.sittingOut    = true;
       newPlayer._waitZoneSkip = true;  // startGame でのリセット対象フラグ
     }
@@ -486,23 +481,38 @@ function startGame(roomId, onTimeout) {
   const isHeadsUp = activePlayers.length === 2;
 
   let sbIndex, bbIndex;
+  let sbDead = false;
   if (isHeadsUp) {
-    // ヘッズアップ: dealer = BTN = SB
+    // ヘッズアップ特例: dealer = BTN = SB。BB基準ロジックは使わない。
+    // ボタンは advanceDealerButton（468行）で前進済み。
     sbIndex = room.dealerIndex;
     bbIndex = _nextActiveFromSafe(room, sbIndex);
   } else {
-    // 通常: dealer の左隣が SB
-    sbIndex = _nextActiveFromSafe(room, room.dealerIndex);
-    bbIndex = _nextActiveFromSafe(room, sbIndex);
+    // 【デッドボタン / BB基準】連続BB禁止・トーナメント正式ルール。
+    // 前ハンドBBを基準に BB/SB/BTN を前進させる（assignBlindsByBB）。
+    // これにより新規プレイヤーが配列末尾に追加されても BB が必ず前進し、
+    // 同じプレイヤーが2ハンド連続でBBを払うことがなくなる。また新規は
+    // 次ハンドで BB位置かそれ以降にしか就かず、SB/BTN位置に割り込まない。
+    const blinds   = assignBlindsByBB(room);
+    room.dealerIndex = blinds.dealerIndex;
+    sbIndex = blinds.sbIndex;
+    bbIndex = blinds.bbIndex;
+    sbDead  = blinds.sbDead;
   }
-  _postBlind(room, sbIndex, room.smallBlind);
+  // dead SB（SB席が待機中/不在）の場合は SB をポストしない。
+  if (!sbDead) _postBlind(room, sbIndex, room.smallBlind);
   _postBlind(room, bbIndex, room.bigBlind);
+
+  // 次ハンドの BB基準計算のために、今ハンドの BB/SB プレイヤーIDを記録。
+  room._lastBbId = room.players[bbIndex]?.id ?? null;
+  room._lastSbId = room.players[sbIndex]?.id ?? null;
 
   // ゲーム中に変わらない固定ポジションを記録
   room.fixedDealerIdx = room.dealerIndex;
   room.fixedSbIdx     = sbIndex;
   room.fixedBbIdx     = bbIndex;
   room.isHeadsUp      = isHeadsUp;
+  room._sbDead        = sbDead;
 
   // bet0（プリドロー）フェーズへ
   // 通常: UTG (BB の左隣) から開始し、最後に BB が option を持つ
@@ -565,6 +575,92 @@ function _nextActiveFromSafe(room, fromIndex) {
 }
 
 /**
+ * 前のアクティブプレイヤーのインデックスを安全に返す（反時計回り）。
+ * デッドボタン方式で BB から SB / BTN を逆算するために使う。
+ */
+function _prevActiveFromSafe(room, fromIndex) {
+  const len = room.players.length;
+  if (len === 0) return 0;
+  const start = ((fromIndex % len) + len) % len;
+  let prev = (start - 1 + len) % len;
+  for (let t = 0; t < len; t++) {
+    const p = room.players[prev];
+    if (p && !p.folded && !p.sittingOut) return prev;
+    prev = (prev - 1 + len) % len;
+  }
+  return prev;
+}
+
+/**
+ * 【デッドボタン / BB基準】SB・BB・BTN のインデックスを決定する共通関数。
+ *
+ * トーナメントの正式ルール（連続BB禁止・デッドボタン）に従い、
+ * 「前ハンドのBBプレイヤー」を基準に毎ハンド前進させる:
+ *   - 新BB  = 前BBプレイヤーの次のアクティブ（必ず前進 → 連続BB発生しない）
+ *   - 新SB  = 前BBプレイヤーの席（その席が非アクティブ＝待機/不在なら dead SB）
+ *   - 新BTN = 前SBプレイヤーの席（不在なら反時計回りで近いアクティブ＝dead button相当）
+ *
+ * 前BB情報（_lastBbId）が無い初回や、前BBが脱落して位置が追えない場合は
+ * 従来のボタン方式（dealerIndex 起点）で初期化する。以降は BB基準で回る。
+ *
+ * ヘッズアップ（アクティブ2人）は呼び出し側で別処理するためここでは扱わない。
+ *
+ * @returns {{ dealerIndex:number, sbIndex:number, bbIndex:number, sbDead:boolean }}
+ */
+function assignBlindsByBB(room) {
+  const players = room.players;
+  // 前ハンドBBの現在位置（脱落・並び替えに強いよう ID で照合）
+  let prevBbIdx = -1;
+  if (room._lastBbId != null) {
+    prevBbIdx = players.findIndex((p) => p.id === room._lastBbId);
+  }
+
+  let bbIndex, sbIndex, dealerIndex;
+
+  if (prevBbIdx < 0) {
+    // 初回 or 前BB脱落: 従来方式（dealerIndex は呼び出し前に advanceDealerButton 済み）
+    sbIndex     = _nextActiveFromSafe(room, room.dealerIndex);
+    bbIndex     = _nextActiveFromSafe(room, sbIndex);
+    dealerIndex = room.dealerIndex;
+  } else {
+    // BB基準: 新BB=前BBの次のアクティブ
+    bbIndex = _nextActiveFromSafe(room, prevBbIdx);
+    // 新SB=前BBの席（旧BB席）。そこが sittingOut/folded なら dead SB だが席基準は維持。
+    sbIndex = prevBbIdx;
+    // 新BTN=前SBの席（_lastSbId）。脱落していれば SB の手前のアクティブで代替。
+    let prevSbIdx = -1;
+    if (room._lastSbId != null) prevSbIdx = players.findIndex((p) => p.id === room._lastSbId);
+    dealerIndex = prevSbIdx >= 0 ? prevSbIdx : _prevActiveFromSafe(room, sbIndex);
+  }
+
+  // SB席が実際にSBを払えるか（dead SB 判定）: そのプレイヤーが非アクティブなら dead
+  const sbP = players[sbIndex];
+  const sbDead = !(sbP && !sbP.sittingOut && !sbP.folded);
+
+  return { dealerIndex, sbIndex, bbIndex, sbDead };
+}
+
+/**
+ * 【デッドボタン一貫性】BBアンカー（_lastBbId / _lastSbId）を1つ前進させる。
+ *
+ * スタッド系ハンド（ブラインドではなくアンティ＋ブリングイン）は startGame を
+ * 通らないため、ミックスゲームでスタッドを挟むとドロー系のブラインド順が止まって
+ * しまう。スタッドハンド成立時にこの関数を呼ぶことで、ボタンと同様に BBアンカーも
+ * 毎ハンド前進し、ドロー系に戻ったときブラインドが正しい位置から再開する。
+ *
+ * 前BBが脱落して位置を追えない場合は何もしない（次のドロー系ハンドで従来の
+ * ボタン方式により再初期化される）。
+ */
+function advanceBbAnchor(room) {
+  if (!room || room._lastBbId == null) return;
+  const curIdx = room.players.findIndex((p) => p.id === room._lastBbId);
+  if (curIdx < 0) return;
+  const nextIdx = _nextActiveFromSafe(room, curIdx);
+  room._lastSbId = room._lastBbId;                       // 旧BB → 次ハンドのSB基準
+  room._lastBbId = room.players[nextIdx]?.id ?? room._lastBbId;
+}
+
+/**
  * RRoP Rule 16: テーブルバランシングで移動してきたプレイヤーの待機ゾーン判定
  *
  * 待機ゾーン = clockwise で dealerIdx（BTN）から sbIdx（SB）まで（両端含む）
@@ -583,6 +679,36 @@ function _isInRRoPWaitZone(myIdx, dealerIdx, sbIdx, n) {
     // 巻き戻しあり: [dealerIdx, ..., n-1, 0, ..., sbIdx]
     return myIdx >= dealerIdx || myIdx <= sbIdx;
   }
+}
+
+/**
+ * 【デッドボタン対応】新規/移動プレイヤーが「次ハンドで SB または BTN 位置」に
+ * 就くかを判定する。就く場合は1ハンド待機させ、ボタン通過後（CO相当以降）に
+ * 参加させる（トーナメント正式ルール: SB席・BTN席の新規はボタン通過まで待つ）。
+ *
+ * BB基準（assignBlindsByBB と同じ前進規則）で次ハンドの SB/BTN を求める:
+ *   次SB  = 前BB席, 次BTN = 前SB席
+ * 新規は通常、配列末尾に追加されるため SB/BTN（既存プレイヤーの席）には就かず、
+ * この関数は false を返す（＝BB位置かそれ以降で即参加）。テーブルバランシングで
+ * 特定席に挿入される稀なケースでのみ true（待機）になる。
+ */
+function _shouldWaitForButton(room, newIdx) {
+  let prevBbIdx = -1;
+  if (room._lastBbId != null) {
+    prevBbIdx = room.players.findIndex((p) => p.id === room._lastBbId);
+  }
+  if (prevBbIdx < 0) {
+    // 初回 or 前BB不明: 従来のボタン方式で SB/BTN を推定
+    const dealerRef = room.fixedDealerIdx >= 0 ? room.fixedDealerIdx : room.dealerIndex;
+    const sbRef     = room.fixedSbIdx     >= 0 ? room.fixedSbIdx
+                    : _nextActiveFromSafe(room, dealerRef);
+    return newIdx === dealerRef || newIdx === sbRef;
+  }
+  const nextSbIdx = prevBbIdx;  // 次SB = 前BB席
+  let prevSbIdx = -1;
+  if (room._lastSbId != null) prevSbIdx = room.players.findIndex((p) => p.id === room._lastSbId);
+  const nextBtnIdx = prevSbIdx >= 0 ? prevSbIdx : _prevActiveFromSafe(room, nextSbIdx);
+  return newIdx === nextSbIdx || newIdx === nextBtnIdx;
 }
 
 function _resetDrawRound(room) {
@@ -1480,7 +1606,7 @@ module.exports = {
   ensurePotsAwarded,
   // モード判定（他モジュールから共有利用するため公開）
   isNoLimitMode, isMixMode, isStudMode, peekNextMode, getMixCurrentMode,
-  advanceModeRotation, advanceDealerButton, getMixSequence,
+  advanceModeRotation, advanceDealerButton, advanceBbAnchor, assignBlindsByBB, getMixSequence,
   STUD_MODES,
   STARTING_CHIPS, SMALL_BLIND, BIG_BLIND, SMALL_BET, BIG_BET, MAX_PLAYERS,
 };

@@ -49,7 +49,7 @@ const {
   incrementTimeout, resetTimeout,
   getRoomMode, getRoom, ensurePotsAwarded,
   isStudMode, isMixMode, getMixCurrentMode, advanceModeRotation, peekNextMode,
-  advanceDealerButton,
+  advanceDealerButton, advanceBbAnchor,
 } = require('./poker/gameManager');
 
 const studManager = require('./poker/studManager');
@@ -1679,6 +1679,10 @@ function _tryAutoStart(io, roomId) {
     studRoom.handCount = _gmRoom.handCount;
     const started = studManager.startStudHand(studRoom, _makeStudTimeoutHandler(io, roomId), { skipHandCountIncrement: true });
     if (started) {
+      // 【デッドボタン一貫性】スタッドハンド成立時にBBアンカーも前進させる。
+      // ミックスでドロー系に戻ったとき、スタッドを挟んだ分ブラインド順が進み、
+      // 同じプレイヤーが連続BBになるのを防ぐ（ボタンと同様に毎ハンド前進）。
+      advanceBbAnchor(_gmRoom);
       const _dbgPlayers = studRoom.players.map(p => `${p.name}(so=${p.sittingOut},fd=${p.folded},act=${p.acted})`).join(',');
       log(`[stud] startStudHand SUCCESS roomId=${roomId.slice(-8)} mode=${nextMode} players=${studRoom.players.length} handCount=${studRoom.handCount}`);
       log(`[stud-players] ${roomId.slice(-8)}: ${_dbgPlayers}`);

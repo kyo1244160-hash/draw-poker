@@ -605,6 +605,92 @@ test('Razz: A♠保持者は単独では絶対にBIにならない（002回帰�
 });
 
 
+// ============================================================
+// デッドボタン / 連続BB禁止（009回帰）
+//   トーナメント正式ルール: 同じプレイヤーが2ハンド連続でBBを払わない。
+//   新規プレイヤー(末尾追加)が割り込んでもBBは必ず前進する。
+// ============================================================
+function makeDrawRoom(names) {
+  return {
+    players: names.map((nm) => ({
+      id: 'id-' + nm, name: nm, chips: 1000, bet: 0,
+      sittingOut: false, folded: false, totalContribution: 0,
+    })),
+    _lastBbId: null, _lastSbId: null,
+    dealerIndex: 0, fixedDealerIdx: -1, fixedSbIdx: -1,
+  };
+}
+// startGame が行う「ブラインド確定後の記録」を模した1ハンド進行
+function playDrawHand(room) {
+  const r = gm.assignBlindsByBB(room);
+  room.dealerIndex = r.dealerIndex;
+  room._lastBbId = room.players[r.bbIndex]?.id ?? null;
+  room._lastSbId = room.players[r.sbIndex]?.id ?? null;
+  return {
+    btn: room.players[r.dealerIndex]?.name,
+    sb:  room.players[r.sbIndex]?.name,
+    bb:  room.players[r.bbIndex]?.name,
+    sbDead: r.sbDead,
+  };
+}
+
+test('009: 5人→6人参加で同じプレイヤーが連続BBにならない（全dealer位置）', () => {
+  for (let startDealer = 0; startDealer < 5; startDealer++) {
+    const room = makeDrawRoom(['A', 'B', 'C', 'D', 'E']);
+    room.dealerIndex = startDealer;
+    const hN = playDrawHand(room);            // 5人で1ハンド
+    // 6人目 F が末尾参加
+    room.players.push({ id: 'id-F', name: 'F', chips: 1000, bet: 0, sittingOut: false, folded: false });
+    const hN1 = playDrawHand(room);           // 6人で次ハンド
+    assert.notStrictEqual(hN1.bb, hN.bb,
+      `dealer=${startDealer}: BBが連続 (${hN.bb}→${hN1.bb})`);
+    // 新規Fは SB位置に割り込まない（BB位置 or それ以降のみ）
+    assert.notStrictEqual(hN1.sb, 'F',
+      `dealer=${startDealer}: 新規FがSBで入ってはいけない`);
+  }
+});
+
+test('009: BBは毎ハンド必ず次のプレイヤーへ前進する（長期ローテーション）', () => {
+  const room = makeDrawRoom(['A', 'B', 'C', 'D', 'E', 'F']);
+  room.dealerIndex = 0;
+  const seq = [];
+  for (let h = 0; h < 12; h++) seq.push(playDrawHand(room).bb);
+  for (let i = 1; i < seq.length; i++) {
+    assert.notStrictEqual(seq[i], seq[i - 1], `hand${i}: BB連続 (${seq.join('→')})`);
+  }
+});
+
+test('009: 新規がBB位置に来る場合はBBを払って即参加できる', () => {
+  // BBアンカーを Eに設定 → 次BBは Eの次。Fを「Eの次」に当たる位置(末尾)に置く。
+  const room = makeDrawRoom(['A', 'B', 'C', 'D', 'E']);
+  room.dealerIndex = 2;            // BTN=C, SB=D, BB=E
+  const hN = playDrawHand(room);
+  assert.strictEqual(hN.bb, 'E', `前提: hand N の BB=E (実際=${hN.bb})`);
+  room.players.push({ id: 'id-F', name: 'F', chips: 1000, bet: 0, sittingOut: false, folded: false });
+  const hN1 = playDrawHand(room);  // 次BB = Eの次 = F
+  assert.strictEqual(hN1.bb, 'F', `新規FがBB位置で参加するはず (実際=${hN1.bb})`);
+});
+
+test('009: advanceBbAnchor でスタッドを挟んでもBBが前進する', () => {
+  const room = makeDrawRoom(['A', 'B', 'C', 'D', 'E']);
+  room.dealerIndex = 0;
+  const hN = playDrawHand(room);          // 例: BB=C
+  gm.advanceBbAnchor(room);               // スタッドハンド相当（BBアンカー前進）
+  const hN2 = playDrawHand(room);         // ドロー復帰
+  // スタッドを1ハンド挟んだので、BBはCの「2つ次」へ進む（連続しない・1つ飛ぶ）
+  assert.notStrictEqual(hN2.bb, hN.bb, 'スタッドを挟んでもBBが連続してはいけない');
+});
+
+test('009: ヘッズアップ（2人）は従来通り BTN=SB で動作', () => {
+  // assignBlindsByBB はヘッズアップを扱わない（呼び出し側で別処理）。
+  // ここでは BB基準が2人でも破綻しないこと（bb≠sb）を確認。
+  const room = makeDrawRoom(['A', 'B']);
+  room.dealerIndex = 0;
+  const r = gm.assignBlindsByBB(room);
+  assert.notStrictEqual(r.bbIndex, r.sbIndex, '2人でもBBとSBは別席');
+});
+
+
 console.log(`テスト結果: ${passed} passed, ${failed} failed`);
 console.log(`========================================`);
 
