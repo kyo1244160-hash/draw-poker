@@ -3,11 +3,12 @@
  *
  * キャッシュ戦略:
  *   - ナビゲーションリクエスト: Network First（常に最新を取得）
- *   - 静的アセット（JS/CSS/画像）: Cache First（高速表示）
+ *   - 静的アセット（画像/manifest）: Cache First（高速表示）
+ *   - Next.js build assets（/_next/）: キャッシュなし（デプロイ後の古いJS残留を防止）
  *   - Socket.IO: キャッシュなし（リアルタイム通信）
  */
 
-const CACHE_NAME = 'pastis-v1';
+const CACHE_NAME = 'pastis-v2';
 const STATIC_ASSETS = [
   '/',
   '/manifest.json',
@@ -38,8 +39,12 @@ self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // Socket.IO / API はキャッシュしない
-  if (url.pathname.startsWith('/socket.io') || url.pathname.startsWith('/api/')) return;
+  // Socket.IO / API / Next.js build assets はキャッシュしない
+  if (
+    url.pathname.startsWith('/socket.io') ||
+    url.pathname.startsWith('/api/') ||
+    url.pathname.startsWith('/_next/')
+  ) return;
 
   // HTML ナビゲーション: Network First
   if (request.mode === 'navigate') {
