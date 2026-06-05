@@ -508,6 +508,11 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
     const clampedAmt = Math.max(lowerBound, Math.min(maxBet, currentAmt));
 
     const bigBlind = meta.bigBlind ?? minBet;
+    const sliderUnit = Math.max(1, bigBlind);
+    const sliderSteps = Math.max(1, Math.ceil((maxBet - lowerBound) / sliderUnit));
+    const sliderValue = clampedAmt >= maxBet
+      ? sliderSteps
+      : Math.max(0, Math.min(sliderSteps, Math.round((clampedAmt - lowerBound) / sliderUnit)));
     const isPreDrawBet = meta.phase === 'bet0';
     const quickAmounts: { label: string; value: number }[] = (isPreDrawBet
       ? [
@@ -542,8 +547,11 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
         </div>
         {/* スライダー + 値表示 */}
         <div style={{display:'flex',alignItems:'center',gap:compact?4:6}}>
-          <input type="range" min={lowerBound} max={maxBet} step={1}
-            value={clampedAmt} onChange={(e) => setNlBetAmount(Number(e.target.value))}
+          <input type="range" min={0} max={sliderSteps} step={1}
+            value={sliderValue} onChange={(e) => {
+              const stepIndex = Number(e.target.value);
+              setNlBetAmount(stepIndex >= sliderSteps ? maxBet : Math.min(maxBet, lowerBound + stepIndex * sliderUnit));
+            }}
             style={{flex:1, accentColor:'var(--gold)', height:compact?12:14}} />
           <span style={{fontSize:compact?11:13, fontWeight:600, color:'var(--gold-bright)',
             minWidth:compact?40:50, textAlign:'right' as const,

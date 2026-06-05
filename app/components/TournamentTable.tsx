@@ -492,6 +492,11 @@ export default function TournamentTable({
     const currentAmt = nlBetAmount ?? lowerBound;
     const clampedAmt = Math.max(lowerBound, Math.min(maxBet, currentAmt));
     const bigBlind = meta?.bigBlind ?? minBet;
+    const sliderUnit = Math.max(1, bigBlind);
+    const sliderSteps = Math.max(1, Math.ceil((maxBet - lowerBound) / sliderUnit));
+    const sliderValue = clampedAmt >= maxBet
+      ? sliderSteps
+      : Math.max(0, Math.min(sliderSteps, Math.round((clampedAmt - lowerBound) / sliderUnit)));
     const isPreDrawBet = meta?.phase === 'bet0';
     const quickAmounts = (isPreDrawBet
       ? [
@@ -523,9 +528,12 @@ export default function TournamentTable({
           ))}
         </div>
         <div style={{display:'flex',alignItems:'center',gap:compact?4:6}}>
-          <input type="range" min={lowerBound} max={maxBet}
+          <input type="range" min={0} max={sliderSteps}
             step={1}
-            value={clampedAmt} onChange={(e) => setNlBetAmount(Number(e.target.value))}
+            value={sliderValue} onChange={(e) => {
+              const stepIndex = Number(e.target.value);
+              setNlBetAmount(stepIndex >= sliderSteps ? maxBet : Math.min(maxBet, lowerBound + stepIndex * sliderUnit));
+            }}
             style={{flex:1, accentColor:'#c9a84c', height:compact?12:14}} />
           <span style={{fontSize:compact?11:13, fontWeight:600, color:'#e8d5a0',
             minWidth:compact?40:50, textAlign:'right' as const,
@@ -933,11 +941,11 @@ export default function TournamentTable({
       const selfTop = TH_M - SELF_H - selfActionGap;
       const outerBleed = Math.min(12, Math.max(6, TW_M * 0.03));
       const slotTop = [
-        TH_M * 0.43,
+        TH_M * 0.46,
         TH_M * 0.22,
         TH_M * 0.025,
         TH_M * 0.22,
-        TH_M * 0.43,
+        TH_M * 0.46,
       ][idx] ?? TH_M * 0.30;
       const slotLeft = [
         -outerBleed,
