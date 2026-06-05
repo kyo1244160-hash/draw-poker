@@ -447,7 +447,7 @@ export default function TournamentTable({
     const maxBet     = s.maxBetTotal ?? ((s.bet ?? 0) + (s.chips ?? 0));
     const lowerBound = isBet ? minBet : minRaiseT;
     if (maxBet < lowerBound) return maxBet;
-    return nlBetAmount ?? lowerBound;
+    return Math.max(lowerBound, Math.min(maxBet, nlBetAmount ?? lowerBound));
   };
 
   // NLベット時に下限が変わったら入力値を初期化
@@ -524,7 +524,7 @@ export default function TournamentTable({
         </div>
         <div style={{display:'flex',alignItems:'center',gap:compact?4:6}}>
           <input type="range" min={lowerBound} max={maxBet}
-            step={Math.max(1, Math.floor((meta?.bigBlind ?? 10) / 2))}
+            step={1}
             value={clampedAmt} onChange={(e) => setNlBetAmount(Number(e.target.value))}
             style={{flex:1, accentColor:'#c9a84c', height:compact?12:14}} />
           <span style={{fontSize:compact?11:13, fontWeight:600, color:'#e8d5a0',
@@ -891,7 +891,9 @@ export default function TournamentTable({
   // 未計測の場合は window.innerHeight からナビバー高さ(44px)を差し引いて近似する
   const availH = containerSize.h > 0 ? containerSize.h : Math.max(200, window.innerHeight - 44);
   const ACT_W_M = 148;
-  const ACT_H_M = 110;
+  const needsNLActionSpace =
+    !!selfIsNL && !!self?.canRaise && isBetPhase && isMyTurn && !self?.isAllIn && !isSpectator;
+  const ACT_H_M = 154;
 
   let TW_M: number, TH_M: number;
   if (isPortrait) {
@@ -907,23 +909,48 @@ export default function TournamentTable({
   // 縦向きスマホ座標計算
   // 対称角度: [165,-165,-90,-15,15] → Dealer/Poker同左、Ace/Bluff同右
   const RX_M = isPortrait ? TW_M*0.32 : TW_M*0.44;
-  const RY_M = isPortrait ? TH_M*0.36 : TH_M*0.40;
+  const RY_M = isPortrait ? TH_M*0.31 : TH_M*0.40;
   const CX_M = TW_M/2;
-  const CY_M = isPortrait ? TH_M*0.54 : TH_M/2;
+  const CY_M = isPortrait ? TH_M*0.43 : TH_M/2;
 
-  const OTH_W  = Math.max(Math.floor(TW_M*0.36), Math.floor(Math.min(TW_M,TH_M)*0.32));
+  const OTH_W  = Math.min(TW_M - 16, Math.max(Math.floor(TW_M*0.40), 152));
   const SELF_W = Math.min(Math.floor(TW_M*0.60), TW_M-16);
   const SELF_H = isPortrait ? Math.floor(TH_M*0.36) : Math.floor(TH_M*0.40);
   const OTH_H  = isPortrait ? Math.floor(TH_M*0.26) : Math.floor(TH_M*0.32);
   const SELF_C: CardSize = isPortrait ? 'sm2' : 'sm';
   const OTH_C:  CardSize = 'xs';
-  // Dealer-Dan=165°(cos=-0.966) / Poker-Pete=-155°(cos=-0.906) → 左位置が近づく + 少し下
-  // Ace-Anna=15°(cos=+0.966) / Bluff-Bill=-25°(cos=+0.906) → 右位置が近づく + 少し下
-  const SLOTS_M = isPortrait ? [165,-155,-90,-25,15] : [150,-150,-90,-30,30];
+  // スマホ縦は自席を下端固定にするため、相手席は上半分〜中段だけに配置する。
+  const SLOTS_M = isPortrait ? [180,-150,-90,-30,0] : [150,-150,-90,-30,30];
   const oth_m = orderedOthers;
   const fs = { name: Math.max(9,Math.floor(OTH_W*0.10)), chip: Math.max(9,Math.floor(OTH_W*0.095)) };
 
   const getPosMobile = (p:PlayerState) => {
+    const bw = p.isSelf ? SELF_W : OTH_W;
+    const bh = p.isSelf ? SELF_H : OTH_H;
+    const selfActionGap = -26;
+    if (!p.isSelf && isPortrait && self) {
+      const idx = oth_m.findIndex(o => o.id===p.id);
+      const selfTop = TH_M - SELF_H - selfActionGap;
+      const outerBleed = Math.min(12, Math.max(6, TW_M * 0.03));
+      const slotTop = [
+        TH_M * 0.43,
+        TH_M * 0.22,
+        TH_M * 0.025,
+        TH_M * 0.22,
+        TH_M * 0.43,
+      ][idx] ?? TH_M * 0.30;
+      const slotLeft = [
+        -outerBleed,
+        -outerBleed,
+        TW_M * 0.50 - bw / 2,
+        TW_M - bw + outerBleed,
+        TW_M - bw + outerBleed,
+      ][idx] ?? (TW_M * 0.50 - bw / 2);
+      return {
+        left: Math.max(-outerBleed, Math.min(TW_M - bw + outerBleed, slotLeft)),
+        top:  Math.max(4, Math.min(selfTop - 82, slotTop)),
+      };
+    }
     let ang: number;
     if (p.isSelf) { ang = 90; }
     else {
@@ -936,9 +963,18 @@ export default function TournamentTable({
       }
     }
     const rad = (ang*Math.PI)/180;
-    const bw = p.isSelf ? SELF_W : OTH_W;
-    const bh = p.isSelf ? SELF_H : OTH_H;
-    return { left: CX_M+RX_M*Math.cos(rad)-bw/2, top: CY_M+RY_M*Math.sin(rad)-bh/2 };
+    if (p.isSelf && isPortrait) {
+      return {
+        left: Math.max(4, Math.min(TW_M - bw - 4, CX_M - bw / 2)),
+        top:  Math.max(4, TH_M - bh - selfActionGap),
+      };
+    }
+    const rawLeft = CX_M+RX_M*Math.cos(rad)-bw/2;
+    const rawTop  = CY_M+RY_M*Math.sin(rad)-bh/2;
+    return {
+      left: Math.max(4, Math.min(TW_M - bw - 4, rawLeft)),
+      top:  Math.max(4, Math.min(TH_M - bh - 4, rawTop)),
+    };
   };
 
   const renderMobile = (p:PlayerState) => {
@@ -977,7 +1013,7 @@ export default function TournamentTable({
         )}
         <div style={{
           position:'relative',width:bw,textAlign:'center',padding:'3px 2px',borderRadius:7,
-          overflow:'hidden',transition:'all 0.2s',
+          overflow:'visible',transition:'all 0.2s',
           border: active?'1.5px solid var(--gold)':p.isWinner?'3px solid var(--gold-bright)':'1px solid rgba(201,168,76,0.2)',
           boxShadow: active?'0 0 10px rgba(201,168,76,0.5)':p.isWinner?'0 0 30px rgba(240,208,96,0.85)':'none',
           background: p.isSelf?'rgba(10,50,30,0.85)':active?'rgba(201,168,76,0.07)':'rgba(0,0,0,0.4)',
@@ -1000,7 +1036,7 @@ export default function TournamentTable({
               background:'rgba(201,168,76,0.25)',color:'#f0d060',fontWeight:'700',fontSize:fs.chip+1}}>B{p.bet}</span>}
           </div>
           {active&&timerSec!==null&&timerLimit>0&&<div style={{margin:'1px 0'}}><TimerBar remaining={timerSec} limit={timerLimit}/></div>}
-          <div style={{display:'flex',gap:2,justifyContent:'center',flexWrap:'nowrap',margin:'2px 0'}}>
+          <div style={{display:'flex',gap:2,justifyContent:'center',flexWrap:'nowrap',margin:'2px 0',overflow:'visible'}}>
             {(p.hand ?? []).map((code,j)=>(
               <div key={j} style={{display:'flex',flexDirection:'column',alignItems:'center'}}>
                 <Card code={code} size={p.isSelf?SELF_C:OTH_C}

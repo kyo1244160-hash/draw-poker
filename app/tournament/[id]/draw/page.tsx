@@ -53,6 +53,7 @@ export default function TournamentDrawPage() {
   const router   = useRouter();
   const accountIdRef = useRef<string | null>(null); // 自分の accountId（/api/auth/session から取得）
   const tableIdRef = useRef<string | null>(null);  // サーバーから t:tournamentStarting で受信
+  const nextTableIdRef = useRef<string | null>(null); // 3秒遅延中の移動先テーブル
   const prevModeRef = useRef<string | null>(null); // ゲームチェンジ検出用
   const transferTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]); // テーブル移動時の再送タイマー管理
 
@@ -368,15 +369,15 @@ export default function TournamentDrawPage() {
       setStatus(payload);
     });
 
-    // テーブル移動: 即時通知（tableIdRefのみ更新・画面は切り替えない）
-    // t:tableTransfer（3秒後）が来るまでの間もアクションが正しいテーブルに送られるようにする
+    // テーブル移動: 即時通知。表示対象は t:tableTransfer（3秒後）まで旧テーブルのまま保持する。
     socket.on('t:tableJoin', ({ toTableId }: { toTableId: string }) => {
-      tableIdRef.current = toTableId;
+      nextTableIdRef.current = toTableId;
     });
 
     // テーブル移動（バランシング）
     socket.on('t:tableTransfer', ({ fromTableId, toTableId }: { fromTableId: string; toTableId: string }) => {
       tableIdRef.current = toTableId;
+      nextTableIdRef.current = null;
       socket.emit('leaveSocketRoom', { roomId: fromTableId });
       socket.emit('joinSocketRoom', { roomId: toTableId });
       logAction('別テーブルへ移動しました');

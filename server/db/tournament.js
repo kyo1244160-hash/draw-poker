@@ -101,6 +101,9 @@ async function registerEntry(tournamentId, accountId) {
             if (elapsedMin > tournament.late_reg_minutes) {
               throw new Error('レイトレジスト受付期間が終了しています');
             }
+          } else if (Number(tournament.blind_late_level_cutoff ?? 0) > 0) {
+            // レベルベースは tournamentManager が締切時に late_reg_closed_at を永続化する。
+            // メモリ状態が取れない場合でも、DB上で未締切なら参加受付中とみなす。
           } else {
             // レベルベース（late_reg_minutes = 0）: メモリがなければ安全側で拒否
             throw new Error('レイトレジスト状態を確認できないため参加受付を停止しています');
@@ -115,8 +118,17 @@ async function registerEntry(tournamentId, accountId) {
         }
       } catch (tmErr) {
         if (tmErr.message.includes('レイトレジスト') || tmErr.message.includes('参加受付')) throw tmErr;
-        // その他の例外（require失敗等）→ late_reg_minutes>0なら許可
-        if (!tournament.late_reg_minutes || tournament.late_reg_minutes <= 0) {
+        // その他の例外（require失敗等）→ DB上の締切状態でフォールバック可能なら許可
+        if (tournament.late_reg_closed_at) {
+          throw new Error('現在参加受付中ではありません');
+        }
+        if (tournament.late_reg_minutes && tournament.late_reg_minutes > 0) {
+          const startedAt = new Date(tournament.scheduled_start_at).getTime();
+          const elapsedMin = (Date.now() - startedAt) / 60000;
+          if (elapsedMin > tournament.late_reg_minutes) {
+            throw new Error('現在参加受付中ではありません');
+          }
+        } else if (Number(tournament.blind_late_level_cutoff ?? 0) <= 0) {
           throw new Error('現在参加受付中ではありません');
         }
       }

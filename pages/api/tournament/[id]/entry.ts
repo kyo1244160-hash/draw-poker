@@ -72,8 +72,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         // それでも null の場合の判定:
         // 1. 時間ベース（late_reg_minutes > 0）: scheduled_start_at からの経過時間で計算
-        // 2. レベルベース（late_reg_minutes = 0）: メモリなしでは安全側で閉鎖扱い
+        // 2. レベルベース（late_reg_minutes = 0）: DB の締切永続化状態で判断
         // 3. SNG（scheduled_start_at = 2099年）: DB/global に closed がなければ開放中
+        const lateLevelCutoff = Number(tournament.blind_late_level_cutoff ?? 0);
         if (lateRegOpen === null && isFutureScheduledSng) {
           lateRegOpen = true;
         } else if (lateRegOpen === null && tournament.late_reg_minutes && tournament.late_reg_minutes > 0) {
@@ -86,6 +87,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // SNG以外でここに来るのは異常な running+未来日時だが、時間ベースとしては未経過なので開放扱い。
             lateRegOpen = true;
           }
+        } else if (lateRegOpen === null && lateLevelCutoff > 0 && !tournament.late_reg_closed_at) {
+          // tournamentManager はレベル到達時に late_reg_closed_at を永続化する。
+          // API 側でメモリ上の tournamentManager が見えない場合は DB の締切状態を権威情報にする。
+          lateRegOpen = true;
         }
         if (lateRegOpen === null) {
           lateRegOpen = false;

@@ -464,7 +464,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
     const maxBet     = self.maxBetTotal ?? (self.bet + self.chips);
     const lowerBound = isBet ? minBet : minRaiseT;
     if (maxBet < lowerBound) return maxBet; // ショートスタック → オールイン固定
-    return nlBetAmount ?? lowerBound;
+    return Math.max(lowerBound, Math.min(maxBet, nlBetAmount ?? lowerBound));
   };
 
   // ===== NLベットコントロール =====
@@ -542,7 +542,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
         </div>
         {/* スライダー + 値表示 */}
         <div style={{display:'flex',alignItems:'center',gap:compact?4:6}}>
-          <input type="range" min={lowerBound} max={maxBet} step={Math.max(1, Math.floor((meta.bigBlind ?? 10) / 2))}
+          <input type="range" min={lowerBound} max={maxBet} step={1}
             value={clampedAmt} onChange={(e) => setNlBetAmount(Number(e.target.value))}
             style={{flex:1, accentColor:'var(--gold)', height:compact?12:14}} />
           <span style={{fontSize:compact?11:13, fontWeight:600, color:'var(--gold-bright)',

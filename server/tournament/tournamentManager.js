@@ -1083,8 +1083,8 @@ function balanceTables(tournamentId) {
           // showdown 結果確認のための遅延は t:tableTransfer 通知のみに適用する
           sock.leave(tid);
           sock.join(dest.id);
-          // t:tableJoin を即時送信: クライアントの tableIdRef を即座に更新して
-          // アクションが旧テーブルに送られるバグを防ぐ（t:tableTransfer は3秒後に送る）
+          // t:tableJoin は移動予定の通知のみ。画面切替は showdown 確認時間を確保するため
+          // 3秒後の t:tableTransfer で行う。
           sock.emit('t:tableJoin', { toTableId: dest.id });
           const _sock = sock;
           const _fromTid = tid, _toTid = dest.id, _pId = p.id;
@@ -1282,7 +1282,7 @@ function balanceTables(tournamentId) {
         // Socket.IO ルームは即時切り替え、t:tableTransfer 通知のみ 3 秒遅延
         sock.leave(maxT.tid);
         sock.join(minT.tid);
-        // t:tableJoin を即時送信して tableIdRef を即更新
+        // t:tableJoin は移動予定の通知のみ。画面切替は3秒後の t:tableTransfer で行う。
         sock.emit('t:tableJoin', { toTableId: minT.tid });
         const _sock2 = sock;
         const _fromTid2 = maxT.tid, _toTid2 = minT.tid;
