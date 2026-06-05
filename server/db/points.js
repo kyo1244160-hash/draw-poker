@@ -26,20 +26,22 @@ function calcPoints(rank) {
  * @param {{ accountId: string, finalRank: number, finalChips: number, handsPlayed?: number }[]} results
  */
 async function recordTournamentResults(tournamentId, results) {
-  // 二重登録防止
-  const existing = await sql`
-    SELECT 1 FROM tournament_results WHERE tournament_id = ${tournamentId} LIMIT 1
-  `;
-  if (existing.length > 0) {
-    throw new Error('このトーナメントの結果はすでに登録されています');
-  }
-
   // トーナメント名を取得（point_history の reason に使用）
   const [tRow] = await sql`SELECT name FROM tournaments WHERE id = ${tournamentId}`;
   const tournamentName = tRow?.name ?? tournamentId.slice(-8);
 
   // トランザクションで一括処理
   await sql.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(hashtext(${tournamentId}))`;
+
+    // 二重登録防止。advisory lock 内で確認し、並列終了処理でもポイント二重加算を防ぐ。
+    const existing = await tx`
+      SELECT 1 FROM tournament_results WHERE tournament_id = ${tournamentId} LIMIT 1
+    `;
+    if (existing.length > 0) {
+      throw new Error('このトーナメントの結果はすでに登録されています');
+    }
+
     // 1. tournament_results に挿入
     for (const r of results) {
       const points = calcPoints(r.finalRank);

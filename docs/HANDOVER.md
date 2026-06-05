@@ -83,7 +83,7 @@ GOOGLE_CLIENT_SECRET=（各自の値）
 NEXTAUTH_SECRET=（各自の値）
 NEXTAUTH_URL=http://localhost:3000
 ALLOWED_ORIGIN=http://localhost:3000
-BOT_SECRET=pastis-internal-bot
+BOT_SECRET=（必須・強ランダム値。デフォルト値は禁止）
 ```
 
 ### Render 環境変数

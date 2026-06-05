@@ -153,6 +153,14 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
     if (!VALID_STATUSES.includes(status)) {
       return res.status(400).json({ error: `status は ${VALID_STATUSES.join(' / ')} のいずれかです` });
     }
+    if (status === 'running') {
+      return res.status(400).json({ error: 'START_VIA_MONITOR_API' });
+    }
+    const { getTournament: getMemoryTournament } = require('../../../server/tournament/tournamentManager');
+    const memoryTournament = getMemoryTournament(tournamentId);
+    if (memoryTournament && memoryTournament.status !== status) {
+      return res.status(409).json({ error: 'TOURNAMENT_RUNNING_IN_MEMORY' });
+    }
     const row = await updateTournamentStatus(tournamentId, status);
     if (!row) return res.status(404).json({ error: 'トーナメントが見つかりません' });
     return res.status(200).json({ id: row.id, status: row.status });
@@ -164,10 +172,9 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
     if (!tournamentId) {
       return res.status(400).json({ error: 'tournamentId は必須です' });
     }
-    // running 中は削除不可
-    const [target] = await listTournaments({ limit: 1, offset: 0 }).then(
-      (rows) => rows.filter((r) => r.id === tournamentId)
-    );
+    // running 中は削除不可。一覧の先頭ページではなくIDで直接確認する。
+    const { getTournament } = require('../../../server/db/tournament');
+    const target = await getTournament(tournamentId);
     if (!target) return res.status(404).json({ error: 'トーナメントが見つかりません' });
     if (target.status === 'running') {
       return res.status(400).json({ error: '進行中のトーナメントは削除できません。先にキャンセルまたは終了してください。' });

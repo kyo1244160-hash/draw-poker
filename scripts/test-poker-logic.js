@@ -525,6 +525,44 @@ test('1人だけ残った場合は総取り', () => {
 console.log('\n=== モードローテーション: 人数変動でモードがズレない ===');
 const gm = require('../server/poker/gameManager');
 
+console.log('\n=== 2-7 Single Draw: No Limit 判定 ===');
+
+test('27sd は startGame 後に No Limit として gameState に出る', () => {
+  const roomId = `test-27sd-${Date.now()}`;
+  const room = gm.getOrCreateRoom(roomId, { mode: '27sd', smallBlind: 50, bigBlind: 100 });
+  gm.joinRoom(roomId, 'p1', 'A');
+  gm.joinRoom(roomId, 'p2', 'B');
+  const started = gm.startGame(roomId, null);
+  assert.ok(started, '27sd room should start');
+  assert.strictEqual(started.currentMode, '27sd');
+  assert.strictEqual(started.isNL, true);
+
+  const state = gm.buildGameState(started, started.players[started.actionIndex].id);
+  const meta = state.find((x) => x._meta);
+  const self = state.find((x) => x.isSelf);
+  assert.strictEqual(meta.isNL, true);
+  assert.strictEqual(self.isNL, true);
+  assert.strictEqual(self.betSize, started.bigBlind);
+  assert.strictEqual(self.maxRaises, undefined);
+});
+
+test('27sd の bet/raise は amount 指定で任意額を受け付ける', () => {
+  const roomId = `test-27sd-bet-${Date.now()}`;
+  const room = gm.getOrCreateRoom(roomId, { mode: '27sd', smallBlind: 50, bigBlind: 100 });
+  gm.joinRoom(roomId, 'p1', 'A');
+  gm.joinRoom(roomId, 'p2', 'B');
+  const started = gm.startGame(roomId, null);
+  const actor = started.players[started.actionIndex];
+  const beforeChips = actor.chips;
+  const beforeBet = actor.bet;
+  const action = started.currentBet === 0 ? 'bet' : 'raise';
+  const ok = gm.betAction(roomId, actor.id, action, 350);
+  assert.ok(ok, `27sd ${action} with amount should be accepted`);
+  assert.strictEqual(actor.bet, 350);
+  assert.strictEqual(actor.chips, beforeChips - (350 - beforeBet));
+  assert.strictEqual(started.currentBet, 350);
+});
+
 function makeMixRoom(mode, playerCount) {
   const room = gm.getOrCreateRoom(`test-mix-${mode}-${Date.now()}-${Math.random()}`, { mode });
   room.mode = mode;

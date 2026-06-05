@@ -431,9 +431,16 @@ function _removeFromPool(poolId, socketId) {
 
 function registerZoomHandlers(io, socket) {
 
-  socket.on('z:join', ({ poolId, name }) => {
+  socket.on('z:join', ({ poolId }) => {
     const pool = zoomPools.get(poolId);
     if (!pool) { ffLog(`z:join: poolId=${poolId} pool NOT FOUND`); return; }
+    const user = socket.data?.user;
+    const name = user?.nickname;
+    if (!name) {
+      socket.emit('z:error', { message: 'FastFoldに参加するにはログインとニックネーム設定が必要です' });
+      socket.emit('joinError', { message: 'FastFoldに参加するにはログインとニックネーム設定が必要です' });
+      return;
+    }
 
     socketNames.set(socket.id, name);
     socketToPool.set(socket.id, poolId);

@@ -27,6 +27,7 @@ const { log, logDev, logPot } = require('../logger');
 const { createShuffledDeck, shuffleDeck }                             = require('./deck');
 const { evaluate27Hand, evaluateA5Hand, evaluateBadugiHand, findWinner, findWinners } = require('./handEvaluator');
 const cfg                                                = require('../config');
+const { randomInt } = require('crypto');
 
 // ===== 定数 =====
 const SMALL_BLIND = cfg.SMALL_BLIND;
@@ -58,6 +59,10 @@ function getPhases(mode) {
 /** ノーリミットモード判定 */
 function isNoLimitMode(mode) {
   return mode === '27sd';
+}
+
+function _roomIsNL(room) {
+  return isNoLimitMode(room.currentMode || room.mode);
 }
 
 /**
@@ -184,7 +189,7 @@ function advanceDealerButton(room) {
       .filter(({ p }) => !p.sittingOut)
       .map(({ i }) => i);
     room.dealerIndex = activeIndices.length > 0
-      ? activeIndices[Math.floor(Math.random() * activeIndices.length)]
+      ? activeIndices[randomInt(activeIndices.length)]
       : 0;
   } else {
     let next = (room.dealerIndex + 1) % room.players.length;
@@ -444,7 +449,7 @@ function startGame(roomId, onTimeout) {
   }
   // NLフラグ更新: currentMode が確定したので isNL を同期させる
   // （MIX-3 でローテーションした結果が NL になる仕様はないが、将来拡張に備えて常に同期）
-  room.isNL = isNoLimitMode(room.currentMode);
+  room.isNL = _roomIsNL(room);
 
   // リセット
   room.deck             = createShuffledDeck();
@@ -526,7 +531,7 @@ function startGame(roomId, onTimeout) {
   // NL（27sd）はベットサイズ自由。room.smallBet / room.bigBet はリミットゲーム用パラメータで
   // 27sd では UI 表示用のミニマムベットを示すために bigBlind を入れているだけで、ベット制限には使用されない。
   // ⚠️ トーナメント管理画面で 27sd モードに smallBet/bigBet を設定しても完全に無視される（NLは無制限のため）
-  room.betSize    = room.isNL ? room.bigBlind : room.smallBet;
+  room.betSize    = _roomIsNL(room) ? room.bigBlind : room.smallBet;
   // NL: 直近のレイズサイズ初期値 = BB（プリドローの初期レイズはBB単位）
   room.lastRaiseSize = room.bigBlind;
 
@@ -944,7 +949,8 @@ function betAction(roomId, socketId, action, amount) {
 
   const toCall = room.currentBet - player.bet;
   // room.isNL は startGame で確定される。betAction は bet/draw フェーズで呼ばれるため必ず確定済み。
-  const isNL = !!room.isNL;
+  const isNL = _roomIsNL(room);
+  room.isNL = isNL;
 
   if (action === 'fold') {
     // ⚠️ チェック可能な場面（toCall=0）でのフォールドは禁止（RRoP準拠）
@@ -1097,7 +1103,9 @@ function _nextPhase(room) {
     // リミットモード: draw2以降（bet2, bet3）はビッグベット
     // 判定は room.isNL に統一（startGame で確定済みの単一情報源）
     let betSize;
-    if (room.isNL) {
+    const isNL = _roomIsNL(room);
+    room.isNL = isNL;
+    if (isNL) {
       betSize = room.bigBlind; // NL: ミニマムベット = BB
     } else {
       betSize = isBigBetPhase(next) ? room.bigBet : room.smallBet;
@@ -1263,12 +1271,12 @@ function buildGameState(room, requesterId) {
     // 相手が全員フォールドorオールイン（chips<=0）の場合もレイズ不可
     // NLモード（27sd）はraiseCount上限なし
     canRaise: isBetPhase && p.chips > 0
-      && (room.isNL || room.raiseCount < MAX_RAISES)
+      && (_roomIsNL(room) || room.raiseCount < MAX_RAISES)
       && room.players.some(op => op.id !== p.id && !op.folded && !op.sittingOut && op.chips > 0),
         betSize:  room.betSize,
         // NL用情報: クライアントがベット額入力UIを構築するために必要
-        isNL:     room.isNL,
-        ...(room.isNL ? {
+        isNL:     _roomIsNL(room),
+        ...(_roomIsNL(room) ? {
           minBet:        room.bigBlind,
           minRaiseTotal: room.currentBet + (room.lastRaiseSize || room.bigBlind),
           maxBetTotal:   p.bet + p.chips,
@@ -1391,7 +1399,7 @@ function buildGameState(room, requesterId) {
     maxPlayers:     MAX_PLAYERS,
     roomId:         room.id,  // クライアント側でroomIdフィルタリングに使用
     // NL対応情報
-    isNL:           room.isNL,
+    isNL:           _roomIsNL(room),
     bigBlind:       room.bigBlind,
     lastRaiseSize:  room.lastRaiseSize || room.bigBlind,
   };

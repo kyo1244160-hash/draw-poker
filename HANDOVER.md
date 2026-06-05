@@ -176,5 +176,5 @@ DATABASE_URL=postgresql://postgres.xxxxx:[PW]@aws-1-ap-northeast-2.pooler.supaba
 NEXTAUTH_URL=https://draw-poker.onrender.com
 NEXTAUTH_SECRET=（必須・未設定だとサーバーが起動しない）
 ALLOWED_ORIGIN=https://draw-poker.onrender.com
-BOT_SECRET=pastis-internal-bot
+BOT_SECRET=（必須・強ランダム値。デフォルト値は禁止）
 ```

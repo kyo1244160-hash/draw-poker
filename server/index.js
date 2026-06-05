@@ -148,7 +148,7 @@ function getLobbyList() {
 log('🔧 サーバー起動中...');
 
 // ===== 必須環境変数チェック =====
-const REQUIRED_ENV = ['NEXTAUTH_SECRET', 'DATABASE_URL'];
+const REQUIRED_ENV = ['NEXTAUTH_SECRET', 'DATABASE_URL', 'BOT_SECRET'];
 for (const key of REQUIRED_ENV) {
   if (!process.env[key]) {
     console.error(`[startup] ❌ 必須環境変数 ${key} が未設定です。サーバーを終了します。`);
@@ -163,7 +163,8 @@ app.prepare().then(async () => {
   try {
     const sql = require('./db/client');
     await sql`ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS late_reg_minutes INTEGER NOT NULL DEFAULT 0`;
-    log('✓ DB migration: late_reg_minutes OK');
+    await sql`ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS late_reg_closed_at TIMESTAMPTZ`;
+    log('✓ DB migration: late_reg columns OK');
   } catch (e) {
     console.warn('⚠ DB migration warning:', e.message);
   }
@@ -182,7 +183,7 @@ app.prepare().then(async () => {
   });
 
   // ===== Socket.IO 認証ミドルウェア =====
-  const BOT_SECRET = process.env.BOT_SECRET ?? 'pastis-internal-bot';
+  const BOT_SECRET = process.env.BOT_SECRET;
   io.use(async (socket, next) => {
     const token = socket.handshake.auth?.token;
 
@@ -316,6 +317,7 @@ app.prepare().then(async () => {
           // pending中に再接続: socket IDを更新してpending通知を送信
           pendingPlayer.id = socket.id;
           socket.join(tableId);
+          _removeSpectatorSocket(socket.id, tableId);
           currentRoom = { name: user.nickname ?? '', roomId: tableId };
           socket.emit('t:pendingTableTransfer', { tableId, message: '次のハンドから参加します' });
           // 【重要】pending プレイヤーにも現在の gameState を送信する。
@@ -346,6 +348,7 @@ app.prepare().then(async () => {
           }
           // _disconnectedChips に退避されたチップを復元（leaveRoom済みプレイヤーは activePlayer=null になるため別途処理）
           socket.join(tableId);
+          _removeSpectatorSocket(socket.id, tableId);
           currentRoom = { name: user.nickname ?? '', roomId: tableId };
           socket.emit('t:tournamentStarting', { tournamentId, tableId });
           logDev(`[t:getMyTable] ${user.nickname} → ${tableId}`);
@@ -409,6 +412,7 @@ app.prepare().then(async () => {
             if (_pending) {
               _pending.id = socket.id;
               socket.join(retryTableId);
+              _removeSpectatorSocket(socket.id, retryTableId);
               currentRoom = { name: user.nickname ?? '', roomId: retryTableId };
               socket.emit('t:pendingTableTransfer', { tableId: retryTableId, message: '次のハンドから参加します' });
               // pending プレイヤーにも gameState を送信（即時画面更新のため）
@@ -431,6 +435,7 @@ app.prepare().then(async () => {
                 log(`[t:getMyTable-retry] ${user.nickname}: player.id updated → ${socket.id}`);
               }
               socket.join(retryTableId);
+              _removeSpectatorSocket(socket.id, retryTableId);
               currentRoom = { name: user.nickname ?? '', roomId: retryTableId };
               socket.emit('t:tournamentStarting', { tournamentId, tableId: retryTableId });
               // gameState を本人に直接送信（_broadcast 待ちにしない）
@@ -493,6 +498,7 @@ app.prepare().then(async () => {
               const _nick2 = user.nickname ?? user.accountId.slice(0, 8);
               _jr2(_destTid2, socket.id, _nick2, { accountId: user.accountId, existingChips: _dcEntry.chips });
               socket.join(_destTid2);
+              _removeSpectatorSocket(socket.id, _destTid2);
               socket.emit('t:tournamentStarting', { tournamentId, tableId: _destTid2 });
               const _sp2 = tournamentManager.getTournamentStatusPayload(tournamentId);
               if (_sp2) socket.emit('t:tournamentStatus', _sp2);
@@ -543,11 +549,13 @@ app.prepare().then(async () => {
               studManager.updateStudPlayerSocketId(existingTidFinal, user.accountId, user.nickname, socket.id);
             }
             socket.join(existingTidFinal);
+            _removeSpectatorSocket(socket.id, existingTidFinal);
             const statusPayloadF = tournamentManager.getTournamentStatusPayload(tournamentId);
             if (statusPayloadF) socket.emit('t:tournamentStatus', statusPayloadF);
             const blindPayloadF = tournamentManager.getCurrentBlindPayload(tournamentId);
             if (blindPayloadF) socket.emit('t:blindUpdate', blindPayloadF);
             socket.emit('t:tournamentStarting', { tournamentId, tableId: existingTidFinal });
+            _emitStateToSocket(socket, existingTidFinal);
             _broadcast(io, existingTidFinal);
           } else {
             // 本当に新規: まず DB のエントリー登録を確認する。
@@ -582,10 +590,19 @@ app.prepare().then(async () => {
             }
             if (destTid) {
               const nickname = user.nickname ?? user.accountId.slice(0, 8);
-              joinPokerRoom(destTid, socket.id, nickname, { accountId: user.accountId, existingChips: t.startingChips });
+              const joinResult = joinPokerRoom(destTid, socket.id, nickname, { accountId: user.accountId, existingChips: t.startingChips });
+              if (joinResult === 'full') {
+                log(`[lateReg] ${nickname}: placement failed, table full ${destTid.slice(-8)}`);
+                socket.emit('t:tournamentNotFound', { tournamentId });
+                return;
+              }
               socket.join(destTid);
-              tournamentManager.incrementTotalPlayers(tournamentId, 1);
+              _removeSpectatorSocket(socket.id, destTid);
+              if (joinResult === 'active' || joinResult === 'pending') {
+                tournamentManager.incrementTotalPlayers(tournamentId, 1);
+              }
               socket.emit('t:tournamentStarting', { tournamentId, tableId: destTid });
+              _emitStateToSocket(socket, destTid);
               io.to(destTid).emit('t:playerArrived', { playerName: nickname });
               // 【lateReg broadcast修正】スタッドハンド進行中は _broadcast を遅延させる。
               // 進行中に _broadcast(→_broadcastStud→triggerStudBotActions) を呼ぶと
@@ -659,7 +676,15 @@ app.prepare().then(async () => {
     });
 
     socket.on('getRoomPlayers', (roomId) => {
-      const room  = getOrCreateRoom(roomId);
+      if (!roomId || typeof roomId !== 'string' || roomId.length > 64) {
+        socket.emit('lobbyUpdate', []);
+        return;
+      }
+      const room  = getRoom(roomId);
+      if (!room) {
+        socket.emit('lobbyUpdate', []);
+        return;
+      }
       const names = [
         ...room.players.map((p) => p.sittingOut ? `${p.name} (待機中)` : p.name),
         ...room.pendingPlayers.map((p) => `${p.name} (次ゲームから)`),
@@ -677,7 +702,15 @@ app.prepare().then(async () => {
       const name = socket.data.user?.nickname;
       if (!roomId || typeof roomId !== 'string' || roomId.length > 64) return;
       if (!name) return;
-      const room = getOrCreateRoom(roomId);
+      const room = getRoom(roomId);
+      if (!room) {
+        socket.emit('joinError', { message: '部屋が見つかりません' });
+        return;
+      }
+      if (tournamentManager.isTournamentTable(roomId)) {
+        socket.emit('joinError', { message: 'トーナメント卓へはトーナメント画面から参加してください' });
+        return;
+      }
 
       // パスワードチェック
       if (room.password && room.password !== password) {
@@ -757,15 +790,17 @@ app.prepare().then(async () => {
       if (roomId) socket.leave(roomId);
     });
     socket.on('joinSocketRoom', ({ roomId }) => {
-      if (roomId) {
+      if (roomId && _socketBelongsToTable(socket, roomId)) {
         socket.join(roomId);
+        _removeSpectatorSocket(socket.id, roomId);
         currentRoom = { name: socket.data.user?.nickname ?? '', roomId };
       }
     });
 
     // ----- テーブル移動後のゲーム状態取得 -----
     socket.on('getGameState', ({ roomId }) => {
-      if (!roomId || typeof roomId !== 'string') return;
+      if (!roomId || typeof roomId !== 'string' || roomId.length > 64) return;
+      if (!getRoom(roomId) && !studManager.getStudRoom(roomId)) return;
       _broadcast(io, roomId);
       if (tournamentManager.isTournamentTable(roomId)) {
         const t = tournamentManager.getTournamentByTable(roomId);
@@ -1130,9 +1165,6 @@ app.prepare().then(async () => {
       const roomId = currentRoom.roomId;
 
       if (tournamentManager.isTournamentTable(roomId)) {
-        // 観戦者（_spectators に含まれる）は grace timer を発動しない
-        // 観戦者リストからの削除はすでに上で実施済み
-        const isSpectatorSocket = !roomId || !(_spectators.get(roomId)?.has(socket.id) === false && room);
         // プレイヤーとして room.players に存在する場合のみ grace timer を開始
         const { getOrCreateRoom: _gor } = require('./poker/gameManager');
         const _room = _gor(roomId);
@@ -1424,6 +1456,32 @@ const leaveReservations = new Map();
 // ==========================================================
 // tableId → Set<socketId>
 const _spectators = new Map();
+
+function _removeSpectatorSocket(socketId, tableId = null) {
+  if (tableId) _spectators.get(tableId)?.delete(socketId);
+  for (const spectators of _spectators.values()) {
+    spectators.delete(socketId);
+  }
+}
+
+function _socketBelongsToTable(socket, roomId) {
+  if (!roomId || typeof roomId !== 'string' || roomId.length > 64) return false;
+  const user = socket.data?.user;
+  const room = getRoom(roomId);
+  const inDrawRoom = !!room && [...room.players, ...room.pendingPlayers].some((p) =>
+    p.id === socket.id ||
+    (user?.accountId && p.accountId === user.accountId) ||
+    (user?.nickname && p.name === user.nickname)
+  );
+  if (inDrawRoom) return true;
+
+  const studRoom = studManager.getStudRoom(roomId);
+  return !!studRoom && studRoom.players.some((p) =>
+    p.id === socket.id ||
+    (user?.accountId && p.accountId === user.accountId) ||
+    (user?.nickname && p.name === user.nickname)
+  );
+}
 
 // ==========================================================
 // ■ トーナメント切断猶予管理（3分）
@@ -1746,8 +1804,11 @@ function _tryAutoStart(io, roomId) {
 
 // 二重スケジュール防止セット
 const _pendingAutoStart = new Set();
+const DEFAULT_AUTOSTART_DELAY_MS = 3000;
+const STUD_SHOWDOWN_AUTOSTART_DELAY_MS = 3000;
+const STUD_SHOWDOWN_RETRY_DELAY_MS = 9500;
 
-/** ショーダウン後の自動スタート。FastFoldテーブルは即スタート、通常部屋は3秒待つ */
+/** ショーダウン後の自動スタート。FastFoldは即時、通常部屋は表示猶予を置いて開始する */
 /**
  * リングゲーム: ハンド終了時の損益をDBに記録する
  * - トーナメントテーブルは除外
@@ -1806,9 +1867,14 @@ function _scheduleAutoStart(io, roomId) {
       return;
     }
     _pendingAutoStart.add(roomId);
+    const studRoom = studManager.getStudRoom(roomId);
+    const delayMs = studRoom?.phase === 'showdown'
+      ? STUD_SHOWDOWN_AUTOSTART_DELAY_MS
+      : DEFAULT_AUTOSTART_DELAY_MS;
+    log(`[auto-start] ${roomId.slice(-8)} scheduled delayMs=${delayMs} studPhase=${studRoom?.phase ?? 'none'} canAutoStart=${canAutoStart(roomId)}`);
     setTimeout(() => {
       _pendingAutoStart.delete(roomId);
-      log(`[auto-start] ${roomId.slice(-8)} 3s timer fired, canAutoStart=${canAutoStart(roomId)}`);
+      log(`[auto-start] ${roomId.slice(-8)} timer fired delayMs=${delayMs} canAutoStart=${canAutoStart(roomId)}`);
       // トーナメント: 脱落チェック → テーブルバランシング → 自動スタート
       if (tournamentManager.isTournamentTable(roomId)) {
         // balanceTables でチップを移動する前に、全テーブルのポットを確実に精算する。
@@ -1823,7 +1889,13 @@ function _scheduleAutoStart(io, roomId) {
           // 移動処理が studManager 状態を中途半端に扱う原因になる。
           for (const tid of tForEnsure.tableIds) {
             const _sr = studManager.getStudRoom(tid);
-            if (_sr && _sr.phase !== 'waiting') studManager.finishStudHand(tid);
+            if (!_sr) continue;
+            if (_sr.phase === 'showdown') {
+              log(`[stud-recover] ${tid.slice(-8)} finish lingering showdown before balance`);
+              studManager.finishStudHand(tid);
+            } else if (_sr.phase !== 'waiting') {
+              log(`[stud-recover] ${tid.slice(-8)} keep active stud hand phase=${_sr.phase} before balance`);
+            }
           }
         }
         tournamentManager.checkEliminations(roomId);
@@ -1831,7 +1903,7 @@ function _scheduleAutoStart(io, roomId) {
         if (t) tournamentManager.balanceTables(t.id);
       }
       if (canAutoStart(roomId)) _tryAutoStart(io, roomId);
-    }, 3000);
+    }, delayMs);
   }
 }
 
@@ -1878,6 +1950,28 @@ function _emitStateToSocket(socket, tableId) {
   if (_isStudActive(tableId)) {
     const room = studManager.getStudRoom(tableId);
     if (!room) return;
+    const gmRoom = getRoom(tableId);
+    const user = socket.data?.user;
+    const pendingPlayer = gmRoom?.pendingPlayers?.find((p) =>
+      p.id === socket.id ||
+      (user?.accountId && p.accountId === user.accountId) ||
+      (user?.nickname && p.name === user.nickname)
+    );
+    const isAlreadyStudPlayer = room.players.some((p) => p.id === socket.id);
+    if (pendingPlayer && !isAlreadyStudPlayer) {
+      const baseState = studManager.buildStudGameState(room, null);
+      const meta = baseState.find((x) => x._meta);
+      const players = baseState.filter((x) => !x._meta);
+      const selfEntry = {
+        id: pendingPlayer.id, name: pendingPlayer.name, chips: pendingPlayer.chips ?? 0,
+        isSelf: true, isPendingPlayer: true,
+        folded: false, sittingOut: true, isMyTurn: false,
+        cards: [], faceUp: [], bet: 0, totalContribution: 0,
+        isBringIn: false, isDealer: false,
+      };
+      socket.emit('gameState', { players: [...players, selfEntry], meta });
+      return;
+    }
     const state = studManager.buildStudGameState(room, socket.id);
     const meta = state.find((x) => x._meta);
     const players = state.filter((x) => !x._meta);
@@ -1892,10 +1986,20 @@ function _emitStateToSocket(socket, tableId) {
   socket.emit('gameState', { players, meta });
 }
 
+function _studLogSnapshot(room) {
+  if (!room) return 'room=null';
+  const cur = room.players?.[room.actionIndex];
+  const players = (room.players ?? []).map((p, i) =>
+    `${i}:${p.name}${p.isBot ? '[B]' : ''}${p.folded ? '/F' : ''}${p.sittingOut ? '/S' : ''}${p.acted ? '/A' : '/-'}:bet${p.bet}:chips${p.chips}`
+  ).join('|');
+  return `phase=${room.phase} mode=${room.currentMode} actionIndex=${room.actionIndex} cur=${cur ? `${cur.name}${cur.isBot ? '[B]' : ''}` : 'none'} currentBet=${room.currentBet} pot=${room.pot} players=[${players}]`;
+}
+
 /** スタッド版のゲーム状態配信（_broadcast のスタッド版） */
 function _broadcastStud(io, roomId) {
   const room = studManager.getStudRoom(roomId);
   if (!room) return;
+  log(`[stud-broadcast] start table=${roomId.slice(-8)} ${_studLogSnapshot(room)}`);
   // デバッグ: 現在のactionIndexが人間プレイヤーの場合に警告
   if (room.phase && room.phase.startsWith('bet')) {
     const _cur = room.players[room.actionIndex];
@@ -1979,17 +2083,27 @@ function _broadcastStud(io, roomId) {
     const botIds = tournamentBotManager.getBotIds
       ? tournamentBotManager.getBotIds(roomId)
       : null;
-    if (botIds && botIds.size > 0) {
+    if (botIds && botIds.size > 0 && room.phase && room.phase.startsWith('bet')) {
+      log(`[stud-broadcast] trigger-bots table=${roomId.slice(-8)} botCount=${botIds.size} ${_studLogSnapshot(room)}`);
       studBotManager.triggerStudBotActions(roomId, botIds, (tblId, botName, botAction) => {
+        const beforeCallbackRoom = studManager.getStudRoom(tblId);
+        log(`[stud-broadcast] bot-callback table=${tblId.slice(-8)} bot=${botName ?? 'unknown'} action=${botAction ?? 'unknown'} ${_studLogSnapshot(beforeCallbackRoom)}`);
         if (botName && botAction) {
           io.to(tblId).emit('playerAction', { playerName: botName, action: botAction });
+          log(`[stud-broadcast] emitted-playerAction table=${tblId.slice(-8)} bot=${botName} action=${botAction}`);
         }
         _broadcast(io, tblId);
         const r = studManager.getStudRoom(tblId);
+        log(`[stud-broadcast] after-recursive-broadcast table=${tblId.slice(-8)} ${_studLogSnapshot(r)}`);
         if (r?.phase === 'showdown') {
+          log(`[stud-broadcast] showdown-detected table=${tblId.slice(-8)} ${_studLogSnapshot(r)}`);
           _onStudShowdown(io, tblId);
         }
       });
+    } else if (botIds && botIds.size > 0) {
+      log(`[stud-broadcast] skip-bots table=${roomId.slice(-8)} reason=phase-not-betting ${_studLogSnapshot(room)}`);
+    } else {
+      log(`[stud-broadcast] no-bots table=${roomId.slice(-8)} ${_studLogSnapshot(room)}`);
     }
   }
 }
@@ -2053,7 +2167,7 @@ function _onStudShowdown(io, roomId) {
       log(`[stud-showdown-retry] ${roomId.slice(-8)} 次ハンド開始可能 → _tryAutoStart 発火`);
       _tryAutoStart(io, roomId);
     }
-  }, 7000);
+  }, STUD_SHOWDOWN_RETRY_DELAY_MS);
 }
 
 function _broadcastLobbyUpdate(io, roomId) {
@@ -2069,6 +2183,26 @@ function _broadcast(io, roomId) {
   // スタッド系がアクティブなテーブルは studManager 経由で配信する
   if (_isStudActive(roomId)) { _broadcastStud(io, roomId); return; }
   const room = getOrCreateRoom(roomId);
+
+  if (
+    room?.phase === 'waiting' &&
+    tournamentManager.isTournamentTable(roomId) &&
+    canAutoStart(roomId) &&
+    !_pendingAutoStart.has(roomId)
+  ) {
+    _pendingAutoStart.add(roomId);
+    log(`[stud-recover] ${roomId.slice(-8)} waiting broadcast canAutoStart=true -> retry auto-start`);
+    setTimeout(() => {
+      _pendingAutoStart.delete(roomId);
+      if (_canSafelyRetryAutoStart(roomId)) {
+        log(`[stud-recover] ${roomId.slice(-8)} retry auto-start fired`);
+        _tryAutoStart(io, roomId);
+      } else {
+        const r = getRoom(roomId);
+        log(`[stud-recover] ${roomId.slice(-8)} retry skipped phase=${r?.phase} canAutoStart=${canAutoStart(roomId)} studInProgress=${_isStudHandInProgress(roomId)}`);
+      }
+    }, 250);
+  }
 
   // プレイヤーへ配信（手札あり）
   // BOT-only テーブルでは全員ソケット未接続のため buildGameState が呼ばれず

@@ -95,6 +95,15 @@ export default function TournamentDrawPage() {
     setActionLog(prev => [...prev.slice(-29), { id: Date.now(), text }]);
   }, []);
 
+  useEffect(() => {
+    if (!pendingTransfer) return;
+    socket.emit('getGameState', { roomId: pendingTransfer });
+    const interval = setInterval(() => {
+      socket.emit('getGameState', { roomId: pendingTransfer });
+    }, 1500);
+    return () => clearInterval(interval);
+  }, [pendingTransfer]);
+
   // ===== グローバルエラーキャッチ（window.onerror / unhandledrejection） =====
   // Next.js のエラーバウンダリでは非同期エラーを捕捉できないため
   // window レベルでも監視し、/api/debug/client-error へ送信する
@@ -303,6 +312,8 @@ export default function TournamentDrawPage() {
     //   3. リソース無駄遣い・タイミング差で setGameState が古い値で上書きされるリスク
     socket.on('t:tournamentStarting', ({ tableId: tid }: { tournamentId: string; tableId: string }) => {
       tableIdRef.current = tid;
+      setIsSpectator(false);
+      setPendingTransfer(null);
     });
 
     // テーブルが見つからない場合
@@ -387,6 +398,7 @@ export default function TournamentDrawPage() {
     // pending待機中のテーブル移動（ゲーム進行中テーブルへ移動 → 次のハンドまで待機）
     socket.on('t:pendingTableTransfer', ({ tableId }: { tableId: string; message: string }) => {
       tableIdRef.current = tableId;
+      setIsSpectator(false);
       setPendingTransfer(tableId);
       logAction('次のハンドから参加します（テーブル移動）');
     });
@@ -408,6 +420,11 @@ export default function TournamentDrawPage() {
     socket.on('gameStarted', () => {
       logAction('新しいハンド開始');
       setTimer(null);
+      const roomId = tableIdRef.current;
+      if (roomId) {
+        setTimeout(() => socket.emit('getGameState', { roomId }), 100);
+        setTimeout(() => socket.emit('getGameState', { roomId }), 800);
+      }
     });
 
     // 脱落

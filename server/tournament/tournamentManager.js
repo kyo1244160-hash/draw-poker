@@ -1,4 +1,5 @@
 const { log, logDev } = require('../logger');
+const { randomInt } = require('crypto');
 
 'use strict';
 /**
@@ -28,9 +29,13 @@ const tournaments = new Map();
 if (!global.__pastisLateRegClosed) global.__pastisLateRegClosed = new Set();
 function _markLateRegClosed(tournamentId) {
   global.__pastisLateRegClosed.add(tournamentId);
+  require('../db/tournament').markLateRegClosed(tournamentId)
+    .catch((err) => log(`[lateReg] failed to persist closed state: ${err.message}`));
 }
 function _clearLateRegState(tournamentId) {
   global.__pastisLateRegClosed.delete(tournamentId);
+  require('../db/tournament').clearLateRegClosed(tournamentId)
+    .catch((err) => log(`[lateReg] failed to clear closed state: ${err.message}`));
 }
 
 // tournaments Map を API Route から参照できるよう global に公開
@@ -138,10 +143,19 @@ function _createTable(tournament, playerInfos) {
 // ===== プレイヤーを均等にテーブルへ割り振り =====
 const MAX_PER_TABLE = 6;
 
+function _shufflePlayers(players) {
+  const shuffled = [...players];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = randomInt(i + 1);
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
+}
+
 function _assignTables(tournament, players) {
   // 必要テーブル数
   const tableCount = Math.ceil(players.length / MAX_PER_TABLE);
-  const shuffled = [...players].sort(() => Math.random() - 0.5);
+  const shuffled = _shufflePlayers(players);
 
   const tables = [];
   for (let i = 0; i < tableCount; i++) tables.push([]);
@@ -934,12 +948,12 @@ function getCurrentBlindPayload(tournamentId) {
 function handleForcedLeave(tableId, playerId, reason) {
   const tournamentId = roomToTournament.get(tableId);
   if (!tournamentId) {
-    leaveRoom(tableId, playerId);
+    leaveRoom(playerId);
     return;
   }
   const t = tournaments.get(tournamentId);
   if (!t) {
-    leaveRoom(tableId, playerId);
+    leaveRoom(playerId);
     return;
   }
 
@@ -967,7 +981,7 @@ function handleForcedLeave(tableId, playerId, reason) {
       const accountId = player.accountId ?? player.id;
       _disconnectedChips.set(accountId, { chips: player.chips, tableId, tournamentId });
       log(`[TM] ${tournamentId}: ${player.name} chips=${player.chips} preserved (disconnected)`);
-      leaveRoom(tableId, playerId);
+      leaveRoom(playerId);
     } else {
       // チップ0 = 本当に脱落（ショーダウンで負けた後など）
       _disconnectedChips.delete(player.accountId ?? player.id);
@@ -976,7 +990,7 @@ function handleForcedLeave(tableId, playerId, reason) {
       if (remaining <= 1) _finishTournament(t);
     }
   } else {
-    leaveRoom(tableId, playerId);
+    leaveRoom(playerId);
   }
 }
 

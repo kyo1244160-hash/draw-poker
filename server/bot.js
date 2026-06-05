@@ -100,7 +100,10 @@ class Bot {
   }
 
   connect() {
-    const BOT_SECRET = process.env.BOT_SECRET ?? 'pastis-internal-bot';
+    const BOT_SECRET = process.env.BOT_SECRET;
+    if (!BOT_SECRET) {
+      throw new Error('BOT_SECRET is required to start bots');
+    }
     this.socket = io(SERVER, {
       path:       '/socket.io',
       transports: ['websocket'],

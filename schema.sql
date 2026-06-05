@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS tournaments (
   blind_schedule_id   TEXT        REFERENCES blind_schedules(id),
   is_test             BOOLEAN     NOT NULL DEFAULT FALSE,
   late_reg_minutes    INTEGER     NOT NULL DEFAULT 0,  -- 0=レベルベース, >0=開始から何分間参加可
+  late_reg_closed_at  TIMESTAMPTZ,
   created_by          TEXT        REFERENCES accounts(id),
   created_at          TIMESTAMPTZ DEFAULT NOW(),
   CONSTRAINT tournament_status_check
@@ -94,7 +95,9 @@ CREATE TABLE IF NOT EXISTS tournament_results (
   final_chips    INTEGER     NOT NULL,
   hands_played   INTEGER     NOT NULL DEFAULT 0,
   eliminated_at  TIMESTAMPTZ,
-  created_at     TIMESTAMPTZ DEFAULT NOW()
+  created_at     TIMESTAMPTZ DEFAULT NOW(),
+  CONSTRAINT uq_tournament_results_tournament_account
+    UNIQUE (tournament_id, account_id)
 );
 
 -- チップ推移ログ（ブラインドレベルアップ時に全プレイヤー分を一括記録）

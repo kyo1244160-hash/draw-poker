@@ -796,7 +796,7 @@ export default function AdminPage() {
                             onChange={(e) => handleStatusChange(t.id, e.target.value)}
                           >
                             <option value="registering">受付中</option>
-                            <option value="running">進行中</option>
+                            <option value="running" disabled={t.status !== 'running'}>進行中</option>
                             <option value="finished">終了</option>
                             <option value="cancelled">キャンセル</option>
                           </select>

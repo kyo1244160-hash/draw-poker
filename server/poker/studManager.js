@@ -192,6 +192,7 @@ function startStudHand(room, onTimeout, opts = {}) {
     activePlayers.map((p) => ({ id: p.id, upCard: p.cards[2] })),
     room.currentMode
   );
+  log(`[stud-order] bring-in-candidates hand=${room.handCount} mode=${room.currentMode} candidates=[${activePlayers.map((p) => `${p.name}:${p.cards[2] ?? 'none'}`).join(' | ')}] target=${activePlayers.find((p) => p.id === bringInTarget)?.name ?? 'none'}`);
 
   room.phase      = 'bet3rd';
   // 【ブリングイン選択制】強制ポストせず currentBet=0 で開始する。
@@ -230,6 +231,7 @@ function startStudHand(room, onTimeout, opts = {}) {
   // （従来は左隣からだったが、選択権を与えるため本人から）
   room.actionIndex = biIdx >= 0 ? biIdx : _nextActive(room, room.dealerIndex);
   _startTimer(room);
+  log(`[stud-order] hand-start hand=${room.handCount} phase=${room.phase} firstIndex=${room.actionIndex} first=${room.players[room.actionIndex]?.name ?? 'none'} order=[${_orderStateForLog(room)}]`);
 
   return room;
 }
@@ -238,15 +240,59 @@ function startStudHand(room, onTimeout, opts = {}) {
 // ■ ベットアクション
 // ==========================================================
 
+function _progressSnapshot(room) {
+  if (!room) return 'room=null';
+  const cur = room.players?.[room.actionIndex];
+  const players = (room.players ?? []).map((p, i) =>
+    `${i}:${p.name}${p.isBot ? '[B]' : ''}${p.folded ? '/F' : ''}${p.sittingOut ? '/S' : ''}${p.acted ? '/A' : '/-'}` +
+    `(chips=${p.chips},bet=${p.bet},contrib=${p.totalContribution ?? 0})`
+  ).join(' | ');
+  return `room=${String(room.id).slice(-8)} mode=${room.currentMode} phase=${room.phase} actionIndex=${room.actionIndex}` +
+    ` cur=${cur ? `${cur.name}${cur.isBot ? '[B]' : ''}` : 'none'} currentBet=${room.currentBet} pot=${room.pot}` +
+    ` raise=${room.raiseCount}/${MAX_RAISES} players=[${players}]`;
+}
+
+function _cardsForLog(cards) {
+  return (cards ?? []).join(',');
+}
+
+function _upCardsForLog(player) {
+  return _cardsForLog((player.cards ?? []).filter((_, i) => player.faceUp?.[i]));
+}
+
+function _orderStateForLog(room) {
+  return (room.players ?? []).map((p, i) => {
+    const flags = [
+      p.isBot ? 'B' : 'H',
+      p.folded ? 'F' : '-',
+      p.sittingOut ? 'S' : '-',
+      p.acted ? 'A' : '-',
+      p.mustBringIn ? 'BI' : '',
+    ].filter(Boolean).join('');
+    return `${i}:${p.name}{${flags}} chips=${p.chips} bet=${p.bet} up=[${_upCardsForLog(p)}]`;
+  }).join(' | ');
+}
+
 function studBetAction(roomId, socketId, action, amount) {
   const room = studRooms.get(roomId);
-  if (!room || !room.phase.startsWith('bet')) return null;
+  if (!room || !room.phase.startsWith('bet')) {
+    log(`[stud-prog] reject action=${action} player=${String(socketId).slice(-8)} reason=not-bet ${_progressSnapshot(room)}`);
+    return null;
+  }
   const myIndex = room.players.findIndex((p) => p.id === socketId);
-  if (myIndex !== room.actionIndex) return null;
+  if (myIndex !== room.actionIndex) {
+    log(`[stud-prog] reject action=${action} player=${String(socketId).slice(-8)} myIndex=${myIndex} reason=not-turn ${_progressSnapshot(room)}`);
+    return null;
+  }
   const player = room.players[myIndex];
-  if (!player || player.folded) return null;
+  if (!player || player.folded) {
+    log(`[stud-prog] reject action=${action} player=${String(socketId).slice(-8)} reason=missing-or-folded ${_progressSnapshot(room)}`);
+    return null;
+  }
 
   const toCall = room.currentBet - player.bet;
+  log(`[stud-prog] action-start actor=${player.name}${player.isBot ? '[B]' : ''} action=${action} toCall=${toCall} ${_progressSnapshot(room)}`);
+  log(`[stud-order] action-accepted hand=${room.handCount} phase=${room.phase} actorIndex=${myIndex} actor=${player.name}${player.isBot ? '[B]' : ''} action=${action} toCall=${toCall} order=[${_orderStateForLog(room)}]`);
 
   // ===== 【ブリングイン選択制】ブリングイン義務者の専用アクション =====
   // mustBringIn=true の手番では bringIn / complete / fold のみ許可。
@@ -263,6 +309,7 @@ function studBetAction(roomId, socketId, action, amount) {
       // bring-in はレイズではない。他プレイヤーはまだ未行動のまま。
       _clearTimer(room);
       _advanceBetAction(room);
+      log(`[stud-prog] action-end actor=${player.name}${player.isBot ? '[B]' : ''} action=${action} ${_progressSnapshot(room)}`);
       return room;
     }
     if (action === 'complete') {
@@ -297,6 +344,7 @@ function studBetAction(roomId, socketId, action, amount) {
       }
       _clearTimer(room);
       _advanceBetAction(room);
+      log(`[stud-prog] action-end actor=${player.name}${player.isBot ? '[B]' : ''} action=${action} ${_progressSnapshot(room)}`);
       return room;
     }
     if (action === 'fold') {
@@ -369,17 +417,21 @@ function studBetAction(roomId, socketId, action, amount) {
 
   _clearTimer(room);
   _advanceBetAction(room);
+  log(`[stud-prog] action-end actor=${player.name}${player.isBot ? '[B]' : ''} action=${action} ${_progressSnapshot(room)}`);
   return room;
 }
 
 function _advanceBetAction(room) {
   const active = room.players.filter((p) => !p.folded && !p.sittingOut);
+  log(`[stud-prog] advance-start active=${active.length} ${_progressSnapshot(room)}`);
+  log(`[stud-order] advance-start hand=${room.handCount} phase=${room.phase} fromIndex=${room.actionIndex} active=${active.map((p) => p.name).join('>')} order=[${_orderStateForLog(room)}]`);
   // 全員フォールドで1人だけ残った → ランナウト不要、その場で総取り確定
   // （buildStudGameState の contestants.length===1 パスが精算する）
   if (active.length <= 1) {
     _clearTimer(room);
     room.phase = 'showdown';
     room.actionIndex = -1;
+    log(`[stud-prog] advance-showdown reason=active<=1 ${_progressSnapshot(room)}`);
     return;
   }
 
@@ -387,20 +439,31 @@ function _advanceBetAction(room) {
   // オールイン済み(chips<=0)はアクションできないため allActed の対象外。
   const canAct = active.filter((p) => p.chips > 0);
   const allActed = canAct.every((p) => p.acted);
+  log(`[stud-prog] advance-check canAct=${canAct.length} allActed=${allActed} acted=[${canAct.map(p => `${p.name}:${p.acted ? 'Y' : 'N'}:bet${p.bet}`).join(',')}] ${_progressSnapshot(room)}`);
   if (allActed) { _nextPhase(room); return; }
 
   let next = (room.actionIndex + 1) % room.players.length;
   for (let t = 0; t < room.players.length; t++) {
     const p = room.players[next];
+    const reason = !p ? 'missing'
+      : p.folded ? 'folded'
+      : p.sittingOut ? 'sittingOut'
+      : p.acted ? 'acted'
+      : p.chips <= 0 ? 'allIn'
+      : 'candidate';
+    log(`[stud-order] scan-next hand=${room.handCount} phase=${room.phase} step=${t} index=${next} player=${p?.name ?? 'none'} reason=${reason}`);
     // chips<=0（オールイン）は手番をスキップ。これを怠るとタイムアウトまでフリーズ。
     if (p && !p.folded && !p.sittingOut && !p.acted && p.chips > 0) {
       room.actionIndex = next;
       _startTimer(room);
+      log(`[stud-prog] advance-next actionIndex=${next} next=${p.name}${p.isBot ? '[B]' : ''} ${_progressSnapshot(room)}`);
+      log(`[stud-order] advance-next hand=${room.handCount} phase=${room.phase} nextIndex=${next} next=${p.name}${p.isBot ? '[B]' : ''}`);
       return;
     }
     next = (next + 1) % room.players.length;
   }
   // 見つからない → フェーズ進行
+  log(`[stud-prog] advance-no-candidate ${_progressSnapshot(room)}`);
   _nextPhase(room);
 }
 
@@ -410,8 +473,10 @@ function _advanceBetAction(room) {
 
 function _nextPhase(room) {
   _clearTimer(room);
+  const prevPhase = room.phase;
   const idx = PHASES.indexOf(room.phase);
   let next = PHASES[idx + 1] ?? 'showdown';
+  log(`[stud-prog] next-phase-start from=${prevPhase} idx=${idx} ${_progressSnapshot(room)}`);
 
   // deal フェーズはカード配布して即座に次の bet フェーズへ
   while (next && next.startsWith('deal')) {
@@ -425,6 +490,7 @@ function _nextPhase(room) {
   if (next === 'showdown') {
     room.actionIndex = -1;
     _runoutToShowdown(room);
+    log(`[stud-prog] next-phase-showdown from=${prevPhase} ${_progressSnapshot(room)}`);
     return;
   }
 
@@ -435,6 +501,7 @@ function _nextPhase(room) {
   const canActCount = activeNotFolded.filter((p) => p.chips > 0).length;
   if (activeNotFolded.length >= 2 && canActCount <= 1) {
     _runoutToShowdown(room);
+    log(`[stud-prog] next-phase-runout reason=canAct<=1 from=${prevPhase} ${_progressSnapshot(room)}`);
     return;
   }
 
@@ -453,13 +520,17 @@ function _nextPhase(room) {
 
   // 4th street以降は最強の見えている手から先頭アクション
   const active = room.players.filter((p) => !p.folded && !p.sittingOut);
+  const firstCandidates = active.map((p) => ({ id: p.id, name: p.name, upCards: p.cards.filter((c, i) => p.faceUp[i]) }));
+  log(`[stud-order] street-first-candidates hand=${room.handCount} phase=${next} mode=${room.currentMode} candidates=[${firstCandidates.map((p) => `${p.name}:${_cardsForLog(p.upCards)}`).join(' | ')}]`);
   const firstId = findHighHandFirst(
-    active.map((p) => ({ id: p.id, upCards: p.cards.filter((c, i) => p.faceUp[i]) })),
+    firstCandidates.map((p) => ({ id: p.id, upCards: p.upCards })),
     room.currentMode
   );
   const firstIdx = room.players.findIndex((p) => p.id === firstId);
   room.actionIndex = firstIdx >= 0 ? firstIdx : _nextActive(room, room.dealerIndex);
   _startTimer(room);
+  log(`[stud-prog] next-phase-end from=${prevPhase} to=${room.phase} first=${room.players[room.actionIndex]?.name ?? 'none'} ${_progressSnapshot(room)}`);
+  log(`[stud-order] street-first-selected hand=${room.handCount} phase=${room.phase} mode=${room.currentMode} firstIndex=${room.actionIndex} first=${room.players[room.actionIndex]?.name ?? 'none'} firstId=${String(firstId ?? '').slice(-8)} fallback=${firstIdx < 0} order=[${_orderStateForLog(room)}]`);
 }
 
 /**
@@ -467,6 +538,16 @@ function _nextPhase(room) {
  * 全員オールイン時、または showdown 到達時に各プレイヤーが7枚未満の場合に呼ぶ。
  * 未フォールドプレイヤーが必ず7枚（3rd〜7th）持つよう補完する。
  */
+function _ensurePlayableActionIndex(room, source = 'unknown') {
+  if (!room || !room.phase?.startsWith('bet')) return false;
+  const cur = room.players[room.actionIndex];
+  if (cur && !cur.folded && !cur.sittingOut && !cur.acted && cur.chips > 0) return false;
+  log(`[stud-prog] repair-action-index source=${source} ${_progressSnapshot(room)}`);
+  _clearTimer(room);
+  _advanceBetAction(room);
+  return true;
+}
+
 function _runoutToShowdown(room) {
   _clearTimer(room);
   const active = room.players.filter((p) => !p.folded && !p.sittingOut);
@@ -487,6 +568,7 @@ function _runoutToShowdown(room) {
   }
   room.phase = 'showdown';
   room.actionIndex = -1;
+  log(`[stud-prog] runout-showdown guard=${guard} deck=${room.deck.length} ${_progressSnapshot(room)}`);
 }
 
 function _dealStreet(room, dealPhase) {
@@ -650,6 +732,9 @@ function _splitPotChips(room, seatRef, eligible, winnerIds, amount, refIdx, labe
  *   - showdown: contested なら全員の全カード公開
  */
 function buildStudGameState(room, requesterId) {
+  if (_ensurePlayableActionIndex(room, 'build-state')) {
+    log(`[stud-state] repaired-before-build requester=${String(requesterId).slice(-8)} ${_progressSnapshot(room)}`);
+  }
   const isShowdown = room.phase === 'showdown';
   const contestants = room.players.filter((p) => !p.folded && !p.sittingOut);
 
@@ -783,14 +868,22 @@ function buildStudGameState(room, requesterId) {
 
 function _startTimer(room) {
   _clearTimer(room);
+  if (_ensurePlayableActionIndex(room, 'start-timer')) return;
   const limit = cfg.BET_TIME_LIMIT;
-  if (limit <= 0 || !room._onTimeout) { room._timerLimit = 0; return; }
+  const cur0 = room.players[room.actionIndex];
+  if (limit <= 0 || !room._onTimeout) {
+    room._timerLimit = 0;
+    log(`[stud-timer] disabled limit=${limit} hasHandler=${!!room._onTimeout} ${_progressSnapshot(room)}`);
+    return;
+  }
   room._timerLimit = limit;
   room._timerStart = Date.now();
+  log(`[stud-timer] start limit=${limit} target=${cur0 ? `${cur0.name}${cur0.isBot ? '[B]' : ''}` : 'none'} ${_progressSnapshot(room)}`);
   room._timer = setTimeout(() => {
     // 発火時点で actionIndex を再読み込みする（クロージャで古い player を
     // 捕捉しないため。gameManager._startTimer と同方式）
     const cur = room.players[room.actionIndex];
+    log(`[stud-timer] fire target=${cur ? `${cur.name}${cur.isBot ? '[B]' : ''}` : 'none'} ${_progressSnapshot(room)}`);
     if (cur && room._onTimeout) room._onTimeout(room.id, room.phase, cur.id);
   }, limit * 1000);
 }
@@ -808,17 +901,29 @@ function _getTimerRemaining(room) {
 /** タイムアウト時のデフォルトアクション: チェック可能ならチェック、不可ならフォールド */
 function handleStudTimeout(roomId, socketId) {
   const room = studRooms.get(roomId);
-  if (!room) return null;
+  if (!room) {
+    log(`[stud-timeout] ignored reason=no-room player=${String(socketId).slice(-8)}`);
+    return null;
+  }
   const p = room.players.find((x) => x.id === socketId);
-  if (!p) return null;
+  if (!p) {
+    log(`[stud-timeout] ignored reason=no-player player=${String(socketId).slice(-8)} ${_progressSnapshot(room)}`);
+    return null;
+  }
+  log(`[stud-timeout] start player=${p.name}${p.isBot ? '[B]' : ''} mustBringIn=${!!p.mustBringIn} ${_progressSnapshot(room)}`);
   // 【ブリングイン選択制】義務者がタイムアウトした場合、check/fold では
   // studBetAction の義務者分岐に弾かれて処理されず、タイムアウトループに
   // 陥る。最も保守的な選択である最小ブリングインを自動実行する。
   if (p.mustBringIn) {
-    return studBetAction(roomId, socketId, 'bringIn', 0);
+    const result = studBetAction(roomId, socketId, 'bringIn', 0);
+    log(`[stud-timeout] end action=bringIn acted=${!!result} ${_progressSnapshot(room)}`);
+    return result;
   }
   const toCall = room.currentBet - p.bet;
-  return studBetAction(roomId, socketId, toCall > 0 ? 'fold' : 'check', 0);
+  const timeoutAction = toCall > 0 ? 'fold' : 'check';
+  const result = studBetAction(roomId, socketId, timeoutAction, 0);
+  log(`[stud-timeout] end action=${timeoutAction} acted=${!!result} ${_progressSnapshot(room)}`);
+  return result;
 }
 
 /**
@@ -1016,6 +1121,7 @@ function syncFromGameManager(gmRoom, currentMode) {
   // startStudHand で fixedDealerIdx = room.dealerIndex として使われるため、
   // ここで正しく設定しておくことでボタンが毎ハンド次のプレイヤーへ移動する。
   room.dealerIndex = gmRoom.dealerIndex ?? -1;
+  log(`[stud-sync-state] room=${String(gmRoom.id).slice(-8)} mode=${currentMode} dealerIndex=${room.dealerIndex} players=[${room.players.map((p, i) => `${i}:${p.name}${p.isBot ? '[B]' : ''}:chips${p.chips}:so${!!p.sittingOut}:fold${!!p.folded}:acted${!!p.acted}:wait${!!p._studWaitOnce}`).join('|')}]`);
 
   return room;
 }

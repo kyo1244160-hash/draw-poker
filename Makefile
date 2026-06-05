@@ -61,7 +61,7 @@ lint:
 ## 環境変数チェック
 check-env:
 	@node -e "\
-	const required = ['DATABASE_URL','GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','NEXTAUTH_SECRET','NEXTAUTH_URL','ALLOWED_ORIGIN'];\
+	const required = ['DATABASE_URL','GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','NEXTAUTH_SECRET','NEXTAUTH_URL','ALLOWED_ORIGIN','BOT_SECRET'];\
 	require('dotenv').config({ path: '.env.local' });\
 	const missing = required.filter(k => !process.env[k]);\
 	if (missing.length) { console.error('❌ 未設定の環境変数:', missing.join(', ')); process.exit(1); }\

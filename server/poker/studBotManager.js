@@ -200,6 +200,15 @@ function decideStudBetAction(room, player) {
 // ■ トリガー（tournamentBotManager.triggerBotActions のスタッド版）
 // ==========================================================
 
+function _botProgressSnapshot(room) {
+  if (!room) return 'room=null';
+  const cur = room.players?.[room.actionIndex];
+  const acted = (room.players ?? []).map((p, i) =>
+    `${i}:${p.name}${p.isBot ? '[B]' : ''}${p.folded ? '/F' : ''}${p.sittingOut ? '/S' : ''}${p.acted ? '/A' : '/-'}:bet${p.bet}:chips${p.chips}`
+  ).join('|');
+  return `phase=${room.phase} mode=${room.currentMode} actionIndex=${room.actionIndex} cur=${cur ? `${cur.name}${cur.isBot ? '[B]' : ''}` : 'none'} currentBet=${room.currentBet} pot=${room.pot} raiseCount=${room.raiseCount} players=[${acted}]`;
+}
+
 const _pendingStudBot = new Map();
 
 /**
@@ -218,27 +227,56 @@ function triggerStudBotActions(tableId, botIds, onActionDone) {
   const cur = room.players[room.actionIndex];
   if (!cur || !botIds.has(cur.id)) {
     logDev(`[StudBot] ${tableId.slice(-8)} turn not bot → skip`);
+    log(`[stud-bot] skip table=${tableId.slice(-8)} reason=turn-not-bot ${_botProgressSnapshot(room)}`);
     return;
   }
 
-  const key = `${tableId}::${cur.id}`;
-  if (_pendingStudBot.has(key)) return;
+  const scheduledHandCount = room.handCount;
+  const scheduledPhase = room.phase;
+  const scheduledActionIndex = room.actionIndex;
+  const key = `${tableId}::${cur.id}::${scheduledHandCount}::${scheduledPhase}::${scheduledActionIndex}`;
+  if (_pendingStudBot.has(key)) {
+    log(`[stud-bot] skip table=${tableId.slice(-8)} reason=pending keyPlayer=${cur.name} ${_botProgressSnapshot(room)}`);
+    return;
+  }
   _pendingStudBot.set(key, true);
 
   const delay = 500 + Math.random() * 1000;
+  log(`[stud-bot] schedule table=${tableId.slice(-8)} bot=${cur.name} delayMs=${Math.round(delay)} hand=${scheduledHandCount} phase=${scheduledPhase} index=${scheduledActionIndex} ${_botProgressSnapshot(room)}`);
   setTimeout(() => {
     _pendingStudBot.delete(key);
     const room2 = _getStudRoom(tableId);
-    if (!room2 || room2.phase === 'waiting' || room2.phase === 'showdown') return;
+    if (!room2 || room2.phase === 'waiting' || room2.phase === 'showdown') {
+      log(`[stud-bot] abort table=${tableId.slice(-8)} reason=inactive ${_botProgressSnapshot(room2)}`);
+      return;
+    }
     const cur2 = room2.players[room2.actionIndex];
-    if (!cur2 || cur2.id !== cur.id) return;
+    if (
+      room2.handCount !== scheduledHandCount ||
+      room2.phase !== scheduledPhase ||
+      room2.actionIndex !== scheduledActionIndex
+    ) {
+      log(`[stud-bot] abort table=${tableId.slice(-8)} reason=stale-turn expected=hand${scheduledHandCount}/${scheduledPhase}/idx${scheduledActionIndex} actual=hand${room2.handCount}/${room2.phase}/idx${room2.actionIndex} ${_botProgressSnapshot(room2)}`);
+      return;
+    }
+    if (!cur2 || cur2.id !== cur.id) {
+      log(`[stud-bot] abort table=${tableId.slice(-8)} reason=turn-changed expected=${cur.name} ${_botProgressSnapshot(room2)}`);
+      return;
+    }
 
     const sm = require('./studManager');
     const action = decideStudBetAction(room2, cur2);
+    const beforePhase = room2.phase;
+    const beforeIndex = room2.actionIndex;
+    log(`[stud-bot] action-before table=${tableId.slice(-8)} bot=${cur2.name} action=${action} ${_botProgressSnapshot(room2)}`);
     const acted = !!sm.studBetAction(tableId, cur2.id, action, 0);
+    const room3 = _getStudRoom(tableId);
     log(`[StudBot] ${tableId.slice(-8)} ${cur2.name}(${room2.currentMode}) ${action} acted=${acted} chips=${cur2.chips}`);
+    log(`[stud-bot] action-after table=${tableId.slice(-8)} bot=${cur2.name} action=${action} acted=${acted} beforePhase=${beforePhase} beforeIndex=${beforeIndex} ${_botProgressSnapshot(room3)}`);
     if (acted && onActionDone) {
       onActionDone(tableId, cur2.name, action);
+      const room4 = _getStudRoom(tableId);
+      log(`[stud-bot] callback-done table=${tableId.slice(-8)} bot=${cur2.name} action=${action} ${_botProgressSnapshot(room4)}`);
     }
   }, delay);
 }

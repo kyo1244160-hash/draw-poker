@@ -54,6 +54,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             isEliminated = memT.eliminationOrder?.includes(accountId) ?? false;
           }
         } catch { /* 取得できない場合は null のまま */ }
+        if (tournament.late_reg_closed_at) {
+          lateRegOpen = false;
+        }
         // webpack バンドル境界で require が別インスタンスになる場合の補完:
         // global.__pastisLateRegClosed を Express サーバーが書き込み、ここで読む
         if (lateRegOpen === null || lateRegOpen === true) {
@@ -63,31 +66,29 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             lateRegOpen = false; // グローバル経由で終了を確認
           }
         }
+        const isFutureScheduledSng =
+          !!tournament.is_sit_and_go &&
+          new Date(tournament.scheduled_start_at).getTime() > Date.now();
+
         // それでも null の場合の判定:
         // 1. 時間ベース（late_reg_minutes > 0）: scheduled_start_at からの経過時間で計算
-        // 2. レベルベース（late_reg_minutes = 0）: メモリなしでは判定不可 → 楽観的に true
-        //    （実際の登録可否は registerEntry が正確に検証するので安全）
-        // 3. SNG（scheduled_start_at = 2099年）: __pastisLateRegClosed に入っていなければ開放中
-        if (lateRegOpen === null && tournament.late_reg_minutes && tournament.late_reg_minutes > 0) {
+        // 2. レベルベース（late_reg_minutes = 0）: メモリなしでは安全側で閉鎖扱い
+        // 3. SNG（scheduled_start_at = 2099年）: DB/global に closed がなければ開放中
+        if (lateRegOpen === null && isFutureScheduledSng) {
+          lateRegOpen = true;
+        } else if (lateRegOpen === null && tournament.late_reg_minutes && tournament.late_reg_minutes > 0) {
           const startedAt = new Date(tournament.scheduled_start_at).getTime();
           if (startedAt < Date.now()) {
             // 通常トーナメント（scheduled_start_at が過去）: 経過時間で判断
             const elapsedMin = (Date.now() - startedAt) / 60000;
             lateRegOpen = elapsedMin <= tournament.late_reg_minutes;
           } else {
-            // SNG（scheduled_start_at = 2099年）:
-            // global に closed マークがない = まだ開放中（楽観的）
-            // 実際の登録可否はサーバーの registerEntry が正確に検証するので安全
+            // SNG以外でここに来るのは異常な running+未来日時だが、時間ベースとしては未経過なので開放扱い。
             lateRegOpen = true;
           }
         }
-        // 最終フォールバック: null のまま残った場合
-        // ここに来るのは「メモリ取得失敗 + __pastisLateRegClosed に未登録」のケースのみ。
-        // lateReg が終了したときは必ず _markLateRegClosed() が Set に追加するため、
-        // Set にない = まだ終了していない = 開放中が確定。よって true が正しい。
-        // （レベルベース・時間ベース・SNG すべてで _markLateRegClosed は必ず呼ばれる）
         if (lateRegOpen === null) {
-          lateRegOpen = true;
+          lateRegOpen = false;
         }
       }
       const tournamentWithLateReg = tournament

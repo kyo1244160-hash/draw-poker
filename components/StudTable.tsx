@@ -130,13 +130,48 @@ interface StudCard { code: string; up: boolean; folded?: boolean }
  * overflow:'visible' で枠を超えても見切れない
  * 最初の2枚のダウンカードは FRONT_OFFSET ずつずらして「2枚ある」ことを視認可能にする
  */
-function OtherStudCards({ cards, folded, size = 'xs', revealAll = false, align = 'center' }: { cards: StudCard[]; folded?: boolean; size?: CardSize; revealAll?: boolean; align?: 'flex-start' | 'center' | 'flex-end' }) {
+function OtherStudCards({
+  cards,
+  folded,
+  size = 'xs',
+  revealAll = false,
+  align = 'center',
+  maxWidth,
+}: {
+  cards: StudCard[];
+  folded?: boolean;
+  size?: CardSize;
+  revealAll?: boolean;
+  align?: 'flex-start' | 'center' | 'flex-end';
+  maxWidth?: number;
+}) {
   if (!cards || cards.length === 0) return null;
   // カードサイズに応じてオフセットを調整（大きいカードはずらし幅も広げる）
   const FRONT_OFFSET = size === 'xs' ? 4 : 6;
   const w            = SIZE_PRESET[size].w;
   const h            = SIZE_PRESET[size].h;
   const gap          = size === 'xs' ? 2 : 3;
+
+  if (maxWidth && cards.length > 0) {
+    const rawW = w * cards.length;
+    const overlap = cards.length > 1
+      ? Math.min(w - 9, Math.max(0, Math.ceil((rawW - maxWidth) / (cards.length - 1))))
+      : 0;
+    const rowW = w * cards.length - overlap * Math.max(0, cards.length - 1);
+    const justifyOffset =
+      align === 'flex-end' ? Math.max(0, maxWidth - rowW)
+        : align === 'center' ? Math.max(0, (maxWidth - rowW) / 2)
+          : 0;
+    return (
+      <div style={{ position: 'relative', width: maxWidth, height: h, opacity: folded ? 0.5 : 1, overflow: 'visible' }}>
+        {cards.map((c, i) => (
+          <div key={`fit${i}`} style={{ position: 'absolute', top: 0, left: justifyOffset + i * (w - overlap), zIndex: i, width: w, height: h }}>
+            <Card code={(revealAll || c.up) ? c.code : '??'} size={size} folded={folded} isDown={!c.up} />
+          </div>
+        ))}
+      </div>
+    );
+  }
 
   // 【ショーダウン詰め込み修正】7枚展開時に画面端を超えないように、
   // gap を 0 にし、サイズに応じてカードを少し重ねる。
@@ -325,6 +360,29 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
     setTableListLoading(false);
   };
 
+  const HeaderTableListButton = () => {
+    if (!tournamentId) return null;
+    return (
+      <button
+        type="button"
+        onClick={openTableList}
+        aria-label="Table list"
+        title="Table list"
+        style={{
+          position:'fixed',top:52,right:8,width:32,height:28,
+          borderRadius:5,border:'1px solid rgba(201,168,76,0.45)',
+          background:'rgba(6,45,28,0.95)',color:'var(--gold-bright)',
+          display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:3,
+          cursor:'pointer',zIndex:45,boxShadow:'0 2px 8px rgba(0,0,0,0.35)',
+        }}
+      >
+        <span style={{width:15,height:2,borderRadius:2,background:'currentColor',display:'block'}} />
+        <span style={{width:15,height:2,borderRadius:2,background:'currentColor',display:'block'}} />
+        <span style={{width:15,height:2,borderRadius:2,background:'currentColor',display:'block'}} />
+      </button>
+    );
+  };
+
   // ⚠️ Hook のルール: useRef/useEffect は early return より前に置く必要がある
   // flashOverlays を useRef で管理（renderPlayer → MobileTable の描画順依存をなくす）
   const flashOverlaysRef = useRef<React.ReactNode[]>([]);
@@ -431,6 +489,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
 
     return (
       <>
+        <HeaderTableListButton />
         <div ref={containerRef} style={{ display: 'flex', alignItems: 'center', gap: 0, width: '100%', maxWidth: TW + ACT_W + 32, padding: '0 16px', flex: 1, minHeight: 0 }}>
           {/* 楕円テーブル */}
           <div style={{ position: 'relative', width: TW, height: TH, flexShrink: 0 }}>
@@ -471,7 +530,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
               const flash   = actionFlash[p.name];
               const studCards = (p.studCards ?? (p.hand ?? []).map(code => ({ code, up: true }))) as StudCard[];
               return (
-                <div key={p.id} style={{ position: 'absolute', left, top, width: BW, zIndex: p.isSelf ? 5 : p.isMyTurn ? 4 : p.isWinner ? 4 : 2, overflow: 'visible' }}>
+                <div key={p.id} style={{ position: 'absolute', left, top, width: BW, zIndex: p.isSelf ? 5 : active ? 4 : p.isWinner ? 4 : 2, overflow: 'visible' }}>
                   {flash && (
                     <div key={flash.key} style={{ position: 'absolute', top: -38, left: '50%', transform: 'translateX(-50%)', background: ACTION_COLOR[flash.label] ?? 'rgba(160,60,10,0.92)', color: '#fff', fontFamily: 'var(--font-title)', fontSize: 13, fontWeight: 700, padding: '4px 14px', borderRadius: 20, whiteSpace: 'nowrap', boxShadow: '0 2px 10px rgba(0,0,0,0.5)', pointerEvents: 'none', zIndex: 20, animation: 'actionPop 2s ease-out forwards' }}>{flash.label}</div>
                   )}
@@ -551,9 +610,8 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
               </div>
             )}
             {!isSpectator && isBetPhase && isMyTurn && self?.isAllIn && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--gold)', fontFamily: 'var(--font-title)', fontWeight: 700 }}>⚡ オールイン中（待機）</div>}
-            {!isSpectator && isBetPhase && !isMyTurn && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--cream-dim)', fontFamily: 'var(--font-body)', fontStyle: 'italic' }}>{players.find(p => p.isMyTurn && !p.isSelf)?.name ?? ''}がアクション中...</div>}
+            {!isSpectator && isBetPhase && !isMyTurn && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--cream-dim)', fontFamily: 'var(--font-body)', fontStyle: 'italic' }}>{players.find(p => p.isMyTurn && !p.isSelf && !p.folded && !p.sittingOut)?.name ?? ''}がアクション中...</div>}
             {isShowdown && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--cream-dim)', fontFamily: 'var(--font-body)', fontStyle: 'italic' }}>次のゲームを準備中...</div>}
-            {tournamentId && <div style={{ borderTop: '1px solid rgba(201,168,76,0.12)', marginTop: 14, paddingTop: 10 }}><button onClick={openTableList} style={{ fontFamily: 'var(--font-title)', fontSize: 10, letterSpacing: '0.08em', color: 'var(--gold-dim)', background: 'rgba(201,168,76,0.07)', border: '1px solid rgba(201,168,76,0.2)', borderRadius: 5, padding: '7px 0', cursor: 'pointer', width: '100%' }}>テーブル一覧</button></div>}
           </div>
         </div>
         <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} error={tableListError} onClose={() => setShowTableList(false)} />
@@ -581,19 +639,21 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
 
   // 【楕円パラメータ】ドロー系(TournamentTable)と完全統一。
   const CX_M = TW_M / 2;
-  const RX_M = isPortrait ? TW_M * 0.32 : TW_M * 0.44;
-  const RY_M = isPortrait ? TH_M * 0.36 : TH_M * 0.40;
-  const CY_M = isPortrait ? TH_M * 0.54 : TH_M / 2;
+  const RX_M = isPortrait ? TW_M * 0.34 : TW_M * 0.44;
+  const RY_M = isPortrait ? TH_M * 0.38 : TH_M * 0.40;
+  const CY_M = isPortrait ? TH_M * 0.52 : TH_M / 2;
 
   // 【ボックスサイズ】
   // OTH_H: portrait時は TH*0.14（名前+チップ表示のみ）。カードは overflow:visible で飛び出す。
-  const OTH_W  = Math.max(Math.floor(TW_M * 0.36), Math.floor(Math.min(TW_M, TH_M) * 0.32));
+  const OTH_W  = isPortrait
+    ? Math.min(Math.max(Math.floor(TW_M * 0.42), 142), TW_M - 12)
+    : Math.max(Math.floor(TW_M * 0.36), Math.floor(Math.min(TW_M, TH_M) * 0.32));
   const SELF_W = Math.min(Math.floor(TW_M * 0.70), TW_M - 16);
   // SELF_H: TH*0.28 に縮小。0.36 では TW=352 等の狭い画面で bottom が TH_M を
   // 超えて自プレイヤーボックスが画面外になっていた（デバッグで確認）。
   // 0.28 でも名前+チップ+カード3枚は収まる。landscape は従来通り。
   const SELF_H = isPortrait ? Math.floor(TH_M * 0.28) : Math.floor(TH_M * 0.40);
-  const OTH_H  = isPortrait ? Math.floor(TH_M * 0.14) : Math.floor(TH_M * 0.32);
+  const OTH_H  = isPortrait ? Math.max(92, Math.floor(TH_M * 0.18)) : Math.floor(TH_M * 0.32);
 
   // 修正1: 名前・チップフォントはOTH_W基準で全員統一（ドローポーカーと同じ方式）
   const fs = {
@@ -604,7 +664,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
   // 【SLOTS_M】ドロー系(TournamentTable)と完全統一。
   // SELF_H=0.28 に縮小したことで 165°/15° のスロットが自プレイヤーと重ならなくなった
   // （数値検証済み: TW=352〜414 全サイズで重なりゼロ）。
-  const SLOTS_M = isPortrait ? [165, -155, -90, -25, 15] : [150, -150, -90, -30, 30];
+  const SLOTS_M = isPortrait ? [168, -168, -90, -18, 18] : [150, -150, -90, -30, 30];
   const oth_m   = orderedOthers;
 
   const getPosMobile = (p: PlayerState) => {
@@ -615,6 +675,28 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
     // スタッド系も同様にすることで、両システム間での違和感を解消。
     // ドロー系(TournamentTable)と同じ楕円配置。自プレイヤーも ang=90。
     let ang: number;
+    const bw  = p.isSelf ? SELF_W : OTH_W;
+    const bh  = p.isSelf ? SELF_H : OTH_H;
+
+    if (isPortrait && self && !p.isSelf) {
+      const idx = oth_m.findIndex(o => o.id === p.id);
+      // Keep the same clockwise seat order as the PC layout:
+      // next after self -> lower-left, then upper-left, top, upper-right, lower-right.
+      const slot = [
+        { x: 0.22, y: 0.59 },
+        { x: 0.22, y: 0.39 },
+        { x: 0.50, y: 0.14 },
+        { x: 0.78, y: 0.39 },
+        { x: 0.78, y: 0.59 },
+      ][idx] ?? { x: 0.5, y: 0.28 + idx * 0.12 };
+      let left = TW_M * slot.x - bw / 2;
+      let top  = TH_M * slot.y - bh / 2;
+      const MARGIN = 4;
+      left = Math.max(MARGIN, Math.min(left, TW_M - bw - MARGIN));
+      top  = Math.max(4, Math.min(top, TH_M - bh - 4));
+      return { left, top };
+    }
+
     if (p.isSelf) { ang = 90; }
     else {
       const idx = oth_m.findIndex(o => o.id === p.id);
@@ -622,8 +704,6 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
       else { ang = 90 + (360 / (oth_m.length || 1)) * idx; }
     }
     const rad = (ang * Math.PI) / 180;
-    const bw  = p.isSelf ? SELF_W : OTH_W;
-    const bh  = p.isSelf ? SELF_H : OTH_H;
     let left = CX_M + RX_M * Math.cos(rad) - bw / 2;
     let top  = CY_M + RY_M * Math.sin(rad) - bh / 2;
     // 画面端クランプ: ボックス（とカード）が左右にはみ出して見切れるのを防ぐ。
@@ -664,7 +744,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
     const showSelfResult = p.isSelf && !p.folded && (p.studCards ?? (p.hand ?? [])).length >= 3 && !!p.result;
 
     return (
-      <div key={p.id} style={{ position: 'absolute', left, top, width: bw, overflow: 'visible', zIndex: p.isSelf ? 5 : p.isMyTurn ? 4 : p.isWinner ? 4 : 2 }}>
+      <div key={p.id} style={{ position: 'absolute', left, top, width: bw, overflow: 'visible', zIndex: p.isSelf ? 5 : active ? 4 : p.isWinner ? 4 : 2 }}>
         <div style={{
           position: 'relative', width: bw, textAlign: 'center', padding: '3px 2px 2px',
           borderRadius: 7,
@@ -695,22 +775,11 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
             const cardJustify = !p.isSelf && isShowdown && !p.folded
               ? (left < TW_M * 0.25 ? 'flex-start' : left + OTH_W > TW_M * 0.75 ? 'flex-end' : 'center')
               : 'center';
-            // 【カード方向制御】portrait時のみ適用。
-            // portrait: 自プレイヤーが下端固定のため、下側スロットのカードを
-            //           ボックス上に出して自プレイヤーとの重なりを防ぐ。
-            // landscape: OTH_H が大きくボックス内にカードが収まるため通常表示。
-            const isLowerSlot = isPortrait && !p.isSelf && top > CY_M;
-            return isLowerSlot ? (
-              <div style={{ position: 'relative', overflow: 'visible', zIndex: 2, height: 0, width: '100%' }}>
-                <div style={{ position: 'absolute', bottom: '100%', left: 0, right: 0, overflow: 'visible', paddingBottom: 2 }}>
-                  <OtherStudCards cards={studCards} folded={p.folded} revealAll={isShowdown && !p.folded} align={cardJustify as 'flex-start' | 'center' | 'flex-end'} />
-                </div>
-              </div>
-            ) : (
-              <div style={{ marginTop: 2, overflow: 'visible', position: 'relative', zIndex: 1 }}>
+            return (
+              <div style={{ marginTop: 4, overflow: 'visible', position: 'relative', zIndex: 1, display: 'flex', justifyContent: p.isSelf ? 'center' : cardJustify }}>
                 {p.isSelf
                   ? <SelfStudCards cards={studCards} size="sm" />
-                  : <OtherStudCards cards={studCards} folded={p.folded} revealAll={isShowdown && !p.folded} align={cardJustify as 'flex-start' | 'center' | 'flex-end'} />}
+                  : <OtherStudCards cards={studCards} folded={p.folded} revealAll={isShowdown && !p.folded} align={cardJustify as 'flex-start' | 'center' | 'flex-end'} maxWidth={bw - 6} />}
               </div>
             );
           })()}
@@ -747,7 +816,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
           DEALER-DAN等の左下プレイヤーボックスと重なる。top を上方向にシフトして回避。
           landscape時はテーブル領域に余裕があるため従来通り中央配置。 */}
       {phase !== 'waiting' && (
-        <div style={{ position: 'absolute', left: '50%', top: isPortrait ? '38%' : '50%', transform: 'translate(-50%,-50%)', textAlign: 'center', zIndex: 3, pointerEvents: 'none' }}>
+        <div style={{ position: 'absolute', left: '50%', top: isPortrait ? '38%' : '50%', transform: 'translate(-50%,-50%)', textAlign: 'center', zIndex: 1, pointerEvents: 'none' }}>
           {street && <div style={{ fontFamily: 'var(--font-title)', fontSize: isPortrait ? 12 : 10, color: '#88ddff', letterSpacing: '0.1em', fontWeight: 700, marginBottom: 1 }}>{STREET_LABEL[street] ?? street}</div>}
           {bringInPlayer && street === '3rd' && <div style={{ fontSize: isPortrait ? 10 : 8, color: '#ffaa44', marginBottom: 1 }}>🔔 {bringInPlayer.name} BRING-IN</div>}
           <div style={{ fontFamily: 'var(--font-title)', fontSize: isPortrait ? 14 : 10, color: 'var(--gold-bright)', textShadow: '0 0 6px rgba(201,168,76,0.6)' }}>🏦 {meta?.pot ?? 0}</div>
@@ -841,10 +910,8 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
         )
       )}
       {!isSpectator && isBetPhase && isMyTurn && self?.isAllIn && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--gold)', fontFamily: 'var(--font-title)', padding: '8px 0', fontWeight: 700 }}>⚡ オールイン中（待機）</div>}
-      {!isSpectator && isBetPhase && !isMyTurn && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--cream-dim)', fontFamily: 'var(--font-body)', padding: '8px 0', fontStyle: 'italic' }}>{players.find(p => p.isMyTurn && !p.isSelf)?.name ?? ''}がアクション中...</div>}
+      {!isSpectator && isBetPhase && !isMyTurn && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--cream-dim)', fontFamily: 'var(--font-body)', padding: '8px 0', fontStyle: 'italic' }}>{players.find(p => p.isMyTurn && !p.isSelf && !p.folded && !p.sittingOut)?.name ?? ''}がアクション中...</div>}
       {isShowdown && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--cream-dim)', fontFamily: 'var(--font-body)', padding: '8px 0', fontStyle: 'italic' }}>次のゲームを準備中...</div>}
-      {/* テーブル一覧はアクションボタンと十分離す（区切り線＋余白）。誤タップ防止。 */}
-      {tournamentId && <div style={{ borderTop: '1px solid rgba(201,168,76,0.12)', marginTop: 14, paddingTop: 10 }}><button onClick={openTableList} style={{ fontFamily: 'var(--font-title)', fontSize: 10, letterSpacing: '0.08em', color: 'var(--gold-dim)', background: 'rgba(201,168,76,0.07)', border: '1px solid rgba(201,168,76,0.2)', borderRadius: 5, padding: '7px 0', cursor: 'pointer', width: '100%' }}>テーブル一覧</button></div>}
     </div>
     );
   }
@@ -852,6 +919,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
   if (isPortrait) {
     return (
       <>
+        <HeaderTableListButton />
         <div ref={containerRef} style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', overflow: 'visible' }}>
           {renderMobileTable()}
           {renderActionPanel()}
@@ -863,6 +931,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
 
   return (
     <>
+      <HeaderTableListButton />
       <div ref={containerRef} style={{ display: 'flex', alignItems: 'center', gap: 0, width: '100%', height: '100%', overflow: 'hidden' }}>
         {renderMobileTable()}
         <div style={{ width: ACT_W_M, height: '100%', display: 'flex', flexDirection: 'column' }}>

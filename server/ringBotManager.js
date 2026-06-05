@@ -16,7 +16,10 @@ const SERVER = process.env.BOT_SERVER
   || process.env.NEXTAUTH_URL
   || process.env.ALLOWED_ORIGIN
   || 'http://localhost:3000';
-const BOT_SECRET = process.env.BOT_SECRET ?? 'pastis-internal-bot';
+const BOT_SECRET = process.env.BOT_SECRET;
+if (!BOT_SECRET) {
+  throw new Error('BOT_SECRET is required to start ring bots');
+}
 
 const BOT_NAMES = [
   'Bot-Alpha', 'Bot-Beta', 'Bot-Gamma', 'Bot-Delta', 'Bot-Epsilon', 'Bot-Zeta',

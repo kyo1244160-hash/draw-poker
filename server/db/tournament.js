@@ -23,6 +23,26 @@ async function getTournament(tournamentId) {
   return row ?? null;
 }
 
+async function markLateRegClosed(tournamentId) {
+  const [row] = await sql`
+    UPDATE tournaments
+    SET late_reg_closed_at = COALESCE(late_reg_closed_at, NOW())
+    WHERE id = ${tournamentId}
+    RETURNING id, late_reg_closed_at
+  `;
+  return row ?? null;
+}
+
+async function clearLateRegClosed(tournamentId) {
+  const [row] = await sql`
+    UPDATE tournaments
+    SET late_reg_closed_at = NULL
+    WHERE id = ${tournamentId}
+    RETURNING id
+  `;
+  return row ?? null;
+}
+
 /**
  * 参加者一覧（キャンセル済みを除く）
  */
@@ -63,18 +83,28 @@ async function registerEntry(tournamentId, accountId) {
         const tm = require('../tournament/tournamentManager');
         const memTournament = tm.getTournament(tournamentId);
         if (!memTournament) {
-          // メモリにない（サーバー再起動直後等）
-          // 時間ベース（late_reg_minutes > 0）: 経過時間で判断
-          // レベルベース（late_reg_minutes = 0）: メモリがなくても終了を検証できないため許可
-          if (tournament.late_reg_minutes && tournament.late_reg_minutes > 0) {
+          if (tournament.late_reg_closed_at) {
+            throw new Error('レイトレジスト受付期間が終了しています');
+          }
+          const isFutureScheduledSng =
+            !!tournament.is_sit_and_go &&
+            new Date(tournament.scheduled_start_at).getTime() > Date.now();
+          if (isFutureScheduledSng) {
+            // SNG は scheduled_start_at=2099 でスケジューラーから除外する設計。
+            // DB上runningかつclosedでないなら、メモリ状態が取れなくても参加受付中とみなす。
+          } else if (tournament.late_reg_minutes && tournament.late_reg_minutes > 0) {
+            // メモリにない（サーバー再起動直後等）
+            // 時間ベース（late_reg_minutes > 0）: 経過時間で判断
             // 時間ベース: 開始からの経過時間がlate_reg_minutes未満なら許可
             const startedAt = new Date(tournament.scheduled_start_at).getTime();
             const elapsedMin = (Date.now() - startedAt) / 60000;
             if (elapsedMin > tournament.late_reg_minutes) {
               throw new Error('レイトレジスト受付期間が終了しています');
             }
+          } else {
+            // レベルベース（late_reg_minutes = 0）: メモリがなければ安全側で拒否
+            throw new Error('レイトレジスト状態を確認できないため参加受付を停止しています');
           }
-          // レベルベース（late_reg_minutes=0）の場合は許可して続行
         } else if (!memTournament.lateRegOpen) {
           throw new Error('レイトレジスト受付期間が終了しています');
         }
@@ -141,25 +171,40 @@ async function registerEntry(tournamentId, accountId) {
   }
 
   // 満員チェック + upsert をアトミックに実行
-  // SELECT COUNT → INSERT の間に別リクエストが割り込んで定員オーバーになるのを防ぐ
+  // tournamentId 単位の advisory lock で同時登録を直列化する
   if (tournament.max_players) {
-    // 満員の場合は INSERT をスキップして null を返すサブクエリ方式
-    const [row] = await sql`
-      INSERT INTO tournament_entries (tournament_id, account_id)
-      SELECT ${tournamentId}, ${accountId}
-      WHERE (
-        SELECT COUNT(*)::int
+    return sql.begin(async (tx) => {
+      await tx`SELECT pg_advisory_xact_lock(hashtext(${tournamentId}))`;
+
+      const [existing] = await tx`
+        SELECT *
+        FROM tournament_entries
+        WHERE tournament_id = ${tournamentId}
+          AND account_id    = ${accountId}
+        LIMIT 1
+      `;
+      if (existing && existing.cancelled_at === null) return existing;
+
+      const [countRow] = await tx`
+        SELECT COUNT(*)::int AS count
         FROM tournament_entries
         WHERE tournament_id = ${tournamentId}
           AND cancelled_at IS NULL
-      ) < ${tournament.max_players}
-      ON CONFLICT (tournament_id, account_id) DO UPDATE
-        SET cancelled_at  = NULL,
-            registered_at = NOW()
-      RETURNING *
-    `;
-    if (!row) throw new Error('定員に達しました');
-    return row;
+      `;
+      if ((countRow?.count ?? 0) >= tournament.max_players) {
+        throw new Error('定員に達しました');
+      }
+
+      const [row] = await tx`
+        INSERT INTO tournament_entries (tournament_id, account_id)
+        VALUES (${tournamentId}, ${accountId})
+        ON CONFLICT (tournament_id, account_id) DO UPDATE
+          SET cancelled_at  = NULL,
+              registered_at = NOW()
+        RETURNING *
+      `;
+      return row;
+    });
   }
 
   // max_players 無制限の場合は従来通り upsert
@@ -209,6 +254,8 @@ async function isRegistered(tournamentId, accountId) {
 
 module.exports = {
   getTournament,
+  markLateRegClosed,
+  clearLateRegClosed,
   getEntries,
   registerEntry,
   cancelEntry,

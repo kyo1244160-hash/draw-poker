@@ -22,7 +22,7 @@ const { equityAdjust }                                = require('./equity_adjust
  * フォールバック: room.isNL が未設定の古い状態（startGame 前）でも安全に false を返す
  */
 function isNL(room) {
-  return !!(room && room.isNL);
+  return !!(room && (room.isNL || room.currentMode === '27sd' || room.mode === '27sd'));
 }
 
 const BOT_PREFIX = 'bot::';

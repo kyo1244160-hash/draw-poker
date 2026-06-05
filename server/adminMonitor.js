@@ -237,7 +237,7 @@ router.post('/tables/:tableId/kickPlayer', (req, res) => {
 
   if (!isTournamentTable(tableId)) {
     // 通常テーブルの場合は単純退室
-    leaveRoom(tableId, playerId);
+    leaveRoom(playerId);
     return res.json({ ok: true, message: 'Player removed from normal table' });
   }
 

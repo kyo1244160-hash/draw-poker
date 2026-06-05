@@ -171,12 +171,17 @@ export default function TournamentTable({
       }
     };
     update();
+    const onOrientationChange = () => setTimeout(update, 100);
     window.addEventListener('resize', update);
-    window.addEventListener('orientationchange', () => setTimeout(update, 100));
+    window.addEventListener('orientationchange', onOrientationChange);
     // ResizeObserver で親要素の高さ変化を検知
     const ro = new ResizeObserver(update);
     if (containerRef.current) ro.observe(containerRef.current);
-    return () => { window.removeEventListener('resize', update); ro.disconnect(); };
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('orientationchange', onOrientationChange);
+      ro.disconnect();
+    };
   }, []);
 
   // ゲーム状態
@@ -187,6 +192,8 @@ export default function TournamentTable({
   const isMyTurn      = self?.isMyTurn ?? false;
   const myDrew        = self?.drewThisRound ?? false;
   const effectiveMode = meta?.currentMode ?? '27';
+  const isNoLimitMode = effectiveMode === '27sd' || !!meta?.isNL;
+  const selfIsNL      = !!self?.isNL || isNoLimitMode;
   const modeColor     = effectiveMode==='badugi' ? '#cc9966'
                       : effectiveMode==='a5'     ? '#bb88dd'
                       : effectiveMode==='27sd'   ? '#88dd88'
@@ -210,6 +217,29 @@ export default function TournamentTable({
     } catch { /* silent */ } finally {
       setTableListLoading(false);
     }
+  };
+
+  const HeaderTableListButton = () => {
+    if (!tournamentId) return null;
+    return (
+      <button
+        type="button"
+        onClick={openTableList}
+        aria-label="Table list"
+        title="Table list"
+        style={{
+          position:'fixed',top:52,right:8,width:32,height:28,
+          borderRadius:5,border:'1px solid rgba(201,168,76,0.45)',
+          background:'rgba(6,45,28,0.95)',color:'var(--gold-bright)',
+          display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:3,
+          cursor:'pointer',zIndex:45,boxShadow:'0 2px 8px rgba(0,0,0,0.35)',
+        }}
+      >
+        <span style={{width:15,height:2,borderRadius:2,background:'currentColor',display:'block'}} />
+        <span style={{width:15,height:2,borderRadius:2,background:'currentColor',display:'block'}} />
+        <span style={{width:15,height:2,borderRadius:2,background:'currentColor',display:'block'}} />
+      </button>
+    );
   };
 
   // 自分から時計回りに他プレイヤーを並べる
@@ -422,17 +452,17 @@ export default function TournamentTable({
 
   // NLベット時に下限が変わったら入力値を初期化
   useEffect(() => {
-    if (!self?.isNL || !self?.canRaise) { setNlBetAmount(null); return; }
+    if (!selfIsNL || !self?.canRaise) { setNlBetAmount(null); return; }
     const lowerBound = (meta?.currentBet ?? 0) === 0 ? (self.minBet ?? 10) : (self.minRaiseTotal ?? 10);
     if (nlBetAmount === null || nlBetAmount < lowerBound) {
       setNlBetAmount(lowerBound);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [meta?.currentBet, meta?.phase, self?.isMyTurn, self?.isNL, self?.canRaise, self?.minBet, self?.minRaiseTotal]);
+  }, [meta?.currentBet, meta?.phase, self?.isMyTurn, selfIsNL, self?.canRaise, self?.minBet, self?.minRaiseTotal]);
 
   // NLベットコントロール（クイック選択 + スライダー）
   const NLBetControl = ({compact = false}:{compact?: boolean}) => {
-    if (!self || !self.canRaise || !self.isNL) return null;
+    if (!self || !self.canRaise || !selfIsNL) return null;
 
     const isBet      = (meta?.currentBet ?? 0) === 0;
     const minBet     = self.minBet ?? meta?.bigBlind ?? 10;
@@ -461,11 +491,21 @@ export default function TournamentTable({
 
     const currentAmt = nlBetAmount ?? lowerBound;
     const clampedAmt = Math.max(lowerBound, Math.min(maxBet, currentAmt));
-    const quickAmounts = [
-      { label: '1/2P', value: Math.floor(pot * 0.5) },
-      { label: 'P',    value: pot },
-      { label: '2P',   value: pot * 2 },
-    ].map(q => ({ ...q, value: Math.max(lowerBound, Math.min(maxBet, q.value)) }));
+    const bigBlind = meta?.bigBlind ?? minBet;
+    const isPreDrawBet = meta?.phase === 'bet0';
+    const quickAmounts = (isPreDrawBet
+      ? [
+          { label: '2BB', value: bigBlind * 2 },
+          { label: '3BB', value: bigBlind * 3 },
+          { label: '4BB', value: bigBlind * 4 },
+        ]
+      : [
+          { label: '33%',  value: Math.floor(pot * 0.33) },
+          { label: '50%',  value: Math.floor(pot * 0.50) },
+          { label: '75%',  value: Math.floor(pot * 0.75) },
+          { label: '100%', value: pot },
+        ]
+    ).map(q => ({ ...q, value: Math.max(lowerBound, Math.min(maxBet, q.value)) }));
 
     const fs = compact ? 9 : 11;
     const padY = compact ? 3 : 4;
@@ -551,18 +591,18 @@ export default function TournamentTable({
         <div style={infoTextStyle(compact)}>
           {(self?.toCall??0)>0?`コール: ${self?.toCall}`:'チェック or ベット'}
           <span style={{fontSize:11,opacity:0.65,display:'block'}}>
-            {self?.isNL ? 'No Limit' : `単位:${self?.betSize} Bet ${raiseCount}/5`}
+            {selfIsNL ? 'No Limit' : `単位:${self?.betSize} Bet ${raiseCount}/5`}
           </span>
         </div>
         {/* NLモード: ベット額スライダーを表示 */}
-        {self?.isNL && self?.canRaise && !self?.isAllIn && <NLBetControl compact={compact} />}
+        {selfIsNL && self?.canRaise && !self?.isAllIn && <NLBetControl compact={compact} />}
         {/* オールイン or チェック可能な場合はフォールドボタンを非表示 */}
         {!self?.isAllIn && !self?.canCheck && <button style={btnStyle('red',compact)} onClick={()=>onBetAction('fold')}>フォールド</button>}
         {self?.canCheck
           ? <button style={btnStyle('gray',compact)} onClick={()=>onBetAction('check')}>{self?.isAllIn?'オールイン中（待機）':'チェック'}</button>
           : <button style={btnStyle('gray',compact)} onClick={()=>onBetAction('call')}>コール ({self?.toCall})</button>
         }
-        {self?.canRaise && !self?.isAllIn && (self?.isNL
+        {self?.canRaise && !self?.isAllIn && (selfIsNL
           ? (() => {
               const sendAmt = getNLSendAmount(self);
               return (
@@ -643,6 +683,7 @@ export default function TournamentTable({
 
     return (
       <>
+      <HeaderTableListButton />
       <div ref={containerRef} style={{display:'flex',alignItems:'center',gap:0,width:'100%',
         maxWidth:TW+ACT_W+32,padding:'0 16px',flex:1,minHeight:0}}>
         {/* 楕円テーブル */}
@@ -685,7 +726,7 @@ export default function TournamentTable({
                 </div>
               )}
               {isBetPhase&&(meta?.currentBet??0)>0&&<div style={{fontSize:12,color:'#ffcc44',marginTop:1,fontFamily:'var(--font-body)'}}>BET {meta?.currentBet}</div>}
-              {isBetPhase&&!meta?.isNL&&<div style={{fontSize:9,color:'rgba(255,255,255,0.4)',fontFamily:'var(--font-body)'}}>Bet {raiseCount}/5</div>}
+              {isBetPhase&&!isNoLimitMode&&<div style={{fontSize:9,color:'rgba(255,255,255,0.4)',fontFamily:'var(--font-body)'}}>Bet {raiseCount}/5</div>}
               {blind&&<div style={{fontSize:10,color:'#88ee88',marginTop:3,fontFamily:'var(--font-title)'}}>Lv.{blind.level} {blind.sb}/{blind.bb}</div>}
               {blind&&!blind.isLastLevel&&blindCountdown>0&&(
                 <div style={{fontSize:10,fontFamily:'var(--font-title)',color:blindCountdown<60?'#ff6666':'rgba(255,255,255,0.5)',marginTop:1}}>⏱ {fmtBlind(blindCountdown)}</div>
@@ -833,18 +874,6 @@ export default function TournamentTable({
             </div>
           )}
           <ActionButtons/>
-          {/* テーブル一覧ボタン */}
-          {tournamentId&&(
-            <button
-              onClick={openTableList}
-              style={{fontFamily:'var(--font-title)',fontSize:10,letterSpacing:'0.1em',
-                color:'var(--gold-dim)',background:'rgba(201,168,76,0.08)',
-                border:'1px solid rgba(201,168,76,0.25)',borderRadius:5,
-                padding:'5px 0',cursor:'pointer',width:'100%',marginTop:4}}
-            >
-              テーブル一覧
-            </button>
-          )}
         </div>
       </div>
 
@@ -1048,7 +1077,7 @@ export default function TournamentTable({
             textShadow:'0 0 8px rgba(0,0,0,0.9)'}}>
             {PHASE_LABEL[phase]}
           </div>
-          {isBetPhase&&!meta?.isNL&&<div style={{fontSize:isPortrait?10:8,color:'rgba(255,255,255,0.45)',fontFamily:'var(--font-body)'}}>Bet {raiseCount}/5</div>}
+          {isBetPhase&&!isNoLimitMode&&<div style={{fontSize:isPortrait?10:8,color:'rgba(255,255,255,0.45)',fontFamily:'var(--font-body)'}}>Bet {raiseCount}/5</div>}
           {blind&&<div style={{fontSize:isPortrait?10:8,color:'#88ee88',marginTop:2,fontFamily:'var(--font-title)'}}>Lv.{blind.level} {blind.sb}/{blind.bb}</div>}
           {blind&&!blind.isLastLevel&&blindCountdown>0&&(
             <div style={{fontSize:isPortrait?10:8,fontFamily:'var(--font-title)',color:blindCountdown<60?'#ff6666':'rgba(255,255,255,0.4)',marginTop:1}}>⏱{fmtBlind(blindCountdown)}</div>
@@ -1115,6 +1144,7 @@ export default function TournamentTable({
   if (isPortrait) {
     return (
       <>
+      <HeaderTableListButton />
       <div ref={containerRef} style={{display:'flex',flexDirection:'column',width:'100%',height:'100%',overflow:'visible'}}>
         <MobileTable/>
         {/* 下部アクションパネル */}
@@ -1148,14 +1178,14 @@ export default function TournamentTable({
           )}
           {!isSpectator&&isBetPhase&&isMyTurn&&!self?.isAllIn&&(
             <div style={{display:'flex',flexDirection:'column',gap:6}}>
-              {self?.isNL && self?.canRaise && <NLBetControl compact={true} />}
+              {selfIsNL && self?.canRaise && <NLBetControl compact={true} />}
               <div style={{display:'flex',gap:6}}>
                 {!self?.canCheck&&<button style={{...btnStyle('red',true),flex:1}} onClick={()=>onBetAction('fold')}>フォールド</button>}
                 {self?.canCheck
                   ?<button style={{...btnStyle('gray',true),flex:1}} onClick={()=>onBetAction('check')}>チェック</button>
                   :<button style={{...btnStyle('gray',true),flex:1}} onClick={()=>onBetAction('call')}>コール({self?.toCall})</button>
                 }
-                {self?.canRaise && (self?.isNL
+                {self?.canRaise && (selfIsNL
                   ? (() => {
                       const sendAmt = getNLSendAmount(self);
                       return (
@@ -1182,15 +1212,6 @@ export default function TournamentTable({
             </div>
           )}
           {phase==='showdown'&&<div style={{textAlign:'center',fontSize:12,color:'var(--cream-dim)',fontFamily:'var(--font-body)',padding:'8px 0',fontStyle:'italic'}}>次のゲームを準備中...</div>}
-          {/* テーブル一覧ボタン（縦） */}
-          {tournamentId&&(
-            <button onClick={openTableList} style={{fontFamily:'var(--font-title)',fontSize:10,
-              letterSpacing:'0.08em',color:'var(--gold-dim)',background:'rgba(201,168,76,0.07)',
-              border:'1px solid rgba(201,168,76,0.2)',borderRadius:5,padding:'5px 0',
-              cursor:'pointer',width:'100%',marginTop:4}}>
-              テーブル一覧
-            </button>
-          )}
         </div>
       </div>
 
@@ -1202,6 +1223,7 @@ export default function TournamentTable({
   // ===== 横表示 =====
   return (
     <>
+    <HeaderTableListButton />
     <div ref={containerRef} style={{display:'flex',width:'100%',height:'100%',overflow:'visible'}}>
       <div style={{position:'relative',flex:1,minWidth:0,overflow:'visible'}}>
         <div style={{position:'absolute',top:0,left:0,width:TW_M,height:TH_M}}>
@@ -1214,15 +1236,6 @@ export default function TournamentTable({
         display:'flex',flexDirection:'column',justifyContent:'center',overflow:'hidden',padding:'6px 8px'}}>
         <div style={{display:'flex',flexDirection:'column',gap:6,flex:1,justifyContent:'center'}}>
           <ActionButtons compact/>
-          {/* テーブル一覧ボタン（横） */}
-          {tournamentId&&(
-            <button onClick={openTableList} style={{fontFamily:'var(--font-title)',fontSize:9,
-              letterSpacing:'0.06em',color:'var(--gold-dim)',background:'rgba(201,168,76,0.07)',
-              border:'1px solid rgba(201,168,76,0.2)',borderRadius:5,padding:'4px 0',
-              cursor:'pointer',width:'100%'}}>
-              テーブル一覧
-            </button>
-          )}
         </div>
         <div style={{fontSize:8,color:'var(--gold-dim)',fontFamily:'var(--font-body)',textAlign:'center'}}>
           {effectiveMode==='badugi'?'★ Badugi'

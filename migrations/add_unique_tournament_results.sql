@@ -6,6 +6,15 @@
 -- 適用方法: Supabase の SQL エディタで実行
 -- ================================================================
 
-ALTER TABLE tournament_results
-  ADD CONSTRAINT uq_tournament_results_tournament_account
-  UNIQUE (tournament_id, account_id);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'uq_tournament_results_tournament_account'
+  ) THEN
+    ALTER TABLE tournament_results
+      ADD CONSTRAINT uq_tournament_results_tournament_account
+      UNIQUE (tournament_id, account_id);
+  END IF;
+END $$;
