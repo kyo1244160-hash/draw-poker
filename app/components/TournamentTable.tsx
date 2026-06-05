@@ -497,6 +497,10 @@ export default function TournamentTable({
     const sliderValue = clampedAmt >= maxBet
       ? sliderSteps
       : Math.max(0, Math.min(sliderSteps, Math.round((clampedAmt - lowerBound) / sliderUnit)));
+    const updateSliderAmount = (rawValue: string) => {
+      const stepIndex = Number(rawValue);
+      setNlBetAmount(stepIndex >= sliderSteps ? maxBet : Math.min(maxBet, lowerBound + stepIndex * sliderUnit));
+    };
     const isPreDrawBet = meta?.phase === 'bet0';
     const quickAmounts = (isPreDrawBet
       ? [
@@ -530,11 +534,10 @@ export default function TournamentTable({
         <div style={{display:'flex',alignItems:'center',gap:compact?4:6}}>
           <input type="range" min={0} max={sliderSteps}
             step={1}
-            value={sliderValue} onChange={(e) => {
-              const stepIndex = Number(e.target.value);
-              setNlBetAmount(stepIndex >= sliderSteps ? maxBet : Math.min(maxBet, lowerBound + stepIndex * sliderUnit));
-            }}
-            style={{flex:1, accentColor:'#c9a84c', height:compact?12:14}} />
+            value={sliderValue}
+            onInput={(e) => updateSliderAmount(e.currentTarget.value)}
+            onChange={(e) => updateSliderAmount(e.currentTarget.value)}
+            style={{flex:1, accentColor:'#c9a84c', height:compact?24:28, touchAction:'none', cursor:'pointer'}} />
           <span style={{fontSize:compact?11:13, fontWeight:600, color:'#e8d5a0',
             minWidth:compact?40:50, textAlign:'right' as const,
             fontFamily:'var(--font-body)'}}>{clampedAmt.toLocaleString()}</span>
