@@ -497,9 +497,67 @@ export default function TournamentTable({
     const sliderValue = clampedAmt >= maxBet
       ? sliderSteps
       : Math.max(0, Math.min(sliderSteps, Math.round((clampedAmt - lowerBound) / sliderUnit)));
-    const updateSliderAmount = (rawValue: string) => {
-      const stepIndex = Number(rawValue);
-      setNlBetAmount(stepIndex >= sliderSteps ? maxBet : Math.min(maxBet, lowerBound + stepIndex * sliderUnit));
+    const amountFromSliderStep = (stepIndex: number) =>
+      stepIndex >= sliderSteps ? maxBet : Math.min(maxBet, lowerBound + stepIndex * sliderUnit);
+    const logSliderDebug = (event: string, data: Record<string, unknown>) => {
+      console.info('[slider-debug][tournament]', {
+        event,
+        phase: meta?.phase,
+        lowerBound,
+        maxBet,
+        bigBlind,
+        sliderUnit,
+        sliderSteps,
+        sliderValue,
+        currentAmount: clampedAmt,
+        ...data,
+      });
+    };
+    const updateSliderAmount = (stepIndex: number) => {
+      const amount = amountFromSliderStep(stepIndex);
+      setNlBetAmount(amount);
+      return amount;
+    };
+    const updateSliderFromPointer = (clientX: number, rect: { left: number; width: number }) => {
+      const ratio = rect.width > 0 ? Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) : 0;
+      const stepIndex = Math.round(ratio * sliderSteps);
+      const amount = updateSliderAmount(stepIndex);
+      return {
+        clientX,
+        rectLeft: Math.round(rect.left),
+        rectWidth: Math.round(rect.width),
+        ratio: Number(ratio.toFixed(3)),
+        stepIndex,
+        amount,
+      };
+    };
+    const startSliderDrag = (clientX: number, el: HTMLDivElement, pointerId: number) => {
+      const domRect = el.getBoundingClientRect();
+      const dragRect = { left: domRect.left, width: domRect.width };
+      let lastLoggedStep = -1;
+      const startData = updateSliderFromPointer(clientX, dragRect);
+      lastLoggedStep = startData.stepIndex;
+      logSliderDebug('start', { pointerId, ...startData });
+      const onMove = (ev: PointerEvent) => {
+        if (ev.pointerId !== pointerId) return;
+        ev.preventDefault();
+        const moveData = updateSliderFromPointer(ev.clientX, dragRect);
+        if (moveData.stepIndex !== lastLoggedStep) {
+          lastLoggedStep = moveData.stepIndex;
+          logSliderDebug('move', { pointerId, ...moveData });
+        }
+      };
+      const onUp = (ev: PointerEvent) => {
+        if (ev.pointerId !== pointerId) return;
+        const endData = updateSliderFromPointer(ev.clientX, dragRect);
+        logSliderDebug(ev.type, { pointerId, ...endData });
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onUp);
+      };
+      window.addEventListener('pointermove', onMove, { passive: false });
+      window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', onUp);
     };
     const isPreDrawBet = meta?.phase === 'bet0';
     const quickAmounts = (isPreDrawBet
@@ -532,12 +590,22 @@ export default function TournamentTable({
           ))}
         </div>
         <div style={{display:'flex',alignItems:'center',gap:compact?4:6}}>
-          <input type="range" min={0} max={sliderSteps}
-            step={1}
-            value={sliderValue}
-            onInput={(e) => updateSliderAmount(e.currentTarget.value)}
-            onChange={(e) => updateSliderAmount(e.currentTarget.value)}
-            style={{flex:1, accentColor:'#c9a84c', height:compact?24:28, touchAction:'none', cursor:'pointer'}} />
+          <div
+            role="slider"
+            aria-valuemin={0}
+            aria-valuemax={sliderSteps}
+            aria-valuenow={sliderValue}
+            onPointerDown={(e) => {
+              e.preventDefault();
+              startSliderDrag(e.clientX, e.currentTarget, e.pointerId);
+            }}
+            style={{position:'relative',flex:1,height:compact?24:28,display:'flex',alignItems:'center',touchAction:'none',cursor:'pointer'}}
+          >
+            <div style={{position:'absolute',left:0,right:0,height:5,borderRadius:3,background:'rgba(255,255,255,0.22)'}} />
+            <div style={{position:'absolute',left:0,width:`${(sliderValue / sliderSteps) * 100}%`,height:5,borderRadius:3,background:'#c9a84c'}} />
+            <div style={{position:'absolute',left:`${(sliderValue / sliderSteps) * 100}%`,transform:'translateX(-50%)',
+              width:compact?16:18,height:compact?16:18,borderRadius:'50%',background:'#d6b04d',boxShadow:'0 1px 4px rgba(0,0,0,0.45)'}} />
+          </div>
           <span style={{fontSize:compact?11:13, fontWeight:600, color:'#e8d5a0',
             minWidth:compact?40:50, textAlign:'right' as const,
             fontFamily:'var(--font-body)'}}>{clampedAmt.toLocaleString()}</span>
