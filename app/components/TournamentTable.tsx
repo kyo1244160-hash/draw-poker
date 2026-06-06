@@ -219,20 +219,20 @@ export default function TournamentTable({
         justifyContent:'center',
         verticalAlign:'middle',
         marginLeft: compact ? 3 : 0,
-        gap: compact ? 2 : 0,
-        padding: compact ? '0 3px' : '2px 6px',
-        minWidth: compact ? 0 : 46,
+        gap: compact ? 3 : 1,
+        padding: compact ? '1px 4px' : '2px 7px',
+        minWidth: compact ? 0 : 50,
         borderRadius:3,
         background: compact ? 'rgba(201,168,76,0.25)' : 'rgba(201,168,76,0.15)',
         color: compact ? '#f0d060' : 'var(--gold)',
         fontFamily:'var(--font-body)',
         fontWeight: compact ? '700' : undefined,
-        fontSize: compact ? 9 : 13,
+        fontSize: compact ? 11 : 16,
         lineHeight:compact ? 1 : 1.08,
         whiteSpace:'nowrap',
       }}>
         <span>{compact ? `B${amount}` : `BET ${amount}`}</span>
-        {bbText && <span style={{fontSize: compact ? 8 : 11, lineHeight:1.05, fontWeight:800, color:'#ffe08a'}}>{bbText}</span>}
+        {bbText && <span style={{fontSize: compact ? 10 : 13, lineHeight:1.05, fontWeight:800, color:'#ffe08a'}}>{bbText}</span>}
       </span>
     );
   };
@@ -244,15 +244,15 @@ export default function TournamentTable({
         flexDirection: 'row',
         alignItems:'baseline',
         justifyContent:'center',
-        gap: compact ? 2 : 4,
+        gap: compact ? 3 : 5,
         fontFamily:'var(--font-body)',
-        fontSize: compact ? 9 : 16,
+        fontSize: compact ? 10 : 17,
         color:'#88dd88',
         lineHeight: compact ? 1 : 1.1,
         whiteSpace:'nowrap',
       }}>
         <span>💵 {chips}</span>
-        {bbText && <span style={{fontSize: compact ? 8 : 11, color:'#baf7ba', fontWeight:800}}>{bbText}</span>}
+        {bbText && <span style={{fontSize: compact ? 9 : 12, color:'#baf7ba', fontWeight:800}}>{bbText}</span>}
       </span>
     );
   };
@@ -806,7 +806,7 @@ export default function TournamentTable({
         {p.folded&&!p.sittingOut&&<Badge bg="#444" color="#aaa" label="FOLD"/>}
         {p.isWinner&&<Badge bg="#f0d060" color="#1a1200" label="🏆 WIN"/>}
       </div>
-      <p style={{fontFamily:'var(--font-title)',fontSize:14,color:p.isSelf?'var(--gold-bright)':'var(--cream)',
+      <p style={{fontFamily:'var(--font-title)',fontSize:p.isSelf?12:11,color:p.isSelf?'var(--gold-bright)':'var(--cream)',
         letterSpacing:'0.04em',margin:'0 0 3px',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>
         {p.isSelf?`${p.name} (YOU)`:p.name}
       </p>
@@ -1036,7 +1036,7 @@ export default function TournamentTable({
         }}>
           {self&&(
             <div style={{textAlign:'center',paddingBottom:10,borderBottom:'1px solid rgba(201,168,76,0.2)'}}>
-              <div style={{fontFamily:'var(--font-title)',fontSize:14,color:'var(--gold-bright)',marginBottom:3}}>
+              <div style={{fontFamily:'var(--font-title)',fontSize:12,color:'var(--gold-bright)',marginBottom:3}}>
                 {self.name} (YOU)
               </div>
           <div><StackDisplay chips={self.chips} /></div>
@@ -1090,7 +1090,7 @@ export default function TournamentTable({
   // スマホ縦は自席を下端固定にするため、相手席は上半分〜中段だけに配置する。
   const SLOTS_M = isPortrait ? [180,-150,-90,-30,0] : [150,-150,-90,-30,30];
   const oth_m = orderedOthers;
-  const fs = { name: Math.max(9,Math.floor(OTH_W*0.10)), chip: Math.max(9,Math.floor(OTH_W*0.095)) };
+  const fs = { name: Math.max(8,Math.floor(OTH_W*0.078)), chip: Math.max(10,Math.floor(OTH_W*0.105)) };
 
   const getPosMobile = (p:PlayerState) => {
     const bw = p.isSelf ? SELF_W : OTH_W;
@@ -1195,7 +1195,7 @@ export default function TournamentTable({
             {p.folded&&!p.sittingOut&&<Badge bg="#444" color="#aaa" label="FOLD"/>}
                 {p.isWinner&&<Badge bg="#f0d060" color="#1a1200" label="🏆 WIN"/>}
           </div>
-          <div style={{fontFamily:'var(--font-title)',fontSize:fs.name,color:p.isSelf?'var(--gold-bright)':'var(--cream)',
+          <div style={{fontFamily:'var(--font-title)',fontSize:p.isSelf?Math.max(fs.name+1,9):fs.name,color:p.isSelf?'var(--gold-bright)':'var(--cream)',
             whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',letterSpacing:'0.02em'}}>
             {p.isSelf?`${p.name}(YOU)`:p.name}
           </div>
