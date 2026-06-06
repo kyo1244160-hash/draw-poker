@@ -960,36 +960,48 @@ function handleForcedLeave(tableId, playerId, reason) {
   const { getOrCreateRoom: getRoom } = require('../poker/gameManager');
   const room = getRoom(tableId);
   const player = room?.players.find(p => p.id === playerId);
+  const pendingPlayer = room?.pendingPlayers?.find(p => p.id === playerId);
+  const targetPlayer = player ?? pendingPlayer;
+  const targetState = player ? 'active' : pendingPlayer ? 'pending' : 'not-found';
 
-  if (player) {
-    log(`[TM] ${tournamentId}: forced leave ${player.name} (${reason}) chips=${player.chips}`);
+  if (targetPlayer) {
+    log(`[TM] ${tournamentId}: forced leave ${targetPlayer.name} (${reason}) state=${targetState} chips=${targetPlayer.chips}`);
 
     // timeout-kick（連続タイムアウト）は切断ではなく意図的な放置 → チップの有無に関わらず脱落扱い
     if (reason === 'timeout-kick') {
-      _disconnectedChips.delete(player.accountId ?? player.id);
-      _eliminatePlayer(t, tableId, player);
+      _disconnectedChips.delete(targetPlayer.accountId ?? targetPlayer.id);
+      if (player) {
+        _eliminatePlayer(t, tableId, player);
+      } else {
+        leaveRoom(playerId);
+      }
       const remaining = _countRemaining(t);
-      log(`[TM] ${tournamentId}: ${player.name} eliminated (timeout-kick), remaining=${remaining}`);
+      log(`[TM] ${tournamentId}: ${targetPlayer.name} eliminated (timeout-kick), remaining=${remaining}`);
       if (remaining <= 1) _finishTournament(t);
       return;
     }
 
-    if (player.chips > 0) {
+    if (targetPlayer.chips > 0) {
       // チップがある = 切断しただけで脱落ではない
       // チップを _disconnectedChips に退避してから leaveRoom する。
       // sittingOut=true を使うと startGame のリセットで毎ハンド上書きされるため使わない。
-      const accountId = player.accountId ?? player.id;
-      _disconnectedChips.set(accountId, { chips: player.chips, tableId, tournamentId });
-      log(`[TM] ${tournamentId}: ${player.name} chips=${player.chips} preserved (disconnected)`);
+      const accountId = targetPlayer.accountId ?? targetPlayer.id;
+      _disconnectedChips.set(accountId, { chips: targetPlayer.chips, tableId, tournamentId });
+      log(`[TM] ${tournamentId}: ${targetPlayer.name} chips=${targetPlayer.chips} preserved (disconnected, state=${targetState})`);
       leaveRoom(playerId);
     } else {
       // チップ0 = 本当に脱落（ショーダウンで負けた後など）
-      _disconnectedChips.delete(player.accountId ?? player.id);
-      _eliminatePlayer(t, tableId, player);
+      _disconnectedChips.delete(targetPlayer.accountId ?? targetPlayer.id);
+      if (player) {
+        _eliminatePlayer(t, tableId, player);
+      } else {
+        leaveRoom(playerId);
+      }
       const remaining = _countRemaining(t);
       if (remaining <= 1) _finishTournament(t);
     }
   } else {
+    log(`[TM] ${tournamentId}: forced leave player not found (${reason}) playerId=${String(playerId).slice(-8)} table=${tableId.slice(-8)}`);
     leaveRoom(playerId);
   }
 }

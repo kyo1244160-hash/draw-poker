@@ -315,7 +315,12 @@ app.prepare().then(async () => {
         );
         if (pendingPlayer) {
           // pending中に再接続: socket IDを更新してpending通知を送信
+          const oldSocketId = pendingPlayer.id;
+          if (oldSocketId && oldSocketId !== socket.id) {
+            _cancelTournamentDisconnectGrace(oldSocketId);
+          }
           pendingPlayer.id = socket.id;
+          pendingPlayer.disconnected = false;
           socket.join(tableId);
           _removeSpectatorSocket(socket.id, tableId);
           currentRoom = { name: user.nickname ?? '', roomId: tableId };
@@ -329,7 +334,7 @@ app.prepare().then(async () => {
             const blindPayload = tournamentManager.getCurrentBlindPayload(tournamentId);
             if (blindPayload) socket.emit('t:blindUpdate', blindPayload);
           }
-          logDev(`[t:getMyTable] ${user.nickname} → ${tableId} (pending)`);
+          log(`[t:getMyTable] ${user.nickname} → ${tableId.slice(-8)} (pending reconnect, chips=${pendingPlayer.chips}, oldSocket=${String(oldSocketId).slice(-8)}, newSocket=${socket.id.slice(-8)})`);
         } else {
           // 再接続: room.players の socket.id を即座に更新する。
           // t:tournamentStarting → フロントの joinRoom 到達までの非同期の隙間に
@@ -410,7 +415,12 @@ app.prepare().then(async () => {
               p.accountId === user.accountId || p.name === user.nickname
             );
             if (_pending) {
+              const _oldSocketId = _pending.id;
+              if (_oldSocketId && _oldSocketId !== socket.id) {
+                _cancelTournamentDisconnectGrace(_oldSocketId);
+              }
               _pending.id = socket.id;
+              _pending.disconnected = false;
               socket.join(retryTableId);
               _removeSpectatorSocket(socket.id, retryTableId);
               currentRoom = { name: user.nickname ?? '', roomId: retryTableId };
@@ -421,6 +431,7 @@ app.prepare().then(async () => {
               if (_sp) socket.emit('t:tournamentStatus', _sp);
               const _bp = tournamentManager.getCurrentBlindPayload(tournamentId);
               if (_bp) socket.emit('t:blindUpdate', _bp);
+              log(`[t:getMyTable-retry] ${user.nickname} → ${retryTableId.slice(-8)} (pending reconnect, chips=${_pending.chips}, oldSocket=${String(_oldSocketId).slice(-8)}, newSocket=${socket.id.slice(-8)})`);
             } else {
               // 【重要】retry成功時にも player.id を即更新する。
               // 更新しないと _broadcast が socket を見つけられず gameState が届かない。
@@ -544,9 +555,14 @@ app.prepare().then(async () => {
             const existingPlayer = existingRoom?.players.find(p => p.accountId === user.accountId || p.name === user.nickname)
                                 ?? existingRoom?.pendingPlayers?.find(p => p.accountId === user.accountId || p.name === user.nickname);
             if (existingPlayer) {
+              const oldSocketId = existingPlayer.id;
+              if (oldSocketId && oldSocketId !== socket.id) {
+                _cancelTournamentDisconnectGrace(oldSocketId);
+              }
               existingPlayer.id = socket.id;
               existingPlayer.disconnected = false;
               studManager.updateStudPlayerSocketId(existingTidFinal, user.accountId, user.nickname, socket.id);
+              log(`[lateReg] ${_nickname}: existing reconnect on ${existingTidFinal.slice(-8)} chips=${existingPlayer.chips} oldSocket=${String(oldSocketId).slice(-8)} newSocket=${socket.id.slice(-8)}`);
             }
             socket.join(existingTidFinal);
             _removeSpectatorSocket(socket.id, existingTidFinal);
@@ -591,6 +607,7 @@ app.prepare().then(async () => {
             if (destTid) {
               const nickname = user.nickname ?? user.accountId.slice(0, 8);
               const joinResult = joinPokerRoom(destTid, socket.id, nickname, { accountId: user.accountId, existingChips: t.startingChips });
+              log(`[lateReg] ${nickname}: fresh placement result=${joinResult} table=${destTid.slice(-8)} startingChips=${t.startingChips}`);
               if (joinResult === 'full') {
                 log(`[lateReg] ${nickname}: placement failed, table full ${destTid.slice(-8)}`);
                 socket.emit('t:tournamentNotFound', { tournamentId });
@@ -1165,12 +1182,14 @@ app.prepare().then(async () => {
       const roomId = currentRoom.roomId;
 
       if (tournamentManager.isTournamentTable(roomId)) {
-        // プレイヤーとして room.players に存在する場合のみ grace timer を開始
+        // トーナメントテーブル: active / pending どちらも即退室させず猶予を開始する。
+        // pending を除外すると、更新時に pendingPlayers から消えて lateReg の新規配置に落ち、
+        // 初期スタックで入り直せてしまう。
         const { getOrCreateRoom: _gor } = require('./poker/gameManager');
         const _room = _gor(roomId);
-        const isPlayer = _room?.players.some(p => p.id === socket.id);
+        const isPlayer = _room?.players.some(p => p.id === socket.id)
+                      || _room?.pendingPlayers?.some(p => p.id === socket.id);
         if (isPlayer) {
-          // トーナメントテーブル: 即退室せず3分猶予
           _startTournamentDisconnectGrace(io, socket.id, roomId);
         }
         // 観戦者の場合は何もしない（すでに _spectators から削除済み）
@@ -1497,10 +1516,13 @@ function _startTournamentDisconnectGrace(io, socketId, roomId) {
   // プレイヤーを disconnected としてマーク（UI表示用）
   const room = getOrCreateRoom(roomId);
   const player = room?.players.find((p) => p.id === socketId);
-  if (player) player.disconnected = true;
+  const pendingPlayer = room?.pendingPlayers?.find((p) => p.id === socketId);
+  const reconnectTarget = player ?? pendingPlayer;
+  const reconnectState = player ? 'active' : pendingPlayer ? 'pending' : 'not-found';
+  if (reconnectTarget) reconnectTarget.disconnected = true;
   _broadcast(io, roomId);
 
-  log(`[t:grace-start] ${socketId} in ${roomId} – 3min grace`);
+  log(`[t:grace-start] ${socketId.slice(-8)} in ${roomId.slice(-8)} state=${reconnectState} name=${reconnectTarget?.name ?? '-'} chips=${reconnectTarget?.chips ?? '-'} – 3min grace`);
 
   const timer = setTimeout(() => {
     _tournamentGraceTimers.delete(socketId);

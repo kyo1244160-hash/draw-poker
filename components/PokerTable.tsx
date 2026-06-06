@@ -368,6 +368,89 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
                       : effectiveMode==='a5'     ? 'rgba(187,136,221,0.45)'
                       : effectiveMode==='27sd'   ? 'rgba(136,221,136,0.45)'
                       : 'rgba(68,136,204,0.45)';
+  const formatBB = (amount: number): string => {
+    const bb = meta.bigBlind ?? 0;
+    if (!bb || bb <= 0) return '';
+    const value = amount / bb;
+    const rounded = Math.round(value * 10) / 10;
+    return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}BB`;
+  };
+  const BetBadge = ({ amount, compact = false }: { amount: number; compact?: boolean }) => {
+    const bbText = isNoLimitMode ? formatBB(amount) : '';
+    return (
+      <span style={{
+        display:'inline-flex',
+        flexDirection: compact ? 'row' as const : 'column' as const,
+        alignItems:'center',
+        justifyContent:'center',
+        verticalAlign:'middle',
+        marginLeft: compact ? 3 : 0,
+        gap: compact ? 2 : 0,
+        padding: compact ? '0 3px' : '2px 6px',
+        minWidth: compact ? 0 : 46,
+        borderRadius:3,
+        background: compact ? 'rgba(201,168,76,0.25)' : 'rgba(201,168,76,0.15)',
+        color: compact ? '#f0d060' : 'var(--gold)',
+        fontFamily:'var(--font-body)',
+        fontWeight: compact ? '700' : undefined,
+        fontSize: compact ? 9 : 13,
+        lineHeight:compact ? 1 : 1.08,
+        whiteSpace:'nowrap' as const,
+      }}>
+        <span>{compact ? `B${amount}` : `BET ${amount}`}</span>
+        {bbText && <span style={{fontSize: compact ? 8 : 11, lineHeight:1.05, fontWeight:800, color:'#ffe08a'}}>{bbText}</span>}
+      </span>
+    );
+  };
+  const StackDisplay = ({ chips, compact = false }: { chips: number; compact?: boolean }) => {
+    const bbText = isNoLimitMode ? formatBB(chips) : '';
+    return (
+      <span style={{
+        display:'inline-flex',
+        flexDirection: 'row' as const,
+        alignItems:'baseline',
+        justifyContent:'center',
+        gap: compact ? 2 : 4,
+        fontFamily:'var(--font-body)',
+        fontSize: compact ? 9 : 16,
+        color:'#88dd88',
+        lineHeight: compact ? 1 : 1.1,
+        whiteSpace:'nowrap' as const,
+      }}>
+        <span>💵 {chips}</span>
+        {bbText && <span style={{fontSize: compact ? 8 : 11, color:'#baf7ba', fontWeight:800}}>{bbText}</span>}
+      </span>
+    );
+  };
+  const PotAmount = ({ amount, compact = false }: { amount: number; compact?: boolean }) => {
+    const bbText = isNoLimitMode ? formatBB(amount) : '';
+    return (
+      <>
+        {amount}
+        {bbText && <span style={{fontSize: compact ? 8 : 10, marginLeft:3, color:'#ffe08a', fontWeight:800}}>{bbText}</span>}
+      </>
+    );
+  };
+  const logActionHit = (label: string, e: React.MouseEvent<HTMLButtonElement>, amount?: number) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    console.info('[action-hit][ring]', {
+      label,
+      amount,
+      phase: meta.phase,
+      currentBet: meta.currentBet,
+      isMyTurn,
+      self: self?.name,
+      clientX: e.clientX,
+      clientY: e.clientY,
+      rect: {
+        left: Math.round(rect.left),
+        top: Math.round(rect.top),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      },
+      targetTag: (e.target as HTMLElement)?.tagName,
+    });
+  };
 
   // ===== ターン通知音 =====
   const audioCtxRef = React.useRef<AudioContext | null>(null);
@@ -616,6 +699,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
             aria-valuenow={sliderValue}
             onPointerDown={(e) => {
               e.preventDefault();
+              e.stopPropagation();
               startSliderDrag(e.clientX, e.currentTarget, e.pointerId);
             }}
             style={{position:'relative',flex:1,height:compact?24:28,display:'flex',alignItems:'center',touchAction:'none',cursor:'pointer'}}
@@ -625,9 +709,13 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
             <div style={{position:'absolute',left:`${(sliderValue / sliderSteps) * 100}%`,transform:'translateX(-50%)',
               width:compact?16:18,height:compact?16:18,borderRadius:'50%',background:'var(--gold)',boxShadow:'0 1px 4px rgba(0,0,0,0.45)'}} />
           </div>
-          <span style={{fontSize:compact?11:13, fontWeight:600, color:'var(--gold-bright)',
-            minWidth:compact?40:50, textAlign:'right' as const,
-            fontFamily:'var(--font-body)'}}>{clampedAmt.toLocaleString()}</span>
+          <span style={{display:'inline-flex',flexDirection:'column' as const,alignItems:'flex-end',
+            fontSize:compact?11:13, fontWeight:700, color:'var(--gold-bright)',
+            minWidth:compact?52:62, textAlign:'right' as const,
+            lineHeight:1.05,fontFamily:'var(--font-body)'}}>
+            <span>{clampedAmt.toLocaleString()}</span>
+            <span style={{fontSize:compact?10:11,color:'#ffe08a',fontWeight:800}}>{formatBB(clampedAmt)}</span>
+          </span>
         </div>
       </div>
     );
@@ -704,11 +792,13 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
         outline: { background:'rgba(255,255,255,0.06)', color:'var(--cream-dim)', border:'1px solid var(--gold-dim)' },
       };
       return (
-        <button onClick={onClick} style={{
-          padding:'10px 6px', border:'none', borderRadius:7,
+        <button onClick={(e)=>{logActionHit(label, e); onClick();}} style={{
+          padding:'6px 6px', border:'none', borderRadius:7,
+          height:40, minHeight:40,
+          display:'flex', alignItems:'center', justifyContent:'center',
           fontSize:13, fontWeight:'700', cursor:'pointer',
           fontFamily:'var(--font-title)', letterSpacing:'0.03em',
-          textAlign:'center' as const, lineHeight:1.2, whiteSpace:'nowrap' as const,
+          textAlign:'center' as const, lineHeight:1.08, whiteSpace:'normal' as const,
           overflow:'hidden', textOverflow:'ellipsis', width:'100%',
           ...variants[variant],
         }}>{label}</button>
@@ -842,11 +932,14 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
     const px  = compact ? 10 : 18;
     const btn = (onClick:()=>void, label:string, variant:'gold'|'gray'|'red'|'outline') => {
       const base:React.CSSProperties = {
-        padding: `${py}px ${px}px`, border:'none', borderRadius:7,
+        padding: compact ? '6px 8px' : `${Math.max(8, py - 2)}px ${px}px`, border:'none', borderRadius:7,
+        height: compact ? 40 : 48,
+        minHeight: compact ? 40 : 48,
+        display:'flex', alignItems:'center', justifyContent:'center',
         fontSize:fs, fontWeight:'700', cursor:'pointer',
         fontFamily:'var(--font-title)', letterSpacing:'0.03em',
-        textAlign:'center' as const, width:'100%', lineHeight:1.2,
-        whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis',
+        textAlign:'center' as const, width:'100%', lineHeight:1.08,
+        whiteSpace:'normal', overflow:'hidden', textOverflow:'ellipsis',
       };
       const variants = {
         gold:    { background:'linear-gradient(135deg,var(--gold),var(--gold-dim))', color:'#1a1200', boxShadow:'0 2px 10px rgba(201,168,76,0.4)' },
@@ -854,7 +947,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
         red:     { background:'#8b1a1a', color:'#ffd0d0' },
         outline: { background:'rgba(255,255,255,0.06)', color:'var(--cream-dim)', border:'1px solid var(--gold-dim)' },
       };
-      return <button onClick={onClick} style={{...base,...variants[variant]}}>{label}</button>;
+      return <button onClick={(e)=>{logActionHit(label, e); onClick();}} style={{...base,...variants[variant]}}>{label}</button>;
     };
 
     // 2列グリッドラッパー
@@ -1001,10 +1094,10 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
         <span key={i} style={{...potChipSt,fontSize:compact?10:13,
           color:i===0?'var(--gold-bright)':'#ffaa44',
           borderColor:i===0?'var(--gold-dim)':'rgba(255,160,60,0.4)'}}>
-          🏦 {p.label} <b>{p.amount}</b>
+          🏦 {p.label} <b><PotAmount amount={p.amount} compact={compact} /></b>
         </span>
       )):(
-        <span style={{...potChipSt, fontSize:compact?11:14}}>🏦 <b style={{color:'var(--gold-bright)'}}>{meta.pot}</b></span>
+        <span style={{...potChipSt, fontSize:compact?11:14}}>🏦 <b style={{color:'var(--gold-bright)'}}><PotAmount amount={meta.pot} compact={compact} /></b></span>
       )}
       {isBetPhase && meta.currentBet>0 && <span style={{...potChipSt, fontSize:compact?11:14}}>BET <b>{meta.currentBet}</b></span>}
     </div>
@@ -1031,8 +1124,8 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
         </div>
         <div style={{fontFamily:'var(--font-title)',fontSize:compact?9:11,color:'var(--cream)',
           whiteSpace:'nowrap' as const,overflow:'hidden',textOverflow:'ellipsis',maxWidth:100}}>{p.name}</div>
-        <div style={{fontFamily:'var(--font-body)',fontSize:compact?10:12,color:'#88dd88'}}>
-          💵{p.chips}{p.bet>0?` B${p.bet}`:''}
+        <div style={{fontFamily:'var(--font-body)',fontSize:compact?10:12,color:'#88dd88',lineHeight:1,display:'flex',flexDirection:'column',alignItems:'center',gap:1}}>
+          <StackDisplay chips={p.chips} compact />{p.bet>0&&<BetBadge amount={p.bet} compact />}
         </div>
         <div style={{display:'flex',gap:2,justifyContent:'center',margin:'3px 0'}}>
           {p.hand.map((code,j) => <Card key={j} code={code} size={cardSize} folded={p.folded}/>)}
@@ -1062,7 +1155,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
         textShadow:'0 0 12px rgba(0,0,0,0.9)',lineHeight:1.1}}>
         {PHASE_LABEL[meta.phase]}
       </div>
-      {meta.pot>0 && <div style={{fontSize:big?16:11,color:'#f0d060',fontWeight:'700',marginTop:3,fontFamily:'var(--font-title)'}}>🏦 {meta.pot}</div>}
+      {meta.pot>0 && <div style={{fontSize:big?16:11,color:'#f0d060',fontWeight:'700',marginTop:3,fontFamily:'var(--font-title)'}}>🏦 <PotAmount amount={meta.pot} compact={!big} /></div>}
       {isBetPhase && meta.currentBet>0 && <div style={{fontSize:big?12:9,color:'#ffcc44',marginTop:1,fontFamily:'var(--font-body)'}}>BET {meta.currentBet}{isNoLimitMode ? '' : ' · ' + raiseDisplay}</div>}
     </div>
   );
@@ -1164,7 +1257,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
     const OTH_BOX_W  = Math.max(138, Math.floor(Math.min(TW, TH) * 0.30));
     // 自分box幅: sm カード5枚(32px)+gap(4px)×4=176px が収まるよう広め
     const SELF_BOX_W = Math.min(Math.floor(TW * 0.60), TW - 16);
-    const SELF_BOX_H = isPortrait ? Math.floor(TH * 0.34) : Math.floor(TH * 0.40);
+    const SELF_BOX_H = isPortrait ? Math.floor(TH * 0.24) : Math.floor(TH * 0.40);
     const OTH_BOX_H  = isPortrait ? Math.floor(TH * 0.26) : Math.floor(TH * 0.32);
 
     const SELF_CARD: 'sm'|'md' = 'sm';
@@ -1172,7 +1265,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
 
     // portrait: 上部扇状、landscape: 左右対称（TournamentTableと統一）
     const SLOTS = isPortrait
-      ? [165, -155, -90, -25, 15]
+      ? [150, -144, -98, -36, 30]
       : [150, -150,  -90,  -30, 30];
 
     const getPosMobile = (p: Player) => {
@@ -1186,9 +1279,17 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
       const rad = (ang * Math.PI) / 180;
       const bw  = p.isSelf ? SELF_BOX_W : OTH_BOX_W;
       const bh  = p.isSelf ? SELF_BOX_H : OTH_BOX_H;
+      const rawTop = CY + RY * Math.sin(rad) - bh / 2 + topOffset;
+      if (p.isSelf && isPortrait) {
+        const actionSafeGap = 48;
+        return {
+          left: Math.max(4, Math.min(TW - bw - 4, CX - bw / 2)),
+          top: Math.max(4, Math.min(TH - bh - actionSafeGap, rawTop)),
+        };
+      }
       return {
         left: CX + RX * Math.cos(rad) - bw / 2,
-        top:  CY + RY * Math.sin(rad) - bh / 2 + topOffset,
+        top:  rawTop,
       };
     };
 
@@ -1202,7 +1303,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
       const flash = actionFlash[p.name];
       const dflash = drawFlash[p.id];
       return (
-        <div key={p.id} style={{position:'absolute', left, top, width:bw, overflow:'visible', zIndex: p.isSelf ? 3 : 2}}>
+        <div key={p.id} style={{position:'absolute', left, top, width:bw, overflow:'visible', zIndex: (flash || dflash) ? 30 : p.isSelf ? 3 : 2}}>
         {/* アクションフラッシュ */}
         {flash && (
           <div key={flash.key} style={{
@@ -1258,8 +1359,8 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
             whiteSpace:'nowrap' as const,overflow:'hidden',textOverflow:'ellipsis',letterSpacing:'0.02em'}}>
             {p.isSelf ? `${p.name}(YOU)` : p.name}
           </div>
-          <div style={{fontFamily:'var(--font-body)',fontSize:fs.chip,color:'#88dd88',lineHeight:1.2}}>
-            💵{p.chips}{p.bet>0&&<span style={{display:'inline-block',marginLeft:3,padding:'0 4px',borderRadius:3,background:'rgba(201,168,76,0.25)',color:'#f0d060',fontWeight:'700',fontSize:fs.chip+1}}> B{p.bet}</span>}
+          <div style={{fontFamily:'var(--font-body)',fontSize:fs.chip,color:'#88dd88',lineHeight:1,display:'flex',flexDirection:'column',alignItems:'center',gap:1}}>
+            <StackDisplay chips={p.chips} compact />{p.bet>0&&<BetBadge amount={p.bet} compact />}
           </div>
           {p.isMyTurn && meta.timerLimit>0 && timerSec!==null && (
             <div style={{margin:'1px 0'}}><TimerBar remaining={timerSec} limit={meta.timerLimit}/></div>
@@ -1324,7 +1425,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
                   <div style={{fontFamily:'var(--font-title)',fontSize:10,color:'var(--gold-bright)',
                     letterSpacing:'0.05em',marginBottom:3,
                     textShadow:'0 0 6px rgba(201,168,76,0.6)'}}>
-                    🏦 {meta.pot}
+                    🏦 <PotAmount amount={meta.pot} compact />
                     {isBetPhase && meta.currentBet>0 && <span style={{
                       marginLeft:6, padding:'1px 5px', borderRadius:3,
                       background:'rgba(201,168,76,0.3)', color:'#f5cc40',
@@ -1431,7 +1532,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
             {meta.phase!=='waiting' && (
               <div style={{position:'absolute',top:4,left:'50%',transform:'translateX(-50%)',
                 display:'flex',gap:6,zIndex:4,pointerEvents:'none'}}>
-                <span style={{...potChipSt,fontSize:11}}>🏦<b style={{color:'var(--gold-bright)'}}>{meta.pot}</b></span>
+                <span style={{...potChipSt,fontSize:11}}>🏦<b style={{color:'var(--gold-bright)'}}><PotAmount amount={meta.pot} compact /></b></span>
                 {isBetPhase && meta.currentBet>0 && <span style={{...potChipSt,fontSize:11}}>BET<b>{meta.currentBet}</b></span>}
               </div>
             )}
@@ -1542,7 +1643,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
             const flash=actionFlash[p.name];
             const dflash=drawFlash[p.id];
             return (
-              <div key={p.id} style={{position:'absolute',left,top,width:BW,zIndex:2,overflow:'visible'}}>
+              <div key={p.id} style={{position:'absolute',left,top,width:BW,zIndex:(flash||dflash)?30:2,overflow:'visible'}}>
               {/* アクションフラッシュ */}
               {flash && (
                 <div key={flash.key} style={{
@@ -1597,8 +1698,8 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
                   {p.isSelf?`${p.name} (YOU)`:p.name}
                 </p>
                 <div style={{display:'flex',justifyContent:'center',gap:7,marginBottom:4,flexWrap:'wrap' as const}}>
-                  <span style={{fontFamily:'var(--font-body)',fontSize:16,color:'#88dd88'}}>💵 {p.chips}</span>
-                  {p.bet>0 && <span style={{fontFamily:'var(--font-body)',fontSize:15,color:'var(--gold)',background:'rgba(201,168,76,0.15)',borderRadius:3,padding:'0 5px'}}>BET {p.bet}</span>}
+                  <StackDisplay chips={p.chips} />
+                  {p.bet>0 && <BetBadge amount={p.bet} />}
                 </div>
                 {p.isMyTurn&&meta.timerLimit>0&&timerSec!==null&&<TimerBar remaining={timerSec} limit={meta.timerLimit}/>}
                 <div style={{display:'flex',justifyContent:'center',gap:p.isSelf?7:4,flexWrap:'nowrap' as const,margin:'5px 0'}}>
@@ -1637,7 +1738,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
           {selfPlayer && (
             <div style={{textAlign:'center',paddingBottom:10,borderBottom:'1px solid rgba(201,168,76,0.2)'}}>
               <div style={{fontFamily:'var(--font-title)',fontSize:14,color:'var(--gold-bright)',marginBottom:3}}>{selfPlayer.name} (YOU)</div>
-              <div style={{fontFamily:'var(--font-body)',fontSize:17,color:'#88dd88'}}>💵 {selfPlayer.chips}</div>
+              <div><StackDisplay chips={selfPlayer.chips} /></div>
               {selfPlayer.result && <div style={{fontFamily:'var(--font-title)',fontSize:14,color:'var(--cream-dim)',marginTop:3}}>{selfPlayer.result}</div>}
             </div>
           )}
