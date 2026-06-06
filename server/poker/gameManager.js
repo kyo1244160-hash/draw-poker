@@ -799,18 +799,16 @@ function drawCards(roomId, socketId, indices) {
 
   const maxCards     = handSize(room.currentMode);
   const validIndices = [...new Set(indices)].filter((i) => Number.isInteger(i) && i >= 0 && i < maxCards);
-  // 交換するカードを先に捨て札へ
-  _discardCards(room, validIndices.map((i) => player.hand[i]));
+  // 現在の交換で捨てたカードは、引き終わるまで再シャッフル対象に含めない。
+  const currentDiscard = validIndices.map((i) => player.hand[i]).filter((c) => c && c !== '??');
   for (const i of validIndices) {
     const newCard = _drawFromDeck(room);
     if (newCard === null) {
       // デッキ・捨て札ともに枯渇（6人×全枚数交換×3ラウンドの極端なケース）
-      // 交換前のカードはすでに捨て札に移っているため、そのスロットを '??' として保持
       console.warn(`[deck] ⚠ ${player.name} のスロット${i}分のカードが不足 → 現手札維持`);
-      // 捨て札に追加してしまったカードを元に戻せないため、デッキを再生成して対処
       room.deck = require('./deck').createShuffledDeck().filter(c => {
         const inHands = room.players.flatMap(p => p.hand).filter(Boolean);
-        return !inHands.includes(c);
+        return !inHands.includes(c) && !currentDiscard.includes(c);
       });
       const retryCard = _drawFromDeck(room);
       if (retryCard) player.hand[i] = retryCard;
@@ -819,6 +817,7 @@ function drawCards(roomId, socketId, indices) {
       player.hand[i] = newCard;
     }
   }
+  _discardCards(room, currentDiscard);
   player.drewThisRound = true;
   player.drawCount     = validIndices.length;
   // 交換完了後は選択インデックスをクリア

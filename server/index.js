@@ -37,10 +37,10 @@ const next       = require('next');
 const http       = require('http');
 const { Server } = require('socket.io');
 const { parse }  = require('url');
+const { createHmac, timingSafeEqual } = require('crypto');
 const cfg        = require('./config');
 
 const { checkText } = require('./profanityFilter');
-const { decode }    = require('next-auth/jwt');
 const { getNickname } = require('./db/accounts');
 const {
   getOrCreateRoom, joinRoom: joinPokerRoom,
@@ -106,6 +106,27 @@ function _initFixedRooms() {
 }
 
 const fixedRooms = _initFixedRooms();
+
+function _verifySocketToken(token) {
+  if (typeof token !== 'string' || !token.startsWith('socket:')) return null;
+  const body = token.slice('socket:'.length);
+  const dot = body.lastIndexOf('.');
+  if (dot <= 0) return null;
+  const payload = body.slice(0, dot);
+  const sig = body.slice(dot + 1);
+  const expected = createHmac('sha256', process.env.NEXTAUTH_SECRET).update(payload).digest('base64url');
+  const sigBuf = Buffer.from(sig);
+  const expBuf = Buffer.from(expected);
+  if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) return null;
+  try {
+    const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    if (!decoded?.accountId || typeof decoded.accountId !== 'string') return null;
+    if (!Number.isFinite(decoded.exp) || decoded.exp < Math.floor(Date.now() / 1000)) return null;
+    return decoded;
+  } catch {
+    return null;
+  }
+}
 
 function getLobbyList() {
   const list = [];
@@ -206,7 +227,7 @@ app.prepare().then(async () => {
       return next();
     }
     try {
-      const decoded = await decode({ token, secret: process.env.NEXTAUTH_SECRET });
+      const decoded = _verifySocketToken(token);
       if (!decoded?.accountId) return next(new Error('AUTH_INVALID'));
       const nickname = await getNickname(decoded.accountId);
       if (!nickname) return next(new Error('NICKNAME_REQUIRED'));
@@ -291,34 +312,11 @@ app.prepare().then(async () => {
       const user = socket.data.user;
       if (!user?.accountId) return;
       let tableId = tournamentManager.getTableForPlayer(tournamentId, user.accountId);
-      // getTableForPlayer が null の場合、nickname でも検索する（accountId が未設定の場合の補完）
-      if (!tableId && user.nickname) {
-        const { getOrCreateRoom: _scanRoom } = require('./poker/gameManager');
-        const t0 = tournamentManager.getTournament(tournamentId);
-        if (t0) {
-          for (const tid of t0.tableIds) {
-            const r0 = _scanRoom(tid);
-            if (!r0) continue;
-            const found0 = [...r0.players, ...r0.pendingPlayers].find(p => p.name === user.nickname);
-            if (found0) {
-              // accountId を補完: 再接続時にサーバー再起動でaccountIdが消えた場合の復元。
-              // found0 はゲームState内プレイヤーへの参照だが、accountIdの補完のみを行い
-              // ゲームロジックに影響する他フィールドは変更しないため副作用は限定的。
-              if (!found0.accountId && user.accountId) found0.accountId = user.accountId;
-              tableId = tid;
-              logDev(`[t:getMyTable] ${user.nickname}: found by nickname on ${tid.slice(-8)} (accountId補完)`);
-              break;
-            }
-          }
-        }
-      }
       if (tableId) {
         // pendingPlayersにいるかどうか確認
         const { getOrCreateRoom } = require('./poker/gameManager');
         const room = getOrCreateRoom(tableId);
-        const pendingPlayer = room?.pendingPlayers?.find(p =>
-          p.accountId === user.accountId || p.name === user.nickname
-        );
+        const pendingPlayer = room?.pendingPlayers?.find(p => p.accountId === user.accountId);
         if (pendingPlayer) {
           // pending中に再接続: socket IDを更新してpending通知を送信
           const oldSocketId = pendingPlayer.id;
@@ -345,9 +343,7 @@ app.prepare().then(async () => {
           // 再接続: room.players の socket.id を即座に更新する。
           // t:tournamentStarting → フロントの joinRoom 到達までの非同期の隙間に
           // betAction が送られると "そのアクションはできません" エラーになるバグを防ぐ。
-          const activePlayer = room?.players.find(p =>
-            p.accountId === user.accountId || p.name === user.nickname
-          );
+          const activePlayer = room?.players.find(p => p.accountId === user.accountId);
           if (activePlayer && activePlayer.id !== socket.id) {
             _cancelTournamentDisconnectGrace(activePlayer.id);
             activePlayer.id = socket.id;
@@ -417,9 +413,7 @@ app.prepare().then(async () => {
           if (retryTableId) {
             const { getOrCreateRoom: _gor } = require('./poker/gameManager');
             const _room = _gor(retryTableId);
-            const _pending = _room?.pendingPlayers?.find(p =>
-              p.accountId === user.accountId || p.name === user.nickname
-            );
+            const _pending = _room?.pendingPlayers?.find(p => p.accountId === user.accountId);
             if (_pending) {
               const _oldSocketId = _pending.id;
               if (_oldSocketId && _oldSocketId !== socket.id) {
@@ -441,9 +435,7 @@ app.prepare().then(async () => {
             } else {
               // 【重要】retry成功時にも player.id を即更新する。
               // 更新しないと _broadcast が socket を見つけられず gameState が届かない。
-              const _ap = _room?.players.find(p =>
-                p.accountId === user.accountId || p.name === user.nickname
-              );
+              const _ap = _room?.players.find(p => p.accountId === user.accountId);
               if (_ap && _ap.id !== socket.id) {
                 _cancelTournamentDisconnectGrace(_ap.id);
                 _ap.id = socket.id;
@@ -534,32 +526,14 @@ app.prepare().then(async () => {
           // レイトレジスト期間中: 最も人数が少ないテーブルに配置する
           const { getOrCreateRoom, canAutoStart } = require('./poker/gameManager');
 
-          // 配置直前に既存テーブルを再確認する（accountId + nickname 両方で検索）
-          const getOrCreateRoomLocal = getOrCreateRoom;
+          // 配置直前に既存テーブルを再確認する。本人性は accountId のみで判定する。
           let existingTidFinal = tournamentManager.getTableForPlayer(tournamentId, user.accountId);
-          // accountId で見つからない場合は nickname でフォールバック検索
-          if (!existingTidFinal && user.nickname) {
-            const _t2 = tournamentManager.getTournament(tournamentId);
-            if (_t2) {
-              for (const _tid2 of _t2.tableIds) {
-                const _r2 = getOrCreateRoomLocal(_tid2);
-                if (!_r2) continue;
-                const _fp2 = [..._r2.players, ..._r2.pendingPlayers].find(p => p.name === user.nickname);
-                if (_fp2) {
-                  if (!_fp2.accountId && user.accountId) _fp2.accountId = user.accountId;
-                  existingTidFinal = _tid2;
-                  log(`[lateReg] ${user.nickname}: found by nickname on ${_tid2.slice(-8)} (accountId補完)`);
-                  break;
-                }
-              }
-            }
-          }
           if (existingTidFinal) {
             const _nickname = user.nickname ?? user.accountId.slice(0, 8);
             log(`[lateReg] ${_nickname} already on ${existingTidFinal.slice(-8)} → reconnect (skip fresh placement)`);
             const existingRoom = getOrCreateRoom(existingTidFinal);
-            const existingPlayer = existingRoom?.players.find(p => p.accountId === user.accountId || p.name === user.nickname)
-                                ?? existingRoom?.pendingPlayers?.find(p => p.accountId === user.accountId || p.name === user.nickname);
+            const existingPlayer = existingRoom?.players.find(p => p.accountId === user.accountId)
+                                ?? existingRoom?.pendingPlayers?.find(p => p.accountId === user.accountId);
             if (existingPlayer) {
               const oldSocketId = existingPlayer.id;
               if (oldSocketId && oldSocketId !== socket.id) {
@@ -1495,16 +1469,14 @@ function _socketBelongsToTable(socket, roomId) {
   const room = getRoom(roomId);
   const inDrawRoom = !!room && [...room.players, ...room.pendingPlayers].some((p) =>
     p.id === socket.id ||
-    (user?.accountId && p.accountId === user.accountId) ||
-    (user?.nickname && p.name === user.nickname)
+    (user?.accountId && p.accountId === user.accountId)
   );
   if (inDrawRoom) return true;
 
   const studRoom = studManager.getStudRoom(roomId);
   return !!studRoom && studRoom.players.some((p) =>
     p.id === socket.id ||
-    (user?.accountId && p.accountId === user.accountId) ||
-    (user?.nickname && p.name === user.nickname)
+    (user?.accountId && p.accountId === user.accountId)
   );
 }
 
@@ -1982,8 +1954,7 @@ function _emitStateToSocket(socket, tableId) {
     const user = socket.data?.user;
     const pendingPlayer = gmRoom?.pendingPlayers?.find((p) =>
       p.id === socket.id ||
-      (user?.accountId && p.accountId === user.accountId) ||
-      (user?.nickname && p.name === user.nickname)
+      (user?.accountId && p.accountId === user.accountId)
     );
     const isAlreadyStudPlayer = room.players.some((p) => p.id === socket.id);
     if (pendingPlayer && !isAlreadyStudPlayer) {

@@ -34,51 +34,30 @@ export default function SpectatePage() {
   useEffect(() => {
     let cancelled = false;
 
-    connectWithAuth().then(ok => {
-      if (cancelled || !ok) return;
-      setConnected(true);
-
-      // レイトレジスト後: t:getMyTable で配置をトリガするが、即遷移せず観戦継続する。
-      // t:tournamentStarting で自分のテーブルIDを記憶し、ゲームが実際に開始されたら /draw へ遷移する。
+    const handleTournamentStarting = ({ tournamentId: tid_t, tableId: tid }: { tournamentId: string; tableId: string }) => {
+      // 【重要】自分が参加登録しているトーナメント（別のトーナメント）が開始した場合も検知する。
+      // ユーザーが「Aトーナメントを観戦しながらBトーナメントの開始を待つ」ケース:
+      //   - params.id === A（観戦中）
+      //   - myTournamentId === B（自分が参加登録しているもの）
+      //   - t:tournamentStarting の tournamentId === B → /tournament/B/draw へ遷移
+      if (myTournamentId && tid_t === myTournamentId) {
+        router.replace(`/tournament/${myTournamentId}/draw`);
+        return;
+      }
       if (fromLateReg) {
-        socket.emit('t:getMyTable', { tournamentId: params.id });
+        // レイトレジスト時: 自分のテーブルとして記憶し、そのテーブルを観戦
+        myTableIdRef.current = tid;
+        tableIdRef.current = tid;
+        socket.emit('spectate', { tableId: tid });
+        return;
       }
-
-      // テーブルIDが指定されていれば即観戦参加。
-      // 指定なしの場合も tournamentId をサーバーに渡して即解決する
-      // （サーバーの spectate ハンドラが tournamentId → tableId を自動解決）
-      if (targetTableId) {
-        socket.emit('spectate', { tableId: targetTableId });
-      } else {
-        // 進行中トーナメントなら tournamentId だけで即解決できる
-        socket.emit('spectate', { tournamentId: params.id });
-        // 未開始の場合に備えて t:tournamentStarting も待つ
-        socket.on('t:tournamentStarting', ({ tournamentId: tid_t, tableId: tid }: { tournamentId: string; tableId: string }) => {
-          // 【重要】自分が参加登録しているトーナメント（別のトーナメント）が開始した場合も検知する。
-          // ユーザーが「Aトーナメントを観戦しながらBトーナメントの開始を待つ」ケース:
-          //   - params.id === A（観戦中）
-          //   - myTournamentId === B（自分が参加登録しているもの）
-          //   - t:tournamentStarting の tournamentId === B → /tournament/B/draw へ遷移
-          if (myTournamentId && tid_t === myTournamentId) {
-            router.replace(`/tournament/${myTournamentId}/draw`);
-            return;
-          }
-          if (fromLateReg) {
-            // レイトレジスト時: 自分のテーブルとして記憶し、そのテーブルを観戦
-            myTableIdRef.current = tid;
-            tableIdRef.current = tid;
-            socket.emit('spectate', { tableId: tid });
-            return;
-          }
-          if (!tableIdRef.current) {
-            tableIdRef.current = tid;
-            socket.emit('spectate', { tableId: tid });
-          }
-        });
+      if (!tableIdRef.current) {
+        tableIdRef.current = tid;
+        socket.emit('spectate', { tableId: tid });
       }
-    });
+    };
 
-    socket.on('gameState', ({ players: pl, meta: m }) => {
+    const handleGameState = ({ players: pl, meta: m }: { players?: PlayerState[]; meta?: GameMeta }) => {
       setPlayers(pl ?? []);
       setMeta(m ?? null);
       // レイトレジスト観戦中: 自分がそのテーブルのプレイヤー（またはpending）として
@@ -101,12 +80,9 @@ export default function SpectatePage() {
           router.replace(`/tournament/${params.id}/draw`);
         }
       }
-    });
+    };
 
-    // レイトレジスト: pending プレイヤーとして配置された場合のハンドラ。
-    // ゲーム進行中テーブルに pending で追加されると t:tournamentStarting ではなく
-    // t:pendingTableTransfer が届く。fromLateReg=true の場合は /draw に遷移する。
-    socket.on('t:pendingTableTransfer', ({ tableId: pendingTid }: { tableId: string; message?: string }) => {
+    const handlePendingTableTransfer = ({ tableId: pendingTid }: { tableId: string; message?: string }) => {
       if (fromLateReg) {
         myTableIdRef.current = pendingTid;
         router.replace(`/tournament/${params.id}/draw`);
@@ -114,64 +90,105 @@ export default function SpectatePage() {
       }
       // fromLateReg でない場合はテーブル切替（バランシング後等）
       tableIdRef.current = pendingTid;
-    });
+    };
 
-    // バランシングによるテーブル移動通知。
-    // fromLateReg=true: 新テーブルに配置後にバランシングで別テーブルへ移動するケース。
-    // サーバーから t:tableJoin（即時）と t:tableTransfer（3秒後）が届く。
-    // これらも /draw への遷移トリガーとして使う。
-    socket.on('t:tableJoin', ({ toTableId }: { toTableId: string }) => {
+    const handleTableJoin = ({ toTableId }: { toTableId: string }) => {
       if (fromLateReg) {
         myTableIdRef.current = toTableId;
         tableIdRef.current = toTableId;
         // t:tableTransfer（3秒後）を待たずに即 /draw へ遷移
         router.replace(`/tournament/${params.id}/draw`);
       }
-    });
-    socket.on('t:tableTransfer', ({ toTableId }: { fromTableId: string; toTableId: string }) => {
+    };
+
+    const handleTableTransfer = ({ toTableId }: { fromTableId: string; toTableId: string }) => {
       if (fromLateReg) {
         myTableIdRef.current = toTableId;
         router.replace(`/tournament/${params.id}/draw`);
       }
-    });
+    };
 
-    socket.on('timerUpdate', ({ remaining, limit }: { remaining: number; limit: number }) => {
+    const handleTimerUpdate = ({ remaining, limit }: { remaining: number; limit: number }) => {
       setTimer({ remaining, limit });
-    });
-
-    socket.on('t:blindUpdate', (p: BlindUpdate) => setBlind(p));
-    socket.on('t:tournamentStatus', (p: TournamentStatus) => setStatus(p));
-
-    socket.on('t:tournamentFinished', () => {
+    };
+    const handleBlindUpdate = (p: BlindUpdate) => setBlind(p);
+    const handleTournamentStatus = (p: TournamentStatus) => setStatus(p);
+    const handleTournamentFinished = () => {
       router.push(`/tournament/${params.id}/result`);
-    });
-
-    // トーナメントが見つからない（終了・未起動）→ 登録ページへ
-    socket.on('t:tournamentNotFound', () => {
+    };
+    const handleTournamentNotFound = () => {
       router.replace(`/tournament/${params.id}`);
-    });
-
-    // 観戦中テーブルがバランシングで解体された → 新テーブルへ切り替え
-    socket.on('t:tableClosed', ({ tournamentId, newTableId }: { tournamentId: string; newTableId: string }) => {
+    };
+    const handleTableClosed = ({ tournamentId, newTableId }: { tournamentId: string; newTableId: string }) => {
       if (tournamentId !== params.id) return;
       tableIdRef.current = newTableId;
       // 新テーブルを観戦開始（setPlayers/setMetaは新テーブルのgameStateで上書きされる）
       socket.emit('spectate', { tableId: newTableId });
+    };
+
+    connectWithAuth().then(ok => {
+      if (cancelled || !ok) return;
+      setConnected(true);
+
+      // レイトレジスト後: t:getMyTable で配置をトリガするが、即遷移せず観戦継続する。
+      // t:tournamentStarting で自分のテーブルIDを記憶し、ゲームが実際に開始されたら /draw へ遷移する。
+      if (fromLateReg) {
+        socket.emit('t:getMyTable', { tournamentId: params.id });
+      }
+
+      // テーブルIDが指定されていれば即観戦参加。
+      // 指定なしの場合も tournamentId をサーバーに渡して即解決する
+      // （サーバーの spectate ハンドラが tournamentId → tableId を自動解決）
+      if (targetTableId) {
+        socket.emit('spectate', { tableId: targetTableId });
+      } else {
+        // 進行中トーナメントなら tournamentId だけで即解決できる
+        socket.emit('spectate', { tournamentId: params.id });
+        // 未開始の場合に備えて t:tournamentStarting も待つ
+        socket.on('t:tournamentStarting', handleTournamentStarting);
+      }
     });
+
+    socket.on('gameState', handleGameState);
+
+    // レイトレジスト: pending プレイヤーとして配置された場合のハンドラ。
+    // ゲーム進行中テーブルに pending で追加されると t:tournamentStarting ではなく
+    // t:pendingTableTransfer が届く。fromLateReg=true の場合は /draw に遷移する。
+    socket.on('t:pendingTableTransfer', handlePendingTableTransfer);
+
+    // バランシングによるテーブル移動通知。
+    // fromLateReg=true: 新テーブルに配置後にバランシングで別テーブルへ移動するケース。
+    // サーバーから t:tableJoin（即時）と t:tableTransfer（3秒後）が届く。
+    // これらも /draw への遷移トリガーとして使う。
+    socket.on('t:tableJoin', handleTableJoin);
+    socket.on('t:tableTransfer', handleTableTransfer);
+
+    socket.on('timerUpdate', handleTimerUpdate);
+
+    socket.on('t:blindUpdate', handleBlindUpdate);
+    socket.on('t:tournamentStatus', handleTournamentStatus);
+
+    socket.on('t:tournamentFinished', handleTournamentFinished);
+
+    // トーナメントが見つからない（終了・未起動）→ 登録ページへ
+    socket.on('t:tournamentNotFound', handleTournamentNotFound);
+
+    // 観戦中テーブルがバランシングで解体された → 新テーブルへ切り替え
+    socket.on('t:tableClosed', handleTableClosed);
 
     return () => {
       cancelled = true;
-      socket.off('gameState');
-      socket.off('timerUpdate');
-      socket.off('t:blindUpdate');
-      socket.off('t:tournamentStatus');
-      socket.off('t:tournamentStarting');
-      socket.off('t:tournamentFinished');
-      socket.off('t:tournamentNotFound');
-      socket.off('t:tableClosed');
-      socket.off('t:pendingTableTransfer');
-      socket.off('t:tableJoin');
-      socket.off('t:tableTransfer');
+      socket.off('gameState', handleGameState);
+      socket.off('timerUpdate', handleTimerUpdate);
+      socket.off('t:blindUpdate', handleBlindUpdate);
+      socket.off('t:tournamentStatus', handleTournamentStatus);
+      socket.off('t:tournamentStarting', handleTournamentStarting);
+      socket.off('t:tournamentFinished', handleTournamentFinished);
+      socket.off('t:tournamentNotFound', handleTournamentNotFound);
+      socket.off('t:tableClosed', handleTableClosed);
+      socket.off('t:pendingTableTransfer', handlePendingTableTransfer);
+      socket.off('t:tableJoin', handleTableJoin);
+      socket.off('t:tableTransfer', handleTableTransfer);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

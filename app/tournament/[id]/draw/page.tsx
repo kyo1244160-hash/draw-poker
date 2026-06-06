@@ -153,6 +153,11 @@ export default function TournamentDrawPage() {
   useEffect(() => {
     let cancelled = false;
     const tournamentId = params.id;
+    const registeredSocketHandlers: Array<[string, (...args: any[]) => void]> = [];
+    const onSocket = (event: string, handler: (...args: any[]) => void) => {
+      registeredSocketHandlers.push([event, handler]);
+      socket.on(event, handler);
+    };
 
     // App Router は SessionProvider の外なので useSession() が使えない
     // /api/auth/session から accountId を取得して ref に保持する
@@ -168,7 +173,7 @@ export default function TournamentDrawPage() {
     //   到着する理論的リスクがあるため、リスナー登録を先に行う。
 
     // ゲーム状態（playersとmetaを1回のsetStateでまとめて更新）
-    socket.on('gameState', (raw: unknown) => {
+    onSocket('gameState', (raw: unknown) => {
       // ===== gameState ハンドラーの try-catch について =====
       // 注意: これはハンドラー内の【同期エラー】のみ捕捉する観測用であり、
       // レンダリングフェーズで発生するエラー（React error #310 等）は捕捉できない。
@@ -301,7 +306,7 @@ export default function TournamentDrawPage() {
     });
 
     // タイマー
-    socket.on('timerUpdate', ({ remaining, limit }: TimerState) => {
+    onSocket('timerUpdate', ({ remaining, limit }: TimerState) => {
       setTimer({ remaining, limit });
     });
 
@@ -311,49 +316,49 @@ export default function TournamentDrawPage() {
     //   1. サーバー側 joinPokerRoom が name で再接続判定 → 競合状態
     //   2. _broadcast が再度走り gameState の二重送信
     //   3. リソース無駄遣い・タイミング差で setGameState が古い値で上書きされるリスク
-    socket.on('t:tournamentStarting', ({ tableId: tid }: { tournamentId: string; tableId: string }) => {
+    onSocket('t:tournamentStarting', ({ tableId: tid }: { tournamentId: string; tableId: string }) => {
       tableIdRef.current = tid;
       setIsSpectator(false);
       setPendingTransfer(null);
     });
 
     // テーブルが見つからない場合
-    socket.on('t:tournamentNotFound', () => {
+    onSocket('t:tournamentNotFound', () => {
       setErrorMsg('トーナメントが見つかりません。ロビーに戻ります。');
       setTimeout(() => router.push('/'), 2000);
     });
 
     // 脱落済みでレイトレジスト参加不可 → 観戦モードへ誘導
-    socket.on('t:eliminatedSpectate', ({ tournamentId: tid }: { tournamentId: string }) => {
+    onSocket('t:eliminatedSpectate', ({ tournamentId: tid }: { tournamentId: string }) => {
       router.replace(`/tournament/${tid}/spectate`);
     });
 
     // ブラインド更新
     // ファイナルテーブル通知
-    socket.on('t:finalTable', () => {
+    onSocket('t:finalTable', () => {
       setFinalTableAlert(true);
       setTimeout(() => setFinalTableAlert(false), 6000);
     });
 
     // レイトレジスト終了通知
-    socket.on('t:lateRegClosed', () => {
+    onSocket('t:lateRegClosed', () => {
       setLateRegOpen(false);
     });
 
     // バスト通知（同テーブルの全員）
-    socket.on('t:playerEliminated', ({ playerName, rank, totalPlayers }: { playerName: string; rank: number; totalPlayers: number }) => {
+    onSocket('t:playerEliminated', ({ playerName, rank, totalPlayers }: { playerName: string; rank: number; totalPlayers: number }) => {
       pushNotice('bust', playerName, rank, totalPlayers);
     });
     // 移動元テーブル通知
-    socket.on('t:playerLeft', ({ playerName }: { playerName: string }) => {
+    onSocket('t:playerLeft', ({ playerName }: { playerName: string }) => {
       pushNotice('left', playerName);
     });
     // 移動先テーブル通知
-    socket.on('t:playerArrived', ({ playerName }: { playerName: string }) => {
+    onSocket('t:playerArrived', ({ playerName }: { playerName: string }) => {
       pushNotice('arrived', playerName);
     });
 
-    socket.on('t:blindUpdate', (payload: BlindUpdate) => {
+    onSocket('t:blindUpdate', (payload: BlindUpdate) => {
       setLateRegOpen(payload.lateRegOpen ?? false);
       setBlind(payload);
       // ブラインドアップ / ブレイク突入をモーダル通知
@@ -365,17 +370,17 @@ export default function TournamentDrawPage() {
     });
 
     // ステータス更新
-    socket.on('t:tournamentStatus', (payload: TournamentStatus) => {
+    onSocket('t:tournamentStatus', (payload: TournamentStatus) => {
       setStatus(payload);
     });
 
     // テーブル移動: 即時通知。表示対象は t:tableTransfer（3秒後）まで旧テーブルのまま保持する。
-    socket.on('t:tableJoin', ({ toTableId }: { toTableId: string }) => {
+    onSocket('t:tableJoin', ({ toTableId }: { toTableId: string }) => {
       nextTableIdRef.current = toTableId;
     });
 
     // テーブル移動（バランシング）
-    socket.on('t:tableTransfer', ({ fromTableId, toTableId }: { fromTableId: string; toTableId: string }) => {
+    onSocket('t:tableTransfer', ({ fromTableId, toTableId }: { fromTableId: string; toTableId: string }) => {
       tableIdRef.current = toTableId;
       nextTableIdRef.current = null;
       socket.emit('leaveSocketRoom', { roomId: fromTableId });
@@ -397,7 +402,7 @@ export default function TournamentDrawPage() {
     });
 
     // pending待機中のテーブル移動（ゲーム進行中テーブルへ移動 → 次のハンドまで待機）
-    socket.on('t:pendingTableTransfer', ({ tableId }: { tableId: string; message: string }) => {
+    onSocket('t:pendingTableTransfer', ({ tableId }: { tableId: string; message: string }) => {
       tableIdRef.current = tableId;
       setIsSpectator(false);
       setPendingTransfer(tableId);
@@ -405,12 +410,12 @@ export default function TournamentDrawPage() {
     });
 
     // ショーダウン
-    socket.on('showdown', () => {
+    onSocket('showdown', () => {
       logAction('ショーダウン！');
     });
 
     // プレイヤーアクション通知
-    socket.on('playerAction', ({ playerName, action }: { playerName: string; action: string }) => {
+    onSocket('playerAction', ({ playerName, action }: { playerName: string; action: string }) => {
       const labels: Record<string, string> = {
         fold:'フォールド', check:'チェック', call:'コール', bet:'ベット', raise:'レイズ',
       };
@@ -418,7 +423,7 @@ export default function TournamentDrawPage() {
     });
 
     // ゲーム開始
-    socket.on('gameStarted', () => {
+    onSocket('gameStarted', () => {
       logAction('新しいハンド開始');
       setTimer(null);
       const roomId = tableIdRef.current;
@@ -429,7 +434,7 @@ export default function TournamentDrawPage() {
     });
 
     // 脱落
-    socket.on('t:eliminated', ({ rank, totalPlayers }: { rank: number; totalPlayers: number }) => {
+    onSocket('t:eliminated', ({ rank, totalPlayers }: { rank: number; totalPlayers: number }) => {
       eliminatedRef.current = true;
       setIsSpectator(true); // 脱落直後から観戦扱い（waiting画面を経由しない）
       // chips=0 フォールバックタイマーが走っている場合はキャンセルして上書き
@@ -442,7 +447,7 @@ export default function TournamentDrawPage() {
     });
 
     // トーナメント終了
-    socket.on('t:tournamentFinished', ({ rankings }: { rankings: TournamentRankEntry[] }) => {
+    onSocket('t:tournamentFinished', ({ rankings }: { rankings: TournamentRankEntry[] }) => {
       // フォールバックタイマー・eliminatedRef を全てリセット
       // （オールイン優勝時に chips=0フォールバックが先に走って脱落オーバーレイが出るバグ対策）
       if (eliminatedTimerRef.current) {
@@ -483,12 +488,12 @@ export default function TournamentDrawPage() {
     });
 
     // キック
-    socket.on('kicked', ({ reason }: { reason?: string }) => {
+    onSocket('kicked', ({ reason }: { reason?: string }) => {
       setErrorMsg(reason ?? '退室されました');
     });
 
     // エラー
-    socket.on('error', ({ message }: { message: string }) => {
+    onSocket('error', ({ message }: { message: string }) => {
       if (message === 'そのアクションはできません') {
         // 一時的なトースト表示（3秒後に消える）＋ gameState を再取得
         setActionErrorMsg(message);
@@ -514,28 +519,7 @@ export default function TournamentDrawPage() {
 
     return () => {
       cancelled = true;
-      socket.off('gameState');
-      socket.off('timerUpdate');
-      socket.off('t:tournamentStarting');
-      socket.off('t:tournamentNotFound');
-      socket.off('t:eliminatedSpectate');
-      socket.off('t:finalTable');
-      socket.off('t:lateRegClosed');
-      socket.off('t:playerEliminated');
-      socket.off('t:playerLeft');
-      socket.off('t:playerArrived');
-      socket.off('t:blindUpdate');
-      socket.off('t:tournamentStatus');
-      socket.off('t:tableJoin');
-      socket.off('t:tableTransfer');
-      socket.off('t:pendingTableTransfer');
-      socket.off('showdown');
-      socket.off('playerAction');
-      socket.off('gameStarted');
-      socket.off('t:eliminated');
-      socket.off('t:tournamentFinished');
-      socket.off('kicked');
-      socket.off('error');
+      registeredSocketHandlers.forEach(([event, handler]) => socket.off(event, handler));
       // 【修正】テーブル移動再送タイマーをクリーンアップ（アンマウント後の emit 防止）
       transferTimersRef.current.forEach(clearTimeout);
       transferTimersRef.current = [];

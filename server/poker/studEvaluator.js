@@ -173,6 +173,20 @@ const HI_CAT_NAME = [
  *   partial: true の場合、5枚未満の途中経過（Razz中間ストリート）
  */
 function bestLo(cards, requireEightOrBetter, bestEffort = false) {
+  if (!requireEightOrBetter && cards.length >= 5) {
+    let best = null;
+    for (const c of combinations(cards, 5)) {
+      const ev = evalA5Low5(c);
+      if (!best || compareLowEval(ev, best.ev) < 0) best = { ev, cards: c };
+    }
+    return {
+      qualifies: true,
+      ranks: best.ev.ranks,
+      cat: best.ev.cat,
+      key: best.ev.key,
+    };
+  }
+
   // 各ランクで最も低い5枚（重複ランクは1枚のみ有効）を貪欲に選ぶ
   // ロー最良 = 重複しない最も低い5ランク
   const byRank = new Map();
@@ -197,8 +211,58 @@ function bestLo(cards, requireEightOrBetter, bestEffort = false) {
   return { qualifies: true, ranks: five };
 }
 
+function evalA5Low5(hand) {
+  const nums = hand.map((c) => RANK_LO[c[0]]).sort((a, b) => a - b);
+  const cnt = {};
+  for (const n of nums) cnt[n] = (cnt[n] ?? 0) + 1;
+  const groups = Object.entries(cnt)
+    .map(([r, c]) => ({ rank: Number(r), count: c }))
+    .sort((a, b) => b.count - a.count || b.rank - a.rank);
+  const freq = groups.map((g) => g.count);
+  const ranksByCount = (count) => groups
+    .filter((g) => g.count === count)
+    .map((g) => g.rank)
+    .sort((a, b) => b - a);
+
+  let cat = 0;
+  let key = [...nums].sort((a, b) => b - a);
+  if (freq[0] === 4) {
+    cat = 5;
+    key = [ranksByCount(4)[0], ranksByCount(1)[0]];
+  } else if (freq[0] === 3 && freq[1] === 2) {
+    cat = 4;
+    key = [ranksByCount(3)[0], ranksByCount(2)[0]];
+  } else if (freq[0] === 3) {
+    cat = 3;
+    key = [ranksByCount(3)[0], ...ranksByCount(1)];
+  } else if (freq[0] === 2 && freq[1] === 2) {
+    cat = 2;
+    key = [...ranksByCount(2), ranksByCount(1)[0]];
+  } else if (freq[0] === 2) {
+    cat = 1;
+    key = [ranksByCount(2)[0], ...ranksByCount(1)];
+  }
+  return { cat, key, ranks: nums };
+}
+
+function compareLowEval(a, b) {
+  if (a.cat !== b.cat) return a.cat - b.cat;
+  for (let i = 0; i < Math.max(a.key.length, b.key.length); i++) {
+    const av = a.key[i] ?? 0;
+    const bv = b.key[i] ?? 0;
+    if (av !== bv) return av - bv;
+  }
+  return 0;
+}
+
 /** ローの強さ比較（負: A強い, 正: B強い, 0: 引分。低いほど強い） */
 function compareLo(a, b) {
+  if (typeof a.cat === 'number' || typeof b.cat === 'number') {
+    return compareLowEval(
+      { cat: a.cat ?? 0, key: a.key ?? [...a.ranks].sort((x, y) => y - x) },
+      { cat: b.cat ?? 0, key: b.key ?? [...b.ranks].sort((x, y) => y - x) },
+    );
+  }
   // 高い方のカードから比較し、低い方が強い
   const ra = [...a.ranks].sort((x, y) => y - x);
   const rb = [...b.ranks].sort((x, y) => y - x);
@@ -291,21 +355,14 @@ function findLoWinners(players, mode) {
   const requireQual = mode === 'stud_e';
 
   if (mode === 'razz') {
-    // Razz は qualifier 無し。全員が必ずロー手を持つ（7枚で5ユニーク未満の
-    // 極端なケースでも bestEffort で部分手を作り、ペア込みで比較する）。
-    // ペアが多いほど弱いローとして扱うため、ユニークランク数が多い方を優先。
-    const evals = players.map((p) => {
-      const lo = bestLo(p.cards, false, true);
-      return { id: p.id, lo, uniqCount: lo.ranks.length };
-    });
-    // ユニーク5枚揃っている者を優先。揃っていなければペアを含む最良手で比較。
-    const maxUniq = Math.max(...evals.map((e) => e.uniqCount));
-    const eligible = evals.filter((e) => e.uniqCount === maxUniq);
-    let best = [eligible[0]];
-    for (let i = 1; i < eligible.length; i++) {
-      const cmp = compareLo(eligible[i].lo, best[0].lo);
-      if (cmp < 0) best = [eligible[i]];
-      else if (cmp === 0) best.push(eligible[i]);
+    // Razz は qualifier 無し。全員が必ずロー手を持つ。
+    // 5ユニーク未満の極端なケースでも、5枚A-5 lowとしてペア/ツーペア等を正しく比較する。
+    const evals = players.map((p) => ({ id: p.id, lo: bestLo(p.cards, false, true) }));
+    let best = [evals[0]];
+    for (let i = 1; i < evals.length; i++) {
+      const cmp = compareLo(evals[i].lo, best[0].lo);
+      if (cmp < 0) best = [evals[i]];
+      else if (cmp === 0) best.push(evals[i]);
     }
     return best.map((e) => e.id);
   }

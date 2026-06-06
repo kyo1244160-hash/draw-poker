@@ -121,8 +121,8 @@ function compareThreeCardHands(playerHand, dealerHand) {
 
   if (ph.rank !== dh.rank) return ph.rank - dh.rank;
 
-  // 同ランク: ストレートは最大値で比較
-  if (ph.rank === 4) { // ストレート
+  // 同ランク: ストレート系は最大値で比較（A-2-3 は 3-high）
+  if (ph.rank === 4 || ph.rank === 6) { // ストレート / ストレートフラッシュ
     const pHigh = _straightHigh3(ph.values);
     const dHigh = _straightHigh3(dh.values);
     return pHigh - dHigh;

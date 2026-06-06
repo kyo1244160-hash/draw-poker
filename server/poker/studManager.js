@@ -1182,7 +1182,7 @@ function updateStudPlayerSocketId(roomId, accountId, nickname, newSocketId) {
   const room = studRooms.get(roomId);
   if (!room) return false;
   const p = room.players.find(
-    (x) => (accountId && x.accountId === accountId) || (nickname && x.name === nickname)
+    (x) => (accountId && x.accountId === accountId) || (!accountId && nickname && x.name === nickname)
   );
   if (!p) return false;
   if (p.id === newSocketId) return false;

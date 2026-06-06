@@ -112,6 +112,11 @@ function compare27Hands(handA, handB) {
   const catB = get27Category(handB);
   if (catA !== catB) return catA - catB; // カテゴリが低いほど強い
 
+  const groupedCats = new Set([1, 2, 3, 6, 7]);
+  if (groupedCats.has(catA)) {
+    return compareLowGroupedHands(handA, handB, RANK_ORDER, catA);
+  }
+
   // 同カテゴリ → カードを降順に並べて順番に比較（低いほど強い）
   const numsA = handA.map((c) => RANK_ORDER[c[0]]).sort((a, b) => b - a);
   const numsB = handB.map((c) => RANK_ORDER[c[0]]).sort((a, b) => b - a);
@@ -182,6 +187,10 @@ function compareA5Hands(handA, handB) {
   const catA = getA5Category(handA);
   const catB = getA5Category(handB);
   if (catA !== catB) return catA - catB;
+
+  if (catA !== 0) {
+    return compareLowGroupedHands(handA, handB, RANK_ORDER_A5, catA);
+  }
 
   // 同カテゴリ → カードを降順に並べて順番に比較（低いほど強い、A=1）
   const numsA = handA.map((c) => RANK_ORDER_A5[c[0]]).sort((a, b) => b - a);
@@ -282,6 +291,61 @@ function compareBadugiHands(handA, handB) {
 // ==========================================================
 // ■ 共通ユーティリティ
 // ==========================================================
+
+function lowGroupedKey(hand, rankOrder, category) {
+  const cnt = {};
+  for (const c of hand) {
+    const n = rankOrder[c[0]];
+    cnt[n] = (cnt[n] ?? 0) + 1;
+  }
+  const ranksByCount = (count) => Object.entries(cnt)
+    .filter(([, v]) => v === count)
+    .map(([r]) => Number(r))
+    .sort((a, b) => b - a);
+
+  if (category === 1) {
+    const pair = ranksByCount(2)[0];
+    const kickers = ranksByCount(1);
+    return [pair, ...kickers];
+  }
+  if (category === 2) {
+    const pairs = ranksByCount(2);
+    const kicker = ranksByCount(1)[0];
+    return [...pairs, kicker];
+  }
+  if (category === 3) {
+    const trips = ranksByCount(3)[0];
+    const kickers = ranksByCount(1);
+    return [trips, ...kickers];
+  }
+  if (category === 4) {
+    const trips = ranksByCount(3)[0];
+    const pair = ranksByCount(2)[0];
+    return [trips, pair];
+  }
+  if (category === 6) {
+    const trips = ranksByCount(3)[0];
+    const pair = ranksByCount(2)[0];
+    return [trips, pair];
+  }
+  if (category === 5 || category === 7) {
+    const quads = ranksByCount(4)[0];
+    const kicker = ranksByCount(1)[0];
+    return [quads, kicker];
+  }
+  return hand.map((c) => rankOrder[c[0]]).sort((a, b) => b - a);
+}
+
+function compareLowGroupedHands(handA, handB, rankOrder, category) {
+  const keyA = lowGroupedKey(handA, rankOrder, category);
+  const keyB = lowGroupedKey(handB, rankOrder, category);
+  for (let i = 0; i < Math.max(keyA.length, keyB.length); i++) {
+    const av = keyA[i] ?? 0;
+    const bv = keyB[i] ?? 0;
+    if (av !== bv) return av - bv;
+  }
+  return 0;
+}
 
 /**
  * プレイヤーリストから勝者の socketId を返す（引き分け時は先頭のみ返す）

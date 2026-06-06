@@ -9,13 +9,19 @@ import { authOptions } from '../auth/[...nextauth]';
 
 const ringDb = require('../../../server/db/ring');
 
+function parseLimit(value: unknown, fallback: number, max: number) {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const n = Number(raw ?? fallback);
+  return Number.isInteger(n) && n >= 1 ? Math.min(n, max) : fallback;
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'GET') return res.status(405).end();
 
   const session = await getServerSession(req, res, authOptions);
   if (!session?.user?.accountId) return res.status(401).json({ error: 'Unauthorized' });
 
-  const limit = Math.min(Number(req.query.limit ?? 1000), 5000);
+  const limit = parseLimit(req.query.limit, 1000, 5000);
 
   try {
     const history = await ringDb.getRingHistory(session.user.accountId, limit);

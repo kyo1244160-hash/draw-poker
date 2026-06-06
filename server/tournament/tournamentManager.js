@@ -885,8 +885,7 @@ function getTableForPlayer(tournamentId, accountId) {
     const allPlayers = [...room.players, ...room.pendingPlayers];
     const found = allPlayers.find(p =>
       p.id === accountId ||
-      p.accountId === accountId ||
-      p.name === accountId
+      p.accountId === accountId
     );
     if (process.env.NODE_ENV !== 'production' && !found && allPlayers.length > 0) {
       const humanPlayers = allPlayers.filter(p => !p.id?.startsWith('bot::'));
@@ -1084,8 +1083,8 @@ function balanceTables(tournamentId) {
           {
             const { getOrCreateRoom: _gcr } = require('../poker/gameManager');
             const _destRoom = _gcr(dest.id);
-            const _movedPlayer = _destRoom?.players.find(pp => pp.accountId === accId || pp.name === name)
-                              ?? _destRoom?.pendingPlayers?.find(pp => pp.accountId === accId || pp.name === name);
+            const _movedPlayer = _destRoom?.players.find(pp => pp.accountId === accId)
+                              ?? _destRoom?.pendingPlayers?.find(pp => pp.accountId === accId);
             if (_movedPlayer && _movedPlayer.id !== sock.id) {
               logDev(`[TM] balance: update socket.id ${_movedPlayer.id.slice(-8)} → ${sock.id.slice(-8)} for ${name}`);
               _movedPlayer.id = sock.id;
@@ -1284,8 +1283,8 @@ function balanceTables(tournamentId) {
         {
           const { getOrCreateRoom: _gcr2 } = require('../poker/gameManager');
           const _destRoom2 = _gcr2(minT.tid);
-          const _movedPlayer2 = _destRoom2?.players.find(pp => pp.accountId === accId || pp.name === name)
-                             ?? _destRoom2?.pendingPlayers?.find(pp => pp.accountId === accId || pp.name === name);
+          const _movedPlayer2 = _destRoom2?.players.find(pp => pp.accountId === accId)
+                             ?? _destRoom2?.pendingPlayers?.find(pp => pp.accountId === accId);
           if (_movedPlayer2 && _movedPlayer2.id !== sock.id) {
             logDev(`[TM] balance: update socket.id ${_movedPlayer2.id.slice(-8)} → ${sock.id.slice(-8)} for ${name}`);
             _movedPlayer2.id = sock.id;

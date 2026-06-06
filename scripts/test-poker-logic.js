@@ -17,6 +17,7 @@ const assert = require('assert');
 const he = require('../server/poker/handEvaluator');
 const se = require('../server/poker/studEvaluator');
 const sm = require('../server/poker/studManager');
+const te = require('../server/poker/threeCardEvaluator');
 
 let passed = 0;
 let failed = 0;
@@ -75,9 +76,49 @@ test('findWinners が引き分けで複数勝者を返す（スプリット）',
   assert.strictEqual(w.length, 2, '同点は2人勝者');
 });
 
+test('2-7: ワンペア同士は低いペアを優先して比較する', () => {
+  const deuces = ['2S', '2H', 'KD', 'QC', 'JH'];
+  const treys  = ['3S', '3H', '4D', '5C', '6H'];
+  assert.ok(he.compare27Hands(deuces, treys) < 0, '2のペアが3のペアに勝つべき');
+});
+
+test('2-7: ツーペア同士は高い側のペアランクを優先して低い方が勝つ', () => {
+  const lowTwoPair  = ['2S', '2H', '3D', '3C', 'KH'];
+  const highTwoPair = ['2D', '2C', '4S', '4H', '5D'];
+  assert.ok(he.compare27Hands(lowTwoPair, highTwoPair) < 0, '3と2のツーペアが4と2のツーペアに勝つべき');
+});
+
 test('空配列で findWinners がクラッシュしない', () => {
   assert.deepStrictEqual(he.findWinners([], '27'), []);
   assert.deepStrictEqual(he.findWinners(null, '27'), []);
+});
+
+console.log('\n=== handEvaluator: A-5 ローボール ===');
+
+test('A-5: ワンペア同士は低いペアを優先して比較する', () => {
+  const aces = ['AS', 'AH', 'KD', 'QC', 'JH'];
+  const twos = ['2S', '2H', '3D', '4C', '5H'];
+  assert.ok(he.compareA5Hands(aces, twos) < 0, 'Aのペアが2のペアに勝つべき');
+});
+
+test('A-5: フルハウス同士は低いスリーカードを優先して比較する', () => {
+  const aceFull = ['AS', 'AH', 'AD', 'KC', 'KH'];
+  const twoFull = ['2S', '2H', '2D', '3C', '3H'];
+  assert.ok(he.compareA5Hands(aceFull, twoFull) < 0, 'Aフルが2フルに勝つべき');
+});
+
+console.log('\n=== threeCardEvaluator: Three Card Poker ===');
+
+test('3CP: A-2-3 ストレートは 3-high として 2-3-4 に負ける', () => {
+  assert.ok(te.compareThreeCardHands(['AS', '2D', '3C'], ['2S', '3D', '4C']) < 0);
+});
+
+test('3CP: A-2-3 ストレートフラッシュも 3-high として 2-3-4 SF に負ける', () => {
+  assert.ok(te.compareThreeCardHands(['AS', '2S', '3S'], ['2H', '3H', '4H']) < 0);
+});
+
+test('3CP: A-K-Q ストレートは K-Q-J に勝つ', () => {
+  assert.ok(te.compareThreeCardHands(['AS', 'KH', 'QD'], ['KS', 'QH', 'JD']) > 0);
 });
 
 console.log('\n=== studEvaluator: スタッド Hi/Lo ===');
@@ -111,15 +152,19 @@ test('stud_e のローは8以下クオリファイ必須（9highは不成立）'
 console.log('\n=== Razz: ノークオリファイ表記の修正 ===');
 
 test('Razz は5枚未満でも「ノークオリファイ」と表示しない（中間ストリート）', () => {
-  // 2,9,8,8,K（8ペアで unique=4種）→ 旧実装は「ノークオリファイ」
-  const name = se.studHandName(['2C', '9H', '8H', '8D', 'KC'], 'razz');
+  const name = se.studHandName(['2C', '9H', '8H'], 'razz');
   assert.notStrictEqual(name, 'ノークオリファイ', 'Razzにノークオリファイは存在しない');
-  assert.strictEqual(name, 'K-9-8-2', '現状の最良ローを降順表示');
+  assert.strictEqual(name, '9-8-2', '現状の最良ローを降順表示');
 });
 
 test('Razz 7枚は確定ローを表示', () => {
   const name = se.studHandName(['2C', '9H', '8H', '8D', 'KC', '5S', '3D'], 'razz');
   assert.strictEqual(name, '9-8-5-3-2', '7枚から最良5枚ロー');
+});
+
+test('Razz 5枚でペアを含む場合も正式なロー手として表示する', () => {
+  const name = se.studHandName(['2C', '9H', '8H', '8D', 'KC'], 'razz');
+  assert.strictEqual(name, 'K-9-8-8-2');
 });
 
 test('Razz 3rd street（3枚）も表示できる', () => {
@@ -144,6 +189,15 @@ test('Razz 勝者判定: 全員ペアでも勝者が出る（保存則の前提�
   const w = se.findLoWinners(players, 'razz');
   assert.strictEqual(w.length, 1, '同じユニーク数なら低い方が勝つ');
   assert.strictEqual(w[0], 'a', 'a (2-3-4) が b (5-6-7) より強い');
+});
+
+test('Razz 勝者判定: ペアだらけでも低いペアを優先して比較する', () => {
+  const players = [
+    { id: 'a', cards: ['AC', 'AD', 'AH', 'AS', 'KC', 'QD', 'JC'] }, // Aペア+KQJ
+    { id: 'b', cards: ['2C', '3D', '4H', '5S', '5C', '5D', '5H'] }, // 5ペア+432
+  ];
+  const w = se.findLoWinners(players, 'razz');
+  assert.deepStrictEqual(w, ['a'], 'Aのペアが5のペアに勝つべき');
 });
 
 console.log('\n=== 中間ストリート手役の捏造防止（スクショ4バグ）===');

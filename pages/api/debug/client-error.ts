@@ -43,7 +43,8 @@ function _rateLimited(ip: string): boolean {
 // 文字列を安全な長さに切り詰める
 function _truncate(v: unknown, max: number): string {
   const s = typeof v === 'string' ? v : String(v ?? '');
-  return s.length > max ? s.slice(0, max) + '…[truncated]' : s;
+  const clean = s.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, '?');
+  return clean.length > max ? clean.slice(0, max) + '...[truncated]' : clean;
 }
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
