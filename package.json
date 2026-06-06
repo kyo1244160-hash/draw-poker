@@ -8,7 +8,8 @@
   "scripts": {
     "dev": "node server/index.js",
     "build": "next build",
-    "start": "npm run build && node server/index.js",
+    "start": "node server/index.js",
+    "start:build": "npm run build && node server/index.js",
     "test": "node scripts/test-poker-logic.js"
   },
   "dependencies": {
