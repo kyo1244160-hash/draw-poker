@@ -26,7 +26,7 @@ const { log, logDev } = require('./logger');
  */
 
 const express = require('express');
-const { decode } = require('next-auth/jwt');
+const { createHmac, timingSafeEqual } = require('crypto');
 const { isAdmin } = require('./db/admin');
 const {
   getTournament,
@@ -76,13 +76,34 @@ function _kickstartBotOnlyTables(tableIds) {
 }
 
 // ===== 管理者認証ミドルウェア =====
+function verifySocketToken(token) {
+  if (typeof token !== 'string' || !token.startsWith('socket:')) return null;
+  const body = token.slice('socket:'.length);
+  const dot = body.lastIndexOf('.');
+  if (dot <= 0) return null;
+  const payload = body.slice(0, dot);
+  const sig = body.slice(dot + 1);
+  const expected = createHmac('sha256', process.env.NEXTAUTH_SECRET).update(payload).digest('base64url');
+  const sigBuf = Buffer.from(sig);
+  const expBuf = Buffer.from(expected);
+  if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) return null;
+  try {
+    const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    if (!decoded?.accountId || typeof decoded.accountId !== 'string') return null;
+    if (!Number.isFinite(decoded.exp) || decoded.exp < Math.floor(Date.now() / 1000)) return null;
+    return decoded;
+  } catch {
+    return null;
+  }
+}
+
 async function requireAdmin(req, res, next) {
   try {
     const authHeader = req.headers.authorization ?? '';
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
     if (!token) return res.status(401).json({ error: 'UNAUTHORIZED' });
 
-    const decoded = await decode({ token, secret: process.env.NEXTAUTH_SECRET });
+    const decoded = verifySocketToken(token);
     if (!decoded?.accountId) return res.status(401).json({ error: 'INVALID_TOKEN' });
 
     const admin = await isAdmin(decoded.accountId);
