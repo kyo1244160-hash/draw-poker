@@ -227,12 +227,12 @@ export default function TournamentTable({
         color: compact ? '#f0d060' : 'var(--gold)',
         fontFamily:'var(--font-body)',
         fontWeight: compact ? '700' : undefined,
-        fontSize: compact ? 11 : 16,
+        fontSize: compact ? 12 : 16,
         lineHeight:compact ? 1 : 1.08,
         whiteSpace:'nowrap',
       }}>
         <span>{compact ? `B${amount}` : `BET ${amount}`}</span>
-        {bbText && <span style={{fontSize: compact ? 10 : 13, lineHeight:1.05, fontWeight:800, color:'#ffe08a'}}>{bbText}</span>}
+        {bbText && <span style={{fontSize: compact ? 11 : 13, lineHeight:1.05, fontWeight:800, color:'#ffe08a'}}>{bbText}</span>}
       </span>
     );
   };
@@ -1090,7 +1090,7 @@ export default function TournamentTable({
   // スマホ縦は自席を下端固定にするため、相手席は上半分〜中段だけに配置する。
   const SLOTS_M = isPortrait ? [180,-150,-90,-30,0] : [150,-150,-90,-30,30];
   const oth_m = orderedOthers;
-  const fs = { name: Math.max(8,Math.floor(OTH_W*0.078)), chip: Math.max(10,Math.floor(OTH_W*0.105)) };
+  const fs = { name: 9, chip: Math.max(10,Math.floor(OTH_W*0.105)) };
 
   const getPosMobile = (p:PlayerState) => {
     const bw = p.isSelf ? SELF_W : OTH_W;
@@ -1195,7 +1195,7 @@ export default function TournamentTable({
             {p.folded&&!p.sittingOut&&<Badge bg="#444" color="#aaa" label="FOLD"/>}
                 {p.isWinner&&<Badge bg="#f0d060" color="#1a1200" label="🏆 WIN"/>}
           </div>
-          <div style={{fontFamily:'var(--font-title)',fontSize:p.isSelf?Math.max(fs.name+1,9):fs.name,color:p.isSelf?'var(--gold-bright)':'var(--cream)',
+          <div style={{fontFamily:'var(--font-title)',fontSize:p.isSelf?10:fs.name,color:p.isSelf?'var(--gold-bright)':'var(--cream)',
             whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',letterSpacing:'0.02em'}}>
             {p.isSelf?`${p.name}(YOU)`:p.name}
           </div>
