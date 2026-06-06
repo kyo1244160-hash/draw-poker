@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS blind_schedules (
 CREATE TABLE IF NOT EXISTS tournaments (
   id                  TEXT        PRIMARY KEY,
   name                TEXT        NOT NULL,
-  mode                TEXT        NOT NULL,  -- "27" | "badugi" | "mix"
+  mode                TEXT        NOT NULL,
   scheduled_start_at  TIMESTAMPTZ NOT NULL,
   status              TEXT        NOT NULL DEFAULT 'registering',
   -- "registering" | "running" | "finished" | "cancelled"
@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS tournaments (
   CONSTRAINT tournament_status_check
     CHECK (status IN ('registering','running','finished','cancelled')),
   CONSTRAINT tournament_mode_check
-    CHECK (mode IN ('27','badugi','mix'))
+    CHECK (mode IN ('27','badugi','mix','a5','27sd','mix3','beast+','stud_mix','stud_s','stud_e','razz'))
 );
 
 -- テーブル座席割り当て（テーブルドロー画面・バランシング後の更新に使用）

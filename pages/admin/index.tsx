@@ -539,7 +539,19 @@ export default function AdminPage() {
 
   const statusLabel = (s: string) => ({ registering: '受付中', running: '進行中', finished: '終了', cancelled: 'キャンセル' }[s] ?? s);
   const statusColor = (s: string) => ({ registering: '#88bbee', running: '#88ee88', finished: '#aaa', cancelled: '#ee8888' }[s] ?? '#aaa');
-  const modeLabel   = (m: string) => ({ '27': '2-7 Triple Draw', badugi: 'Badugi', mix: 'Mix', a5: 'A-5 Triple Draw', '27sd': '2-7 Single Draw (NL)', mix3: 'Mix-3 (2-7/Badugi/A-5)', 'beast+': 'BEAST+', stud_mix: 'Stud Mix' }[m] ?? m);
+  const modeLabel   = (m: string) => ({
+    '27': '2-7 Triple Draw',
+    badugi: 'Badugi',
+    mix: 'Mix',
+    a5: 'A-5 Triple Draw',
+    '27sd': '2-7 Single Draw (NL)',
+    mix3: 'Mix-3 (2-7/Badugi/A-5)',
+    'beast+': 'BEAST+',
+    stud_mix: 'Stud Mix',
+    stud_s: '7 Card Stud',
+    stud_e: 'Stud Hi/Lo',
+    razz: 'Razz',
+  }[m] ?? m);
 
   if (loading) return <div style={S.loading}>読み込み中...</div>;
   if (error)   return <div style={S.loading}>{error}</div>;
@@ -648,6 +660,9 @@ export default function AdminPage() {
                     <option value="mix3">Mix-3 (2-7 / Badugi / A-5)</option>
                     <option value="beast+">BEAST+ (B/E/A/S/T/Razz)</option>
                     <option value="stud_mix">Stud Mix (7Stud / Hi-Lo / Razz)</option>
+                    <option value="stud_s">7 Card Stud</option>
+                    <option value="stud_e">Stud Hi/Lo</option>
+                    <option value="razz">Razz</option>
                   </select>
                 </label>
                 {/* 27SD（ノーリミット）使用時の注意書き */}

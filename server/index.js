@@ -164,7 +164,13 @@ app.prepare().then(async () => {
     const sql = require('./db/client');
     await sql`ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS late_reg_minutes INTEGER NOT NULL DEFAULT 0`;
     await sql`ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS late_reg_closed_at TIMESTAMPTZ`;
-    log('✓ DB migration: late_reg columns OK');
+    await sql`ALTER TABLE tournaments DROP CONSTRAINT IF EXISTS tournament_mode_check`;
+    await sql`
+      ALTER TABLE tournaments
+      ADD CONSTRAINT tournament_mode_check
+      CHECK (mode IN ('27','badugi','mix','a5','27sd','mix3','beast+','stud_mix','stud_s','stud_e','razz'))
+    `;
+    log('✓ DB migration: tournament base schema OK');
   } catch (e) {
     console.warn('⚠ DB migration warning:', e.message);
   }

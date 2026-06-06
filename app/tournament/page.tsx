@@ -10,6 +10,14 @@ const MODE_LABEL: Record<string, string> = {
   '27': '2-7 ロウボール',
   badugi: 'バドゥギ',
   mix: 'ミックス',
+  a5: 'A-5 Triple Draw',
+  '27sd': '2-7 Single Draw',
+  mix3: 'Mix-3',
+  'beast+': 'BEAST+',
+  stud_mix: 'Stud Mix',
+  stud_s: '7 Card Stud',
+  stud_e: 'Stud Hi/Lo',
+  razz: 'Razz',
 };
 
 const STATUS_LABEL: Record<string, { label: string; color: string }> = {
