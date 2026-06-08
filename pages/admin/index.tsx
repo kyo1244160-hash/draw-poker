@@ -139,8 +139,10 @@ export default function AdminPage() {
 
   // ボット管理
   interface BotInfo { id: number; roomId: string; name: string; connected: boolean; isFastFold?: boolean; }
+  interface ThreeCardBotInfo { id: string; roomId: string; name: string; points: number; phase: string; }
   const [bots,        setBots]       = useState<BotInfo[]>([]);
   const [ffBots,      setFfBots]     = useState<BotInfo[]>([]);
+  const [tcBots,      setTcBots]     = useState<ThreeCardBotInfo[]>([]);
   const [botRoomId,   setBotRoomId]  = useState('27-room-1');
   const [botCount,    setBotCount]   = useState(1);
   const [botMsg,      setBotMsg]     = useState('');
@@ -149,6 +151,10 @@ export default function AdminPage() {
   const [ffPoolId,    setFfPoolId]   = useState('zoom-27');
   const [ffCount,     setFfCount]    = useState(1);
   const [ffMsg,       setFfMsg]      = useState('');
+  const [tcRoomId,    setTcRoomId]   = useState('3card-room-1');
+  const [tcCount,     setTcCount]    = useState(1);
+  const [tcPoints,    setTcPoints]   = useState(5000);
+  const [tcMsg,       setTcMsg]      = useState('');
 
   // adminMonitor API用：Bearer tokenを自動付与するfetch
   const authFetch = async (url: string, opts: RequestInit = {}) => {
@@ -168,7 +174,7 @@ export default function AdminPage() {
   const fetchBots = () => {
     authFetch('/api/admin/monitor/bots')
       .then((r) => r.json())
-      .then((d) => { setBots(d.bots ?? []); setFfBots(d.fastFoldBots ?? []); })
+      .then((d) => { setBots(d.bots ?? []); setFfBots(d.fastFoldBots ?? []); setTcBots(d.threeCardBots ?? []); })
       .catch(() => {});
   };
 
@@ -202,6 +208,27 @@ export default function AdminPage() {
     await authFetch('/api/admin/monitor/fastfold-bots', {
       method: 'DELETE',
       body: JSON.stringify({ poolId }),
+    });
+    fetchBots();
+  };
+
+  const handleAddTcBot = async () => {
+    setTcMsg('');
+    try {
+      const res = await authFetch('/api/admin/monitor/three-card-bots', {
+        method: 'POST',
+        body: JSON.stringify({ roomId: tcRoomId, count: tcCount, points: tcPoints }),
+      });
+      const d = await res.json();
+      if (res.ok) { setTcMsg(`✅ 3CP BOT ${d.added.length}体 追加`); fetchBots(); }
+      else setTcMsg(`❌ ${d.error}`);
+    } catch { setTcMsg('❌ 認証エラー'); }
+  };
+
+  const handleRemoveTcBots = async (roomId: string, botId?: string) => {
+    await authFetch('/api/admin/monitor/three-card-bots', {
+      method: 'DELETE',
+      body: JSON.stringify({ roomId, botId }),
     });
     fetchBots();
   };
@@ -1138,6 +1165,86 @@ export default function AdminPage() {
             </div>
 
             {/* FastFold稼働中ボット一覧 */}
+            <div style={S.card}>
+              <p style={S.cardTitle}>3 Card Poker BOT</p>
+              <div style={S.formGrid}>
+                <label style={S.label}>
+                  Room
+                  <select style={S.input} value={tcRoomId} onChange={(e) => setTcRoomId(e.target.value)}>
+                    <option value="3card-room-1">3CARD ROOM 1</option>
+                    <option value="3card-room-2">3CARD ROOM 2</option>
+                    <option value="3card-room-3">3CARD ROOM 3</option>
+                  </select>
+                </label>
+                <label style={S.label}>
+                  Count
+                  <input
+                    type="number"
+                    min={1}
+                    max={6}
+                    style={S.input}
+                    value={tcCount}
+                    onChange={(e) => setTcCount(Number(e.target.value))}
+                  />
+                </label>
+                <label style={S.label}>
+                  Points
+                  <input
+                    type="number"
+                    min={1}
+                    step={100}
+                    style={S.input}
+                    value={tcPoints}
+                    onChange={(e) => setTcPoints(Number(e.target.value))}
+                  />
+                </label>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' as const }}>
+                <button style={S.createBtn} onClick={handleAddTcBot}>Add 3CP BOT</button>
+                {tcBots.some(b => b.roomId === tcRoomId) && (
+                  <button
+                    style={{ ...S.createBtn, background: 'rgba(160,40,40,0.2)', color: '#f88' }}
+                    onClick={() => handleRemoveTcBots(tcRoomId)}
+                  >
+                    Remove room BOTs
+                  </button>
+                )}
+                {tcMsg && <span style={{ fontSize: 13, color: tcMsg.startsWith('✅') ? '#6f6' : '#f88' }}>{tcMsg}</span>}
+              </div>
+              {tcBots.length > 0 && (
+                <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column' as const, gap: 10 }}>
+                  {Array.from(new Set(tcBots.map(b => b.roomId))).map(roomId => (
+                    <div key={roomId}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
+                        <span style={{ fontFamily: 'var(--font-title)', fontSize: 13, color: 'var(--gold)' }}>
+                          {roomId} ({tcBots.filter(b => b.roomId === roomId).length})
+                        </span>
+                        <button
+                          style={{ fontSize: 11, background: 'transparent', border: '1px solid #f66', color: '#f88', borderRadius: 4, padding: '2px 8px', cursor: 'pointer' }}
+                          onClick={() => handleRemoveTcBots(roomId)}
+                        >
+                          Remove all
+                        </button>
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' as const }}>
+                        {tcBots.filter(b => b.roomId === roomId).map(bot => (
+                          <span key={bot.id} style={{ fontSize: 12, background: 'rgba(80,180,80,0.1)', border: '1px solid #4a4', borderRadius: 4, padding: '3px 10px', color: 'var(--cream)' }}>
+                            {bot.name} / {bot.points} pt / {bot.phase}
+                            <button
+                              style={{ marginLeft: 8, fontSize: 11, background: 'transparent', border: 'none', color: '#f88', cursor: 'pointer' }}
+                              onClick={() => handleRemoveTcBots(roomId, bot.id)}
+                            >
+                              x
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             {ffBots.length > 0 && (
               <div style={S.card}>
                 <p style={S.cardTitle}>⚡ FastFold稼働中ボット</p>

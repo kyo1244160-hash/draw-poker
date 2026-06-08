@@ -40,6 +40,7 @@ const {
   incrementTotalPlayers,
 } = require('./tournament/tournamentManager');
 const { getOrCreateRoom, getAllRooms, leaveRoom, canAutoStart, startGame, ensurePotsAwarded } = require('./poker/gameManager');
+const tcManager = require('./poker/threeCardManager');
 const { getTournament: getTournamentDB, getEntries } = require('./db/tournament');
 const { updateTournamentStatus } = require('./db/admin');
 
@@ -72,6 +73,16 @@ function _kickstartBotOnlyTables(tableIds) {
       log(`[adminMonitor] kickstart table ${tid.slice(-8)}`);
       _tryAutoStartFn(_io, tid);
     }
+  }
+}
+
+function _broadcastThreeCard(roomId) {
+  if (!_io) return;
+  const t = tcManager.getTable(roomId);
+  if (!t) return;
+  for (const p of t.players) {
+    const s = _io.sockets.sockets.get(p.socketId);
+    if (s) s.emit('3c:state', tcManager.buildTableState(roomId, p.socketId));
   }
 }
 
@@ -389,6 +400,11 @@ router.post('/tournaments/:tournamentId/start', async (req, res) => {
         _io.emit('t:tournamentStarting', { tournamentId, tableId });
       }
     }
+    if (_tryAutoStartFn && _io) {
+      for (const tableId of tournament.tableIds) {
+        if (canAutoStart(tableId)) _tryAutoStartFn(_io, tableId);
+      }
+    }
 
     res.json({
       ok:         true,
@@ -412,7 +428,38 @@ router.get('/bots', (req, res) => {
   res.json({
     bots:         ringBotManager.listBots(),
     fastFoldBots: ringBotManager.listFastFoldBots(),
+    threeCardBots: tcManager.listBots(),
   });
+});
+
+/** POST /api/admin/monitor/three-card-bots — 3カードポーカーBOT追加 */
+router.post('/three-card-bots', (req, res) => {
+  const { roomId, count = 1, points = 5000 } = req.body;
+  if (!roomId || typeof roomId !== 'string') {
+    return res.status(400).json({ error: 'roomId は必須です' });
+  }
+  const n = Math.min(Math.max(1, parseInt(count, 10) || 1), tcManager.MAX_PLAYERS);
+  const added = tcManager.addBots(roomId, n, { points });
+  _broadcastThreeCard(roomId);
+  log(`[adminMonitor] 3CP BOT ${added.length}体 追加 → ${roomId} by ${req.adminId}`);
+  res.json({ ok: true, added });
+});
+
+/** DELETE /api/admin/monitor/three-card-bots — 3カードポーカーBOT削除 */
+router.delete('/three-card-bots', (req, res) => {
+  const { roomId, botId } = req.body ?? {};
+  if (!roomId || typeof roomId !== 'string') {
+    return res.status(400).json({ error: 'roomId は必須です' });
+  }
+  let removed = 0;
+  if (botId) {
+    removed = tcManager.removeBot(roomId, botId) ? 1 : 0;
+  } else {
+    removed = tcManager.removeBots(roomId);
+  }
+  _broadcastThreeCard(roomId);
+  log(`[adminMonitor] 3CP BOT ${removed}体 削除 → ${roomId} by ${req.adminId}`);
+  res.json({ ok: true, removed });
 });
 
 /** POST /api/admin/monitor/fastfold-bots — FastFoldボット追加 */

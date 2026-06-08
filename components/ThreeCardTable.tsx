@@ -69,7 +69,7 @@ const PHASE_LABEL: Record<string,string> = {
 function CardFace({ code, size='md' }: { code:string; size?:'sm'|'md'|'lg' }) {
   const r=code[0], s=code[1];
   const label=RANK_LABEL[r]??r, col=SUIT_COLOR[s]??'#1a1a2e', sym=SUIT_SYMBOL[s]??s;
-  const [w,h,fs] = size==='lg'?[62,90,18]:size==='md'?[48,70,14]:[38,56,11];
+  const [w,h,fs] = size==='lg'?[62,90,18]:size==='md'?[48,70,14]:[34,50,10];
   return (
     <div style={{width:w,height:h,borderRadius:6,background:'white',
       border:'1.5px solid rgba(0,0,0,0.15)',boxShadow:'0 2px 6px rgba(0,0,0,0.3)',
@@ -88,7 +88,7 @@ function CardFace({ code, size='md' }: { code:string; size?:'sm'|'md'|'lg' }) {
 }
 
 function CardBack({ size='md' }: { size?:'sm'|'md'|'lg' }) {
-  const [w,h] = size==='lg'?[62,90]:size==='md'?[48,70]:[38,56];
+  const [w,h] = size==='lg'?[62,90]:size==='md'?[48,70]:[34,50];
   return (
     <div style={{width:w,height:h,borderRadius:6,
       background:'linear-gradient(135deg,#1a4a3a,#0d2e24)',
@@ -152,11 +152,12 @@ function BetSpot({ label, amount, active, onClick }: {
 }
 
 // ===== プレイヤーボックス =====
-function PlayerBox({ player, phase }: { player:TCPlayer; phase:string }) {
+function PlayerBox({ player, phase, compact=false }: { player:TCPlayer; phase:string; compact?:boolean }) {
   const isReveal = phase==='reveal'||phase==='result';
   const showCards = player.isSelf || isReveal;
   const net = player.result?.net ?? 0;
   const showHandLabel = player.isSelf && (phase==='action'||phase==='reveal'||phase==='result') && player.handLabel;
+  const cardSize = player.isSelf && !compact ? 'md' : 'sm';
 
   return (
     <div style={{
@@ -167,7 +168,7 @@ function PlayerBox({ player, phase }: { player:TCPlayer; phase:string }) {
       border: player.isSelf
         ? '1px solid rgba(201,168,76,0.4)'
         : '1px solid rgba(255,255,255,0.12)',
-      borderRadius:8,padding:'6px 8px',minWidth:140,
+      borderRadius:8,padding:compact?'5px 6px':'6px 8px',minWidth:compact?124:140,
       backdropFilter:'blur(4px)',
     }}>
       {/* 名前 */}
@@ -181,7 +182,7 @@ function PlayerBox({ player, phase }: { player:TCPlayer; phase:string }) {
         {player.points.toLocaleString()} pt
       </div>
       {/* 手札 */}
-      <Hand cards={player.hand} size={player.isSelf?'md':'sm'} hidden={!showCards}/>
+      <Hand cards={player.hand} size={cardSize} hidden={!showCards}/>
       {/* A) カードの下に役を常時表示（dealt以降） */}
       {showHandLabel && (
         <div style={{
@@ -303,13 +304,27 @@ export default function ThreeCardTable({ state, onBet, onAction, onLeave }: Prop
   const ACT_W = isPC ? 220 : 0;
   const TW = isPC ? size.w - ACT_W - 8 : size.w;
   const TH = size.h;
+  const mobilePlayH = Math.max(430, TH - 170);
   const CX = TW / 2;
-  const CY = TH * 0.48;
-  const RX = TW * 0.36;
-  const RY = TH * 0.34;
+  const CY = isPC ? TH * 0.48 : mobilePlayH * 0.48;
+  const RX = isPC ? TW * 0.36 : TW * 0.38;
+  const RY = isPC ? TH * 0.34 : mobilePlayH * 0.35;
 
   // プレイヤー座標（自分=下部90°、他は上部に分散）
   const getPos = (p: TCPlayer) => {
+    if (!isPC) {
+      if (p.isSelf) return { x: CX, y: mobilePlayH - 55 };
+      const idx = others.findIndex(o => o.name === p.name);
+      const sideX = Math.max(70, Math.min(86, TW * 0.22));
+      const slots = [
+        { x: CX, y: 155 },
+        { x: sideX, y: 255 },
+        { x: TW - sideX, y: 255 },
+        { x: sideX, y: 370 },
+        { x: TW - sideX, y: 370 },
+      ];
+      return slots[idx] ?? { x: CX, y: 155 };
+    }
     let ang: number;
     if (p.isSelf) { ang = 90; }
     else {
@@ -322,7 +337,7 @@ export default function ThreeCardTable({ state, onBet, onAction, onLeave }: Prop
   };
 
   // ディーラー座標（上部中央）
-  const dealerPos = { x: CX, y: CY - RY - 60 };
+  const dealerPos = isPC ? { x: CX, y: CY - RY - 60 } : { x: CX, y: 62 };
 
   return (
     <div style={{ display: 'flex', width: '100%', height: '100%', position: 'relative', overflow: 'hidden' }}>
@@ -538,7 +553,7 @@ export default function ThreeCardTable({ state, onBet, onAction, onLeave }: Prop
               transform: 'translate(-50%,-50%)',
               zIndex: 4,
             }}>
-              <PlayerBox player={p} phase={phase} />
+              <PlayerBox player={p} phase={phase} compact={!isPC} />
             </div>
           );
         })}

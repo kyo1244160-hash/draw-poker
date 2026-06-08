@@ -99,6 +99,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
   const [nlBetAmount, setNlBetAmount] = useState<number | null>(null);
   // kicked通知メッセージ
   const [kickedMsg, setKickedMsg] = useState<string|null>(null);
+  const [tableNotice, setTableNotice] = useState<{message:string; key:number} | null>(null);
   // pending待機中メッセージ（ゲーム進行中に入室→次のハンドから参加）
   const [pendingMsg, setPendingMsg] = useState<string|null>(null);
   // トーナメント開始通知 { tournamentId, tableId, countdown }
@@ -244,6 +245,13 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
     const onPendingJoin = ({ message }:{ message:string }) => {
       setPendingMsg(message);
     };
+    const onTableNotice = ({ message }:{ message:string }) => {
+      const key = Date.now();
+      setTableNotice({ message, key });
+      setTimeout(() => {
+        setTableNotice((cur) => (cur?.key === key ? null : cur));
+      }, 3000);
+    };
     // gameStarted で pending 解除（ゲームが始まったら待機メッセージを消す）
     // ※ gameStarted は既に onGameStarted で購読済みだが、pendingMsg クリアを追記
 
@@ -265,6 +273,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
     socket.on('kicked',      onKicked);
     socket.on('joinError',   onJoinError);
     socket.on('pendingJoin', onPendingJoin);
+    socket.on('tableNotice', onTableNotice);
     const onLeaveReservation = ({ type }: { type: null|'afterHand'|'nextBB' }) => setLeaveReservation(type);
     socket.on('leaveReservation', onLeaveReservation);
     const ACTION_LABEL: Record<string,string> = {
@@ -307,6 +316,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
       socket.off('showdown',onShowdown); socket.off('kicked',onKicked);
       socket.off('joinError',   onJoinError);
       socket.off('pendingJoin', onPendingJoin);
+      socket.off('tableNotice', onTableNotice);
       socket.off('leaveReservation', onLeaveReservation);
       socket.off('playerAction', onPlayerAction);
       socket.off('t:tournamentStarting', onTournamentStarting);
@@ -659,6 +669,12 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
       window.addEventListener('pointercancel', onUp);
     };
     const isPreDrawBet = meta.phase === 'bet0';
+    const toCall = Math.max(0, meta.currentBet - self.bet);
+    const pctBetTotal = (pct: number) => {
+      if (isBet) return Math.floor(pot * pct);
+      const potAfterCall = pot + toCall;
+      return Math.floor(self.bet + toCall + potAfterCall * pct);
+    };
     const quickAmounts: { label: string; value: number }[] = (isPreDrawBet
       ? [
           { label: '2BB', value: bigBlind * 2 },
@@ -666,10 +682,10 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
           { label: '4BB', value: bigBlind * 4 },
         ]
       : [
-          { label: '33%',  value: Math.floor(pot * 0.33) },
-          { label: '50%',  value: Math.floor(pot * 0.50) },
-          { label: '75%',  value: Math.floor(pot * 0.75) },
-          { label: '100%', value: pot },
+          { label: '33%',  value: pctBetTotal(0.33) },
+          { label: '50%',  value: pctBetTotal(0.50) },
+          { label: '75%',  value: pctBetTotal(0.75) },
+          { label: '100%', value: pctBetTotal(1.00) },
         ]
     ).map(q => ({ ...q, value: Math.max(lowerBound, Math.min(maxBet, q.value)) }));
 
@@ -1216,6 +1232,20 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
     );
   }
 
+  const TableNoticeOverlay = () => tableNotice ? (
+    <div style={{
+      position:'absolute', top:54, left:'50%', transform:'translateX(-50%)',
+      zIndex:80, maxWidth:'min(86vw, 420px)', padding:'10px 16px',
+      borderRadius:8, border:'1px solid rgba(201,168,76,0.75)',
+      background:'rgba(5,25,15,0.94)', color:'var(--gold-bright)',
+      boxShadow:'0 6px 24px rgba(0,0,0,0.5), 0 0 16px rgba(201,168,76,0.28)',
+      fontFamily:'var(--font-title)', fontSize:13, lineHeight:1.45,
+      textAlign:'center' as const, pointerEvents:'none' as const,
+    }}>
+      {tableNotice.message}
+    </div>
+  ) : null;
+
   if (layout === null) {
     return <div style={{height:'100dvh',display:'flex',alignItems:'center',justifyContent:'center',background:'var(--felt)',color:'var(--gold)',fontFamily:'var(--font-title)',fontSize:18}}>読み込み中...</div>;
   }
@@ -1406,8 +1436,9 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
     if (isPortrait) {
       return (
         <div style={{display:'flex',flexDirection:'column',height:'100dvh',overflow:'hidden',
-          background:'var(--felt)',color:'var(--cream)',fontFamily:'var(--font-body)'}}>
+        background:'var(--felt)',color:'var(--cream)',fontFamily:'var(--font-body)'}}>
           <NavBar compact />
+          <TableNoticeOverlay />
           {/* テーブル（楕円 + プレイヤー）*/}
           <div style={{position:'relative',width:TW,height:TH,margin:'0 auto',flexShrink:0}}>
             {/* 楕円フェルト */}
@@ -1502,6 +1533,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
       <div style={{display:'flex',flexDirection:'column',height:'100dvh',overflow:'hidden',
         background:'var(--felt)',color:'var(--cream)',fontFamily:'var(--font-body)'}}>
         <NavBar compact />
+        <TableNoticeOverlay />
         <div style={{flex:1,display:'flex',overflow:'hidden',minHeight:0}}>
           {/* テーブル: flex で残り幅を全て使う */}
           <div style={{position:'relative',flex:1,minWidth:0,overflow:'hidden'}}>
@@ -1606,6 +1638,7 @@ const PokerTable: React.FC<Props> = ({ roomId, name, mode, onFastFold, onFoldSta
   return (
     <div style={{height:'100dvh',display:'flex',flexDirection:'column',alignItems:'center',overflow:'hidden',position:'relative',zIndex:1,fontFamily:'var(--font-body)'}}>
       <NavBar />
+      <TableNoticeOverlay />
       <PendingBar />
 
       {/* テーブル + アクション（横並び）*/}

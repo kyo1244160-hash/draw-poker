@@ -289,6 +289,11 @@ app.prepare().then(async () => {
       const remaining = Math.max(0, room._timerLimit - (Date.now() - room._timerStart) / 1000);
       io.to(roomId).emit('timerUpdate', { remaining: Math.round(remaining), limit: room._timerLimit });
     }
+    for (const [roomId, room] of studManager.studRooms) {
+      if (!room._timerStart || !room._timerLimit) continue;
+      const remaining = Math.max(0, room._timerLimit - (Date.now() - room._timerStart) / 1000);
+      io.to(roomId).emit('timerUpdate', { remaining: Math.round(remaining), limit: room._timerLimit });
+    }
   }, 1000);
 
   // トーナメントマネージャー初期化（タイムアウトハンドラを注入）
@@ -1311,9 +1316,26 @@ function _tc_leavePlayer(roomId, socketId) {
  * ベット: フォールド
  */
 function _makeStudTimeoutHandler(io, roomId) {
+  const _timeoutActionFor = (room, player) => {
+    if (!room || !player) return null;
+    if (player.mustBringIn) return 'bringIn';
+    const toCall = Math.max(0, (room.currentBet ?? 0) - (player.bet ?? 0));
+    return toCall > 0 ? 'fold' : 'check';
+  };
+  const _emitStudTimeoutAction = (rid, player, action) => {
+    if (!player?.name || !action) return;
+    io.to(rid).emit('playerAction', { playerName: player.name, action });
+  };
+
   return (rid, phase, playerId) => {
     log(`[stud-timeout] ${playerId.slice(-12)} in ${rid.slice(-8)} at ${phase}`);
+    const beforeRoom = studManager.getStudRoom(rid);
+    const beforePlayer = beforeRoom?.players.find((p) => p.id === playerId);
+    const timeoutAction = _timeoutActionFor(beforeRoom, beforePlayer);
     const acted = !!studManager.handleStudTimeout(rid, playerId);
+    if (acted) {
+      _emitStudTimeoutAction(rid, beforePlayer, timeoutAction);
+    }
     if (!acted) {
       // handleStudTimeout が null を返すケース:
       //   1. 既に他の経路でターンが進んでいる（正常）
@@ -1323,8 +1345,12 @@ function _makeStudTimeoutHandler(io, roomId) {
       const _sr = studManager.getStudRoom(rid);
       const _cur = _sr?.players[_sr?.actionIndex ?? -1];
       if (_sr && _cur && _sr.phase !== 'showdown' && _sr.phase !== 'waiting') {
+        const _forcedAction = _timeoutActionFor(_sr, _cur);
         log(`[stud-timeout-force] ${playerId.slice(-12)} not found → force fold for actionIndex[${_sr.actionIndex}]=${_cur.name}`);
         const _forced = !!studManager.handleStudTimeout(rid, _cur.id);
+        if (_forced) {
+          _emitStudTimeoutAction(rid, _cur, _forcedAction);
+        }
         if (!_forced) {
           // それでも失敗（全員 acted など）→ フェーズを強制進行させる
           log(`[stud-timeout-force] force also failed, phase=${_sr.phase} → advancing`);
@@ -1412,6 +1438,11 @@ function _makeTimeoutHandler(io, roomId) {
           return;
         }
         log(`[kick-timeout] ${playerId} in ${rid} (3 consecutive timeouts)`);
+        io.to(rid).emit('tableNotice', {
+          kind: 'timeout-kick',
+          message: `${player2.name} は3回連続タイムアウトのため退室しました`,
+          playerName: player2.name,
+        });
 
         // スタッドハンド進行中なら studManager 側でも離脱処理（ハング防止）
         let _studSr = null;
@@ -1709,7 +1740,10 @@ function _tryAutoStart(io, roomId) {
   // このハンドを _modeHandsDone に計上する。これにより人数変動で
   // モードがズレる問題（razz→stud_s 誤判定=002, ハンド途中切替=008）を防ぐ。
   const _gmRoom = getRoom(roomId);
-  if (_gmRoom && isMixMode(_gmRoom.mode) && isStudMode(peekNextMode(_gmRoom))) {
+  const _nextStudMode = _gmRoom
+    ? (isMixMode(_gmRoom.mode) ? peekNextMode(_gmRoom) : _gmRoom.mode)
+    : null;
+  if (_gmRoom && isStudMode(_nextStudMode)) {
     // sittingOut リセット（startGame 相当の最小処理・gameManager L411-419 と同一）
     // _waitZoneSkip=true のプレイヤー（pendingPlayersから来た参加待ち）は
     // このハンドも sittingOut=true のままにして、フラグをクリアする。
@@ -1723,9 +1757,9 @@ function _tryAutoStart(io, roomId) {
       }
     }
     // モードを正式に前進・確定（startGame と同一処理）
-    const nextMode = advanceModeRotation(_gmRoom);
+    const nextMode = isMixMode(_gmRoom.mode) ? advanceModeRotation(_gmRoom) : _gmRoom.mode;
     _gmRoom.currentMode = nextMode;
-    _gmRoom._modeHandsDone = (_gmRoom._modeHandsDone ?? 0) + 1;  // このハンドを消化
+    if (isMixMode(_gmRoom.mode)) _gmRoom._modeHandsDone = (_gmRoom._modeHandsDone ?? 0) + 1;  // このハンドを消化
     _gmRoom.handCount += 1;  // 表示・ログ用の総ハンド数も加算
     // 【ディーラーボタン移動】スタッド経路は startGame を通らないため、
     // ここで明示的にボタンを前進させる。これを怠るとスタッド連続区間で
@@ -1753,7 +1787,7 @@ function _tryAutoStart(io, roomId) {
     } else {
       // 開始失敗（active<2）: モード前進とハンドカウントを巻き戻す
       _gmRoom.handCount -= 1;
-      _gmRoom._modeHandsDone = Math.max(0, (_gmRoom._modeHandsDone ?? 1) - 1);
+      if (isMixMode(_gmRoom.mode)) _gmRoom._modeHandsDone = Math.max(0, (_gmRoom._modeHandsDone ?? 1) - 1);
       log(`[stud] startStudHand NULL roomId=${roomId.slice(-8)} (active<2) mode/handCount rolled back`);
       // 【007対策】ドロー経路と同様にリトライをスケジュールする。
       // テーブルバランスでプレイヤー移動中などに一時的に active<2 となった場合、
@@ -2388,6 +2422,9 @@ function _startTournamentScheduler(io) {
       log(`[scheduler] ${tid}: emitting t:tournamentStarting to ${tournament.tableIds.length} table(s)`);
       for (const tableId of tournament.tableIds) {
         io.emit('t:tournamentStarting', { tournamentId, tableId });
+      }
+      for (const tableId of tournament.tableIds) {
+        if (canAutoStart(tableId)) _tryAutoStart(io, tableId);
       }
       log(`[scheduler] ${tid}: launch complete`);
     } catch (err) {

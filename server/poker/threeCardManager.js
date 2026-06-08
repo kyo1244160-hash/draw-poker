@@ -31,6 +31,13 @@ const BET_MAX       = 100;  // 最大ベット額（ポイント）
 const BET_TIMEOUT   = 30;   // 秒
 const ACTION_TIMEOUT = 20;  // 秒
 const RESULT_DELAY  = 5000; // ms（結果表示 → 次ハンド）
+const BOT_PREFIX = '3cbot::';
+const BOT_NAMES = [
+  '3C-Ace', '3C-Betty', '3C-Carl', '3C-Dan', '3C-Eve', '3C-Frank',
+  '3C-Gina', '3C-Hoge', '3C-Ivy', '3C-Jack', '3C-Ken', '3C-Lou',
+];
+let _botSeq = 0;
+const _botPending = new Set();
 
 // テーブル Map: roomId → table
 const tables = new Map();
@@ -50,6 +57,7 @@ function _notify(t) {
     try { _onPhaseChange(t.id, t.phase); }
     catch (e) { console.error('[3CP] phaseChange callback error:', e.message); }
   }
+  triggerBotActions(t.id);
 }
 
 // ===== ユーティリティ =====
@@ -177,6 +185,172 @@ function leaveTable(roomId, socketId) {
 
 function getTable(roomId) {
   return tables.get(roomId) ?? null;
+}
+
+function _pickBotName(t, preferred = null) {
+  const used = new Set(t.players.map(p => p.name));
+  if (preferred && !used.has(preferred)) return preferred;
+  for (const name of BOT_NAMES) {
+    if (!used.has(name)) return name;
+  }
+  let suffix = 1;
+  while (used.has(`3C-Bot-${suffix}`)) suffix++;
+  return `3C-Bot-${suffix}`;
+}
+
+function addBot(roomId, opts = {}) {
+  const t = tables.get(roomId);
+  if (!t) return { ok: false, reason: 'notFound' };
+  if (t.players.length >= MAX_PLAYERS) return { ok: false, reason: 'full' };
+
+  const socketId = `${BOT_PREFIX}${Date.now()}-${++_botSeq}`;
+  const name = _pickBotName(t, opts.name);
+  const points = Number.isFinite(Number(opts.points)) ? Math.max(1, Math.floor(Number(opts.points))) : 5000;
+  const p = {
+    socketId,
+    accountId: null,
+    name,
+    points,
+    bets: { ante: 0, pp: 0, sixCard: 0 },
+    hand: [],
+    action: null,
+    result: null,
+    betReady: false,
+    startPoints: points,
+    isBot: true,
+  };
+
+  // 進行中のハンドへ途中参加したBOTは次ハンドから参加させる。
+  if (t.phase !== 'waiting' && t.phase !== 'betting') {
+    p.betReady = true;
+    p.action = 'fold_no_bet';
+  }
+
+  t.players.push(p);
+  log(`BOT ${name} を ${roomId} に追加 (${t.players.length}/${MAX_PLAYERS})`);
+
+  if (t.phase === 'waiting') {
+    _startBetting(t);
+  } else {
+    _notify(t);
+  }
+  return { ok: true, bot: { id: socketId, roomId, name, points } };
+}
+
+function addBots(roomId, count = 1, opts = {}) {
+  const added = [];
+  const n = Math.min(Math.max(1, parseInt(count, 10) || 1), MAX_PLAYERS);
+  for (let i = 0; i < n; i++) {
+    const result = addBot(roomId, opts);
+    if (!result.ok) break;
+    added.push(result.bot);
+  }
+  return added;
+}
+
+function removeBot(roomId, botId) {
+  const t = tables.get(roomId);
+  if (!t) return false;
+  const idx = t.players.findIndex(p => p.socketId === botId && p.isBot);
+  if (idx < 0) return false;
+  t.players.splice(idx, 1);
+  for (const key of [..._botPending]) {
+    if (key.includes(`::${botId}::`)) _botPending.delete(key);
+  }
+  log(`BOT ${botId} を ${roomId} から削除`);
+  _notify(t);
+  _maybeDeleteTable(roomId);
+  return true;
+}
+
+function removeBots(roomId) {
+  const t = tables.get(roomId);
+  if (!t) return 0;
+  const before = t.players.length;
+  const botIds = new Set(t.players.filter(p => p.isBot).map(p => p.socketId));
+  t.players = t.players.filter(p => !p.isBot);
+  for (const key of [..._botPending]) {
+    for (const id of botIds) {
+      if (key.includes(`::${id}::`)) _botPending.delete(key);
+    }
+  }
+  const removed = before - t.players.length;
+  if (removed > 0) {
+    log(`${roomId} の3CP BOTを ${removed} 体削除`);
+    _notify(t);
+  }
+  _maybeDeleteTable(roomId);
+  return removed;
+}
+
+function listBots() {
+  return [...tables.values()].flatMap(t =>
+    t.players.filter(p => p.isBot).map(p => ({
+      id: p.socketId,
+      roomId: t.id,
+      name: p.name,
+      points: p.points,
+      phase: t.phase,
+    }))
+  );
+}
+
+function _decideBotBet(bot) {
+  const ante = Math.min(BET_MAX, Math.max(BET_MIN, Math.min(bot.points, 10)));
+  const remaining = bot.points - ante;
+  const pp = remaining >= 5 && Math.random() < 0.35 ? 5 : 0;
+  const sixCard = remaining - pp >= 5 && Math.random() < 0.25 ? 5 : 0;
+  return { ante, pp, sixCard };
+}
+
+function _decideBotAction(bot) {
+  try {
+    const ev = evaluateThreeCardHand(bot.hand);
+    // ペア以上はPLAY、Q-6-4以上は概ねPLAY。テスト用途なので少しランダムを残す。
+    if ((ev.rank ?? 0) >= 1) return 'play';
+    const vals = bot.hand
+      .map(c => ({ A: 14, K: 13, Q: 12, J: 11, T: 10 }[c[0]] ?? Number(c[0]) ?? 0))
+      .sort((a, b) => b - a);
+    if (vals[0] > 12) return 'play';
+    if (vals[0] === 12 && (vals[1] > 6 || (vals[1] === 6 && vals[2] >= 4))) return 'play';
+    return Math.random() < 0.12 ? 'play' : 'fold';
+  } catch {
+    return Math.random() < 0.5 ? 'play' : 'fold';
+  }
+}
+
+function triggerBotActions(roomId) {
+  const t = tables.get(roomId);
+  if (!t || (t.phase !== 'betting' && t.phase !== 'action')) return;
+
+  const target = t.players.find(p =>
+    p.isBot &&
+    ((t.phase === 'betting' && !p.betReady) || (t.phase === 'action' && p.action === null))
+  );
+  if (!target) return;
+
+  const key = `${roomId}::${target.socketId}::${t.handCount}::${t.phase}`;
+  if (_botPending.has(key)) return;
+  _botPending.add(key);
+
+  const delay = 350 + Math.random() * 900;
+  setTimeout(() => {
+    _botPending.delete(key);
+    const now = tables.get(roomId);
+    const bot = now?.players.find(p => p.socketId === target.socketId && p.isBot);
+    if (!now || !bot || now.handCount !== t.handCount || now.phase !== t.phase) return;
+
+    if (now.phase === 'betting' && !bot.betReady) {
+      placeBet(roomId, bot.socketId, _decideBotBet(bot));
+      if (now.phase === 'betting') _notify(now);
+      return;
+    }
+
+    if (now.phase === 'action' && bot.action === null) {
+      playerAction(roomId, bot.socketId, _decideBotAction(bot));
+      if (now.phase === 'action') _notify(now);
+    }
+  }, delay);
 }
 
 // ===== フェーズ管理 =====
@@ -592,6 +766,12 @@ module.exports = {
   getTable,
   joinTable,
   leaveTable,
+  addBot,
+  addBots,
+  removeBot,
+  removeBots,
+  listBots,
+  triggerBotActions,
   placeBet,
   playerAction,
   setPhaseChangeCallback,
