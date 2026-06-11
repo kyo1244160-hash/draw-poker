@@ -10,7 +10,7 @@
  *   waiting
  *   → ante（全員アンテ徴収・3rd配布: 裏2・表1）
  *   → bet3rd（ブリングインから開始, smallBet）
- *   → deal4th（表1枚配布）→ bet4th（smallBet, ボードペアでbigBet選択可だが簡略化しsmallBet）
+ *   → deal4th（表1枚配布）→ bet4th（smallBet, ボードペア時はbigBet選択可）
  *   → deal5th（表1枚配布）→ bet5th（bigBet）
  *   → deal6th（表1枚配布）→ bet6th（bigBet）
  *   → deal7th（裏1枚配布）→ bet7th（bigBet）
@@ -73,6 +73,50 @@ function isSmallBetStreet(phase) {
   return phase === 'bet3rd' || phase === 'bet4th';
 }
 
+function _rankOf(card) {
+  if (!card || typeof card !== 'string') return null;
+  return card.slice(0, -1);
+}
+
+function _hasVisiblePair(player) {
+  const counts = new Map();
+  (player.cards ?? []).forEach((card, i) => {
+    if (!player.faceUp?.[i]) return;
+    const rank = _rankOf(card);
+    if (!rank) return;
+    counts.set(rank, (counts.get(rank) ?? 0) + 1);
+  });
+  return [...counts.values()].some((count) => count >= 2);
+}
+
+function _isFourthStreetBigBetOptional(room) {
+  if (!room || room.phase !== 'bet4th') return false;
+  if (!['stud_s', 'stud_e'].includes(room.currentMode)) return false;
+  return (room.players ?? []).some((p) => !p.folded && !p.sittingOut && _hasVisiblePair(p));
+}
+
+function _getStudBetSizeOptions(room) {
+  if (_isFourthStreetBigBetOptional(room)) {
+    if (room.fourthStreetBigBetUsed) {
+      return [room.bigBet].filter((n) => Number.isFinite(n) && n > 0);
+    }
+    return [...new Set([room.smallBet, room.bigBet])]
+      .filter((n) => Number.isFinite(n) && n > 0)
+      .sort((a, b) => a - b);
+  }
+  return [room.betSize].filter((n) => Number.isFinite(n) && n > 0);
+}
+
+function _resolveStudBetSize(room, amount) {
+  const options = _getStudBetSizeOptions(room);
+  if (typeof amount === 'number' && Number.isFinite(amount) && amount > 0) {
+    const requested = Math.trunc(amount);
+    if (options.includes(requested)) return requested;
+    return null;
+  }
+  return options.includes(room.betSize) ? room.betSize : options[0];
+}
+
 // ==========================================================
 // ■ ルームストレージ（gameManager とは別 Map）
 // ==========================================================
@@ -116,6 +160,7 @@ function ensureStudRoom(roomId, sharedRoom) {
       _timer: null,
       _timerLimit: 0,
       _timerStart: 0,
+      fourthStreetBigBetUsed: false,
       startingChips: sharedRoom?.startingChips ?? (cfg.STARTING_BB * cfg.BB_VALUE),
     };
     studRooms.set(roomId, room);
@@ -149,6 +194,7 @@ function startStudHand(room, onTimeout, opts = {}) {
   room.deck         = createShuffledDeck();
   room.pot          = 0;
   room._potAwarded  = false;
+  room.fourthStreetBigBetUsed = false;
   room._onTimeout   = onTimeout;
   // 【恒久対応】showdown 後処理フラグをハンド開始時に必ずクリアする。
   // finishStudHand 経由でないリセット（テーブル再作成・sync再構築）でも
@@ -203,6 +249,7 @@ function startStudHand(room, onTimeout, opts = {}) {
   room.currentBet = 0;
   room.betSize    = room.smallBet;
   room.raiseCount = 0;
+  room.fourthStreetBigBetUsed = false;
 
   // ブリングイン対象者をマーク（強制ポストはしない。義務の表示と手番起点に使う）
   const biIdx = room.players.findIndex((p) => p.id === bringInTarget);
@@ -383,12 +430,14 @@ function studBetAction(roomId, socketId, action, amount) {
     } else {
       // 3rd でブリングインのみの場合（currentBet=bringIn < smallBet）の "completion" 対応:
       //   completion は currentBet を smallBet まで引き上げる
+      const selectedBetSize = _resolveStudBetSize(room, amount);
+      if (!selectedBetSize) return null;
       let betTotal;
       if (room.phase === 'bet3rd' && room.currentBet < room.betSize) {
         // completion: smallBet まで引き上げ
         betTotal = room.betSize;
       } else {
-        betTotal = room.currentBet + room.betSize;
+        betTotal = room.currentBet + selectedBetSize;
       }
       const needed = betTotal - player.bet;
       const actual = Math.min(needed, player.chips);
@@ -396,6 +445,9 @@ function studBetAction(roomId, socketId, action, amount) {
       player.totalContribution += actual;
       const prevBet = room.currentBet;
       room.currentBet = Math.max(room.currentBet, player.bet);
+      if (room.phase === 'bet4th' && _isFourthStreetBigBetOptional(room) && selectedBetSize === room.bigBet) {
+        room.fourthStreetBigBetUsed = true;
+      }
       if (actual >= needed) {
         room.raiseCount++;
         for (let i = 0; i < room.players.length; i++) {
@@ -510,6 +562,7 @@ function _nextPhase(room) {
   room.currentBet = 0;
   room.raiseCount = 0;
   room.betSize = isSmallBetStreet(next) ? room.smallBet : room.bigBet;
+  room.fourthStreetBigBetUsed = false;
   for (const p of room.players) {
     p.bet = 0;
     // 【フリーズ防止】オールイン済み（chips<=0）のプレイヤーは以降アクション不可。
@@ -762,6 +815,8 @@ function buildStudGameState(room, requesterId) {
   const isBetPhase = room.phase.startsWith('bet');
   const timerRemaining = _getTimerRemaining(room);
   const dealerIdx = room.fixedDealerIdx >= 0 ? room.fixedDealerIdx : room.dealerIndex;
+  const betSizeOptions = _getStudBetSizeOptions(room);
+  const isFourthStreetPair = _isFourthStreetBigBetOptional(room);
 
   const playerStates = room.players.map((p) => {
     const isSelf = p.id === requesterId;
@@ -822,6 +877,8 @@ function buildStudGameState(room, requesterId) {
           raiseToTotal: _raiseTotal,
           raiseCost: Math.min(_raiseCost, p.chips),
           betSize: room.betSize,
+          betSizeOptions,
+          isFourthStreetPair,
           isNL: false,
           // 【ブリングイン選択制】義務者の手番なら bringIn/complete を選択可能
           mustBringIn: !!p.mustBringIn,
@@ -844,6 +901,8 @@ function buildStudGameState(room, requesterId) {
     pots: room.pot > 0 ? [{ amount: room.pot, label: 'ポット' }] : [],
     currentBet: room.currentBet,
     betSize: room.betSize,
+    betSizeOptions,
+    isFourthStreetPair,
     raiseCount: room.raiseCount,
     maxRaises: MAX_RAISES,
     dealerIndex: dealerIdx,
@@ -981,6 +1040,7 @@ function finishStudHand(roomId) {
   room.actionIndex = -1;
   room.currentBet  = 0;
   room.raiseCount  = 0;
+  room.fourthStreetBigBetUsed = false;
   room._onStudShowdownCalled = false;  // 次ハンドに備えてリセット
   return true;
 }
@@ -1057,6 +1117,7 @@ function syncFromGameManager(gmRoom, currentMode) {
   room.handCount     = gmRoom.handCount;
   room._isTournament = gmRoom._isTournament ?? gmRoom._tournamentId != null;
   room._tournamentId = gmRoom._tournamentId ?? null;
+  room.fourthStreetBigBetUsed = false;
 
   // プレイヤーを同期（チップ・名前・id・sittingOut を引き継ぐ）
   // 既存の studManager 側プレイヤー配列は破棄し、gameManager の順序で再構築する

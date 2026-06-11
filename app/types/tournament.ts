@@ -58,6 +58,8 @@ export interface PlayerState {
   isAllIn?: boolean;
   isPendingPlayer?: boolean;  // pendingPlayers待機中（次のハンドから参加）
   betSize?: number;
+  betSizeOptions?: number[];
+  isFourthStreetPair?: boolean;
   // スタッド系（BEAST+ / stud_mix）対応
   studCards?: { code: string; up: boolean; folded?: boolean }[]; // カードごとの表裏情報
   isBringIn?: boolean;        // 3rd street のブリングイン強制者
@@ -88,6 +90,9 @@ export interface GameMeta {
   pot: number;
   pots?: PotEntry[];   // メイン/サイドポット内訳（オールイン時）
   currentBet?: number;
+  betSize?: number;
+  betSizeOptions?: number[];
+  isFourthStreetPair?: boolean;
   raiseCount?: number;
   maxRaises?: number;
   currentMode: string;

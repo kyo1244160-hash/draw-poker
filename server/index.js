@@ -863,7 +863,7 @@ app.prepare().then(async () => {
       if (_isStudActive(roomId)) {
         const sr = studManager.getStudRoom(roomId);
         const actingP = sr?.players.find((p) => p.id === socket.id);
-        const updated = studManager.studBetAction(roomId, socket.id, action, 0);
+        const updated = studManager.studBetAction(roomId, socket.id, action, amount);
         if (!updated) {
           socket.emit('error', { message: 'そのアクションはできません' });
           return;

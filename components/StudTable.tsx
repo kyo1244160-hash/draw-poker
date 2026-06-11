@@ -444,6 +444,33 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
   const toCall      = self?.toCall   ?? 0;
   const canRaise    = self?.canRaise  ?? false;
   const bringInPlayer = players.find(p => p.isBringIn);
+  const betSizeOptions = (self?.betSizeOptions?.length ? self.betSizeOptions : [self?.betSize ?? 0])
+    .filter((n): n is number => Number.isFinite(n) && n > 0);
+
+  const renderBetRaiseButtons = (compact = false) => {
+    if (!canRaise || !self) return null;
+    const action = canCheck ? 'bet' : 'raise';
+    const styleBase = { ...btnStyle('gold', compact), flex: 1, minWidth: compact ? 0 : undefined };
+    if (self.isComplete) {
+      return <button style={styleBase} onClick={() => onBetAction(action)}>コンプリート ({self.raiseToTotal ?? ''})</button>;
+    }
+
+    if (betSizeOptions.length > 1) {
+      return betSizeOptions.map((size, idx) => {
+        const sizeLabel = idx === 0 ? '小' : '大';
+        const label = canCheck ? `${sizeLabel}ベット (${size})` : `${sizeLabel}レイズ (+${size})`;
+        return (
+          <button key={size} style={styleBase} onClick={() => onBetAction(action, size)}>
+            {label}
+          </button>
+        );
+      });
+    }
+
+    const size = betSizeOptions[0] ?? self.betSize ?? '';
+    const label = canCheck ? `ベット (+${size})` : `レイズ (+${size})`;
+    return <button style={styleBase} onClick={() => onBetAction(action, typeof size === 'number' ? size : undefined)}>{label}</button>;
+  };
 
   const orderedOthers = (() => {
     const selfIdx = players.findIndex(p => p.isSelf);
@@ -595,16 +622,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
                     {canCheck
                       ? <button style={btnStyle('gray')} onClick={() => onBetAction('check')}>チェック</button>
                       : <button style={btnStyle('gray')} onClick={() => onBetAction('call')}>コール ({toCall})</button>}
-                    {canRaise && (() => {
-                      // 3rd street のコンプリートか、通常のベット/レイズかでラベルを変える
-                      const label = self?.isComplete
-                        ? `コンプリート (${self?.raiseToTotal ?? ''})`
-                        : canCheck
-                          ? `ベット (+${self?.betSize ?? ''})`
-                          : `レイズ (+${self?.betSize ?? ''})`;
-                      const action = canCheck ? 'bet' : 'raise';
-                      return <button style={btnStyle('gold')} onClick={() => onBetAction(action)}>{label}</button>;
-                    })()}
+                    {renderBetRaiseButtons(false)}
                   </>
                 )}
               </div>
@@ -892,20 +910,12 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
             <button style={{ ...btnStyle('gold', true), flex: 1 }} onClick={() => onBetAction('complete')}>コンプリート({self?.completeCost ?? 0})</button>
           </div>
         ) : (
-        <div style={{ display: 'flex', gap: 6 }}>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {!canCheck && <button style={{ ...btnStyle('red', true), flex: 1 }} onClick={() => onBetAction('fold')}>フォールド</button>}
           {canCheck
             ? <button style={{ ...btnStyle('gray', true), flex: 1 }} onClick={() => onBetAction('check')}>チェック</button>
             : <button style={{ ...btnStyle('gray', true), flex: 1 }} onClick={() => onBetAction('call')}>コール({toCall})</button>}
-          {canRaise && (() => {
-            const label = self?.isComplete
-              ? `コンプリート(${self?.raiseToTotal ?? ''})`
-              : canCheck
-                ? `ベット(+${self?.betSize ?? ''})`
-                : `レイズ(+${self?.betSize ?? ''})`;
-            const action = canCheck ? 'bet' : 'raise';
-            return <button style={{ ...btnStyle('gold', true), flex: 1 }} onClick={() => onBetAction(action)}>{label}</button>;
-          })()}
+          {renderBetRaiseButtons(true)}
         </div>
         )
       )}
