@@ -2231,6 +2231,16 @@ function _broadcastStud(io, roomId) {
   const room = studManager.getStudRoom(roomId);
   if (!room) return;
   log(`[stud-broadcast] start table=${roomId.slice(-8)} ${_studLogSnapshot(room)}`);
+  const _logStudStateSend = (label, meta, players) => {
+    if (!tournamentManager.isTournamentTable(roomId)) return;
+    const gm = getRoom(roomId);
+    const gmPlayers = gm?.players?.length ?? 0;
+    const gmPending = gm?.pendingPlayers?.length ?? 0;
+    const studPlayers = room.players?.length ?? 0;
+    if (meta?.phase === 'waiting' || players.length < 2 || gmPlayers + gmPending !== studPlayers) {
+      log(`[state-send] ${roomId.slice(-8)} engine=stud label=${label} phase=${meta?.phase} players=${players.length} gmPlayers=${gmPlayers} gmPending=${gmPending} studPlayers=${studPlayers} currentMode=${meta?.currentMode}`);
+    }
+  };
   const _isStudBotLike = (p) => !!p?.isBot
     || (typeof p?.id === 'string' && p.id.startsWith('tbot::'))
     || (typeof p?.accountId === 'string' && (p.accountId.startsWith('tbot::') || p.accountId.startsWith('bot::')));
@@ -2252,6 +2262,7 @@ function _broadcastStud(io, roomId) {
     const state   = studManager.buildStudGameState(room, player.id);
     const meta    = state.find((x) => x._meta);
     const players = state.filter((x) => !x._meta);
+    _logStudStateSend('player', meta, players);
     s.emit('gameState', { players, meta });
   }
 
@@ -2282,6 +2293,7 @@ function _broadcastStud(io, roomId) {
         cards: [], faceUp: [], bet: 0, totalContribution: 0,
         isBringIn: false, isDealer: false,
       };
+      _logStudStateSend('pending', _baseMeta, [..._basePlayers, _selfEntry]);
       s.emit('gameState', { players: [..._basePlayers, _selfEntry], meta: _baseMeta });
       anySocketSent = true;
     }
@@ -2308,7 +2320,10 @@ function _broadcastStud(io, roomId) {
     for (const sid of spectators) {
       if (playerSocketIds.has(sid)) { spectators.delete(sid); continue; }
       const s = io.sockets.sockets.get(sid);
-      if (s) s.emit('gameState', { players, meta, isSpectator: true });
+      if (s) {
+        _logStudStateSend('spectator', meta, players);
+        s.emit('gameState', { players, meta, isSpectator: true });
+      }
     }
   }
 
@@ -2522,6 +2537,17 @@ function _broadcast(io, roomId) {
   if (_isStudActive(roomId)) { _broadcastStud(io, roomId); return; }
   if (_isBoardActive(roomId)) { _broadcastBoard(io, roomId); return; }
   const room = getOrCreateRoom(roomId);
+  const _logDrawStateSend = (label, meta, players) => {
+    if (!tournamentManager.isTournamentTable(roomId)) return;
+    const sr = studManager.getStudRoom(roomId);
+    const gmPlayers = room?.players?.length ?? 0;
+    const gmPending = room?.pendingPlayers?.length ?? 0;
+    const studPhase = sr?.phase ?? 'none';
+    const studPlayers = sr?.players?.length ?? 0;
+    if (meta?.phase === 'waiting' || players.length < 2 || studPlayers > 0) {
+      log(`[state-send] ${roomId.slice(-8)} engine=draw label=${label} phase=${meta?.phase} players=${players.length} gmPlayers=${gmPlayers} gmPending=${gmPending} studPhase=${studPhase} studPlayers=${studPlayers} currentMode=${meta?.currentMode}`);
+    }
+  };
 
   if (
     room?.phase === 'waiting' &&
@@ -2554,6 +2580,7 @@ function _broadcast(io, roomId) {
     const state   = buildGameState(room, player.id);
     const meta    = state.find((x) => x._meta);
     const players = state.filter((x) => !x._meta);
+    _logDrawStateSend('player', meta, players);
     s.emit('gameState', { players, meta });
   }
   // BOT-only テーブル: ソケット配信がなかった場合も buildGameState を呼んで
@@ -2583,7 +2610,10 @@ function _broadcast(io, roomId) {
         continue;
       }
       const s = io.sockets.sockets.get(sid);
-      if (s) s.emit('gameState', { players, meta, isSpectator: true });
+      if (s) {
+        _logDrawStateSend('spectator', meta, players);
+        s.emit('gameState', { players, meta, isSpectator: true });
+      }
     }
   }
 

@@ -75,6 +75,8 @@ export default function TournamentDrawPage() {
   const meta    = gameState.meta;
   const [blind,      setBlind]      = useState<BlindUpdate | null>(null);
   const [status,     setStatus]     = useState<TournamentStatus | null>(null);
+  const statusRef = useRef<TournamentStatus | null>(null);
+  const lastStableGameStateRef = useRef<{ players: PlayerState[]; meta: GameMeta | null } | null>(null);
   const [timer,      setTimer]      = useState<TimerState | null>(null);
   const [actionLog,  setActionLog]  = useState<ActionLog[]>([]);
   const [eliminated, setEliminated] = useState<{ rank: number; total: number } | null>(null);
@@ -201,6 +203,22 @@ export default function TournamentDrawPage() {
       if (m?.roomId && tableIdRef.current && m.roomId !== tableIdRef.current) {
         return;  // 別テーブルの gameState は無視
       }
+      const lastStableGameState = lastStableGameStateRef.current;
+      const isTransientEmptyWaiting = !!lastStableGameState &&
+        m?.phase === 'waiting' &&
+        pl.length < 2 &&
+        (statusRef.current?.remainingPlayers ?? 0) > 1 &&
+        lastStableGameState.meta?.roomId === m.roomId &&
+        lastStableGameState.players.length >= 2;
+      if (isTransientEmptyWaiting) {
+        const currentRoomId = tableIdRef.current;
+        socket.emit('t:getMyTable', { tournamentId });
+        if (currentRoomId) {
+          setTimeout(() => socket.emit('getGameState', { roomId: currentRoomId }), 250);
+          setTimeout(() => socket.emit('getGameState', { roomId: currentRoomId }), 1000);
+        }
+        return;
+      }
       // 【001/008 デバッグ】isStud と currentMode の矛盾を検出してログ送信
       // currentMode はスタッド系なのに isStud が falsy、またはその逆を観測する。
       if (m) {
@@ -225,6 +243,9 @@ export default function TournamentDrawPage() {
         }
       }
       setGameState({ players: pl ?? [], meta: m ?? null });
+      if (m && (pl.length >= 2 || m.phase !== 'waiting')) {
+        lastStableGameStateRef.current = { players: pl, meta: m };
+      }
       // ゲームチェンジ検出（ハンド開始時に currentMode が変化したら通知）
       if (m?.currentMode && m.phase !== 'waiting' && m.phase !== 'showdown') {
         const prev = prevModeRef.current;
@@ -384,6 +405,7 @@ export default function TournamentDrawPage() {
 
     // ステータス更新
     onSocket('t:tournamentStatus', (payload: TournamentStatus) => {
+      statusRef.current = payload;
       setStatus(payload);
     });
 
@@ -399,8 +421,8 @@ export default function TournamentDrawPage() {
       socket.emit('leaveSocketRoom', { roomId: fromTableId });
       socket.emit('joinSocketRoom', { roomId: toTableId });
       logAction('別テーブルへ移動しました');
-      // 移動直後にgameStateをリセット（旧テーブルのshowdown画面に止まるバグ防止）
-      setGameState({ players: [], meta: null });
+      // Keep the previous table rendered until the destination gameState arrives.
+      // Clearing here can briefly render phase=waiting with zero players.
       // 【修正】テーブル移動はゲーム種変更ではないため prevModeRef もリセット。
       // これを怠ると移動先で別ゲーム種が進行中の場合に誤った「ゲームが変わりました」通知が出る
       prevModeRef.current = null;

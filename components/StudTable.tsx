@@ -585,7 +585,8 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
                         </div>
                       );
                     })()}
-                    {isShowdown && p.result && !p.folded && <div style={{ fontSize: 13, color: p.isWinner ? 'var(--gold-bright)' : 'var(--cream-dim)', fontFamily: 'var(--font-title)', marginTop: 4 }}>{p.result}</div>}
+                    {p.isSelf && p.result && !p.folded && <div style={{ fontSize: 13, color: '#aaddff', fontFamily: 'var(--font-title)', marginTop: 4, fontWeight: 700 }}>{p.result}</div>}
+                    {!p.isSelf && isShowdown && p.result && !p.folded && <div style={{ fontSize: 13, color: p.isWinner ? 'var(--gold-bright)' : 'var(--cream-dim)', fontFamily: 'var(--font-title)', marginTop: 4 }}>{p.result}</div>}
                   </div>
                 </div>
               );
