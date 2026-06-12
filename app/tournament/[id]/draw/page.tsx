@@ -7,6 +7,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { socket, connectWithAuth } from '../../../../socket';
 import TournamentTable from '../../../components/TournamentTable';
 import StudTable from '../../../../components/StudTable';
+import BoardTable from '../../../../components/BoardTable';
 import TournamentInfoBar from '../../../components/TournamentInfoBar';
 import EliminatedOverlay from '../../../components/EliminatedOverlay';
 import TableNoticeModal, { type NoticeType, type NoticeItem } from '../../../components/TableNoticeModal';
@@ -29,8 +30,12 @@ interface ActionLog { id: number; text: string; }
 // 過去に「currentMode=stud_e なのに isStud=undefined」という矛盾が発生した。
 // currentMode から導出することで、サーバーがどう送ってきても矛盾を吸収する。
 const STUD_MODES = ['stud_s', 'stud_e', 'razz'];
+const BOARD_MODES = ['fl_holdem', 'fl_omaha8'];
 function isStudCurrentMode(mode: string | null | undefined): boolean {
   return !!mode && STUD_MODES.includes(mode);
+}
+function isBoardCurrentMode(mode: string | null | undefined): boolean {
+  return !!mode && BOARD_MODES.includes(mode);
 }
 /**
  * meta からスタッドUIを表示すべきか判定する。
@@ -44,6 +49,13 @@ function shouldShowStudUI(meta: GameMeta | null): boolean {
   // currentMode が非スタッドでも isStud=true なら念のためスタッド扱い
   // （将来モードが増えた場合の保険。currentMode 不明時のフォールバック）
   if (meta.isStud && !meta.currentMode) return true;
+  return false;
+}
+
+function shouldShowBoardUI(meta: GameMeta | null): boolean {
+  if (!meta) return false;
+  if (isBoardCurrentMode(meta.currentMode)) return true;
+  if (meta.isBoard && !meta.currentMode) return true;
   return false;
 }
 
@@ -221,6 +233,7 @@ export default function TournamentDrawPage() {
             '27': '2-7 Triple Draw', badugi: 'Badugi', mix: 'Mix', a5: 'A-5 Triple Draw',
             '27sd': '2-7 Single Draw', mix3: 'Mix-3',
             'beast+': 'BEAST+', stud_mix: 'Stud Mix',
+            horse: 'HORSE', fl_holdem: "Fixed Limit Hold'em", fl_omaha8: 'Omaha Hi-Lo',
             stud_s: '7 Card Stud', stud_e: 'Stud Hi/Lo', razz: 'Razz',
           };
           const label = MODE_NOTICE_LABEL[m.currentMode] ?? m.currentMode;
@@ -709,6 +722,7 @@ export default function TournamentDrawPage() {
           '27': '2-7 Triple Draw', badugi: 'Badugi', mix: 'Mix (2-7↔Badugi)',
           a5: 'A-5 Triple Draw', '27sd': '2-7 Single Draw', mix3: 'Mix-3',
           'beast+': 'BEAST+', stud_mix: 'Stud Mix',
+          horse: 'HORSE', fl_holdem: "Fixed Limit Hold'em", fl_omaha8: 'Omaha Hi-Lo',
           stud_s: '7 Card Stud', stud_e: 'Stud Hi/Lo', razz: 'Razz',
         };
         const MODE_COLOR_MAP: Record<string, string> = {
@@ -716,6 +730,7 @@ export default function TournamentDrawPage() {
           badugi: '#cc9966', '27': '#88bbee', a5: '#88dd88',
           mix: '#aa88dd', mix3: '#aa88dd', '27sd': '#dd88aa',
           'beast+': '#e0b050', stud_mix: '#50c0d0',
+          horse: '#d0b85a', fl_holdem: '#5fb8c8', fl_omaha8: '#70b080',
         };
         const label = MODE_LABEL_MAP[meta.currentMode] ?? meta.currentMode;
         const color = MODE_COLOR_MAP[meta.currentMode] ?? '#88bbee';
@@ -741,6 +756,17 @@ export default function TournamentDrawPage() {
         {shouldShowStudUI(meta) ? (
           <StudTable
             key="stud-table"
+            players={players}
+            meta={meta}
+            timer={timer}
+            isSpectator={isSpectator}
+            onBetAction={handleBetAction}
+            blind={blind}
+            tournamentId={params.id}
+          />
+        ) : shouldShowBoardUI(meta) ? (
+          <BoardTable
+            key="board-table"
             players={players}
             meta={meta}
             timer={timer}

@@ -105,6 +105,8 @@ export interface GameMeta {
   roomId?: string;     // Vol.11追加: PokerTable の roomId フィルタに使用
   // スタッド系（BEAST+ / stud_mix）対応
   isStud?: boolean;
+  isBoard?: boolean;
+  board?: string[];
   street?: string | null;       // '3rd'|'4th'|'5th'|'6th'|'7th'|'showdown'
   bringInIndex?: number;
   ante?: number;
@@ -112,6 +114,7 @@ export interface GameMeta {
   // NL（27sd）対応
   isNL?: boolean;
   bigBlind?: number;
+  smallBlind?: number;
   lastRaiseSize?: number;
 }
 

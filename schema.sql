@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS tournaments (
   CONSTRAINT tournament_status_check
     CHECK (status IN ('registering','running','finished','cancelled')),
   CONSTRAINT tournament_mode_check
-    CHECK (mode IN ('27','badugi','mix','a5','27sd','mix3','beast+','stud_mix','stud_s','stud_e','razz'))
+    CHECK (mode IN ('27','badugi','mix','a5','27sd','mix3','beast+','stud_mix','stud_s','stud_e','razz','horse'))
 );
 
 -- テーブル座席割り当て（テーブルドロー画面・バランシング後の更新に使用）

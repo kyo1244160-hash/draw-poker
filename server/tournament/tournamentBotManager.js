@@ -70,7 +70,7 @@ function spawnBot(tableId, name, chips) {
   const { joinRoom } = require('../poker/gameManager');
   const botId = _makeBotId(name);
 
-  joinRoom(tableId, botId, name, { existingChips: chips, accountId: botId });
+  joinRoom(tableId, botId, name, { existingChips: chips, accountId: botId, isBot: true });
 
   _bots.set(botId, { tableId, name });
   if (!_tableBots.has(tableId)) _tableBots.set(tableId, new Set());
@@ -185,7 +185,10 @@ function triggerBotActions(tableId, onActionDone) {
       logDev(`[TBotM] ${tableId.slice(-8)} ${cur.name} ${action} acted=${acted} chips=${cur.chips}`);
     }
 
-    if (acted && onActionDone) onActionDone(tableId, cur.name, doneAction);
+    if (acted && onActionDone) {
+      const actionAmount = room2.isNL && (doneAction === 'bet' || doneAction === 'raise') ? cur.bet : undefined;
+      onActionDone(tableId, cur.name, doneAction, actionAmount, room2.isNL ? room2.bigBlind : undefined);
+    }
   }, delay);
 }
 

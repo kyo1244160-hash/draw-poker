@@ -71,16 +71,23 @@ function _roomIsNL(room) {
  * - 'mix3'     : 2-7TD → Badugi → A-5（3ゲーム）
  * - 'beast+'   : Badugi → StudHi/Lo → A-5 → 7Stud → 2-7TD → Razz（6ゲーム）
  * - 'stud_mix' : 7Stud → StudHi/Lo → Razz（3ゲーム・スタッドのみ）
+ * - 'horse'    : FL Hold'em → Omaha Hi-Lo → Razz → 7Stud → Stud Hi-Lo
  * 将来mix4等を追加する場合はここに追加するだけで全箇所の判定が更新される。
  */
 function isMixMode(mode) {
-  return mode === 'mix' || mode === 'mix3' || mode === 'beast+' || mode === 'stud_mix';
+  return mode === 'mix' || mode === 'mix3' || mode === 'beast+' || mode === 'stud_mix' || mode === 'horse';
 }
 
 /** スタッド系モード判定（studManager にルーティングすべきモード） */
 const STUD_MODES = ['stud_s', 'stud_e', 'razz'];
 function isStudMode(mode) {
   return STUD_MODES.includes(mode);
+}
+
+/** ボード系モード判定（boardManager にルーティングすべきモード） */
+const BOARD_MODES = ['fl_holdem', 'fl_omaha8'];
+function isBoardMode(mode) {
+  return BOARD_MODES.includes(mode);
 }
 
 /** ビッグベットフェーズか判定（draw2以降） */
@@ -125,6 +132,7 @@ function evaluateHand(hand, mode) {
 // この配列の index を room._modeSeqIndex で管理する（人数非依存）。
 const MIX_SEQUENCES = {
   'beast+':   ['badugi', 'stud_e', 'a5', 'stud_s', '27', 'razz'],
+  'horse':    ['fl_holdem', 'fl_omaha8', 'razz', 'stud_s', 'stud_e'],
   'stud_mix': ['stud_s', 'stud_e', 'razz'],
   'mix3':     ['27', 'badugi', 'a5'],
   'mix':      ['27', 'badugi'],
@@ -343,6 +351,7 @@ function joinRoom(roomId, socketId, name, opts = {}) {
     existing.disconnected = false;  // 切断フラグ解除
     // accountId が未設定だった場合は補完する（古い再接続パスの後方互換）
     if (opts.accountId && !existing.accountId) existing.accountId = opts.accountId;
+    if (opts.isBot || (typeof socketId === 'string' && socketId.startsWith('tbot::'))) existing.isBot = true;
     return 'reconnected';
   }
   const existingPending = opts.accountId
@@ -352,6 +361,7 @@ function joinRoom(roomId, socketId, name, opts = {}) {
     existingPending.id = socketId;
     existingPending.disconnected = false;
     if (opts.accountId && !existingPending.accountId) existingPending.accountId = opts.accountId;
+    if (opts.isBot || (typeof socketId === 'string' && socketId.startsWith('tbot::'))) existingPending.isBot = true;
     return 'pending';
   }
 
@@ -368,6 +378,7 @@ function joinRoom(roomId, socketId, name, opts = {}) {
     acted: false, drewThisRound: false, drawCount: null,
     sittingOut: false,
     timeoutCount: 0,   // 連続タイムアウト回数（3回で退室）
+    isBot: !!opts.isBot || (typeof socketId === 'string' && socketId.startsWith('tbot::')),
   };
 
   const inProgress = PHASES.indexOf(room.phase) > 0 && room.phase !== 'showdown';
@@ -1253,9 +1264,9 @@ function buildGameState(room, requesterId) {
       hand: reveal ? p.hand : p.hand.map(() => '??'),
       isSelf, isMyTurn,
       drewThisRound: p.drewThisRound, drawCount: p.drawCount,
-      // スタッドモード（stud_s/stud_e/razz）はstudManagerが手役名を担当するため
+      // スタッド/ボードモードは専用Managerが手役名を担当するため
       // gameManager側では evaluateHand を呼ばない（ドロー系専用関数のため誤評価防止）
-      result: reveal && p.hand.length > 0 && !p.folded && !isStudMode(room.currentMode)
+      result: reveal && p.hand.length > 0 && !p.folded && !isStudMode(room.currentMode) && !isBoardMode(room.currentMode)
                 ? evaluateHand(p.hand, room.currentMode) : undefined,
       isWinner:  isShowdown && winnerIds != null && winnerIds.has(p.id),
       isDealer:  myIdx === dealerIdx,
@@ -1368,6 +1379,7 @@ function buildGameState(room, requesterId) {
   // 恒久対応: isStud を currentMode から一意に導出し、単一の真実の源にする。
   // これにより currentMode と isStud の不整合を構造的に排除する。
   const _isStudByMode = isStudMode(room.currentMode);
+  const _isBoardByMode = isBoardMode(room.currentMode);
   if (_isStudByMode) {
     // ドロー側 buildGameState がスタッドモードで呼ばれた = 誤ルーティングの兆候。
     // 観測のためログを出す（恒久的にはこの経路に来ないのが正常）。
@@ -1381,6 +1393,7 @@ function buildGameState(room, requesterId) {
     currentMode:    room.currentMode,
     // 【001/008】currentMode から導出。スタッド系なら必ず true。
     isStud:         _isStudByMode,
+    isBoard:        _isBoardByMode,
     pot:            room.pot,
     pots:           _potsForDisplay,
     currentBet:     room.currentBet,
@@ -1612,8 +1625,8 @@ module.exports = {
   getRoomMode, getRoom, deleteRoom, renamePlayer,
   ensurePotsAwarded,
   // モード判定（他モジュールから共有利用するため公開）
-  isNoLimitMode, isMixMode, isStudMode, peekNextMode, getMixCurrentMode,
+  isNoLimitMode, isMixMode, isStudMode, isBoardMode, peekNextMode, getMixCurrentMode,
   advanceModeRotation, advanceDealerButton, advanceBbAnchor, assignBlindsByBB, getMixSequence,
-  STUD_MODES,
+  STUD_MODES, BOARD_MODES,
   STARTING_CHIPS, SMALL_BLIND, BIG_BLIND, SMALL_BET, BIG_BET, MAX_PLAYERS,
 };

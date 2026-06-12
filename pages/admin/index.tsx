@@ -66,7 +66,49 @@ interface BlindSchedule {
   isBuiltin?: boolean;  // JS定義の組み込みスケジュール（test等）は削除不可
 }
 
-type Tab = 'users' | 'tournaments' | 'bots' | 'blinds';
+type Tab = 'users' | 'tournaments' | 'bots' | 'blinds' | 'loadtest';
+
+interface LoadTestRun {
+  id: string;
+  status: string;
+  startedAt: string;
+  endedAt: string | null;
+  config: {
+    targetUrl: string;
+    mode: 'connect' | 'spectate';
+    count: number;
+    tableId?: string;
+    tournamentId?: string;
+    rampMs: number;
+    durationSec: number;
+  };
+  metrics: {
+    connected: number;
+    connectFailed: number;
+    disconnected: number;
+    active: number;
+    sockets: number;
+    gameStateReceived: number;
+    avgLatencyMs: number | null;
+    maxLatencyMs: number | null;
+    errors: number;
+    uptimeMs: number;
+  };
+  recentLogs: LoadTestLog[];
+}
+
+interface LoadTestLog {
+  ts: string;
+  runId: string;
+  type: string;
+  [key: string]: unknown;
+}
+
+interface LoadTestStatus {
+  enabled: boolean;
+  maxBots: number;
+  runs: LoadTestRun[];
+}
 
 export default function AdminPage() {
   const { data: session, status } = useSession();
@@ -156,6 +198,22 @@ export default function AdminPage() {
   const [tcPoints,    setTcPoints]   = useState(5000);
   const [tcMsg,       setTcMsg]      = useState('');
 
+  // 負荷テスト（既存ゲームへ参加しない一時Socket.IOクライアント）
+  const [loadStatus, setLoadStatus] = useState<LoadTestStatus | null>(null);
+  const [loadForm, setLoadForm] = useState({
+    targetUrl: '',
+    mode: 'spectate' as 'connect' | 'spectate',
+    count: 10,
+    rampMs: 200,
+    durationSec: 300,
+    tableId: '',
+    tournamentId: '',
+  });
+  const [loadSelectedRunId, setLoadSelectedRunId] = useState('');
+  const [loadLogs, setLoadLogs] = useState<LoadTestLog[]>([]);
+  const [loadExport, setLoadExport] = useState<{ jsonl: string; markdown: string } | null>(null);
+  const [loadMsg, setLoadMsg] = useState('');
+
   // adminMonitor API用：Bearer tokenを自動付与するfetch
   const authFetch = async (url: string, opts: RequestInit = {}) => {
     const tokenRes = await fetch('/api/auth/socket-token');
@@ -169,6 +227,82 @@ export default function AdminPage() {
         ...(opts.headers ?? {}),
       },
     });
+  };
+
+  const fetchLoadStatus = async () => {
+    try {
+      const res = await authFetch('/api/admin/monitor/loadtest/status');
+      const d = await res.json();
+      setLoadStatus(d);
+      const firstRun = d.runs?.[0]?.id ?? '';
+      setLoadSelectedRunId((prev) => prev || firstRun);
+      return d as LoadTestStatus;
+    } catch {
+      setLoadMsg('負荷テスト状態の取得に失敗しました');
+      return null;
+    }
+  };
+
+  const fetchLoadLogs = async (runId = loadSelectedRunId) => {
+    if (!runId) return;
+    try {
+      const res = await authFetch(`/api/admin/monitor/loadtest/logs/${runId}?limit=500`);
+      const d = await res.json();
+      setLoadLogs(d.logs ?? []);
+    } catch {
+      setLoadLogs([]);
+    }
+  };
+
+  const handleStartLoadTest = async () => {
+    setLoadMsg('');
+    setLoadExport(null);
+    try {
+      const res = await authFetch('/api/admin/monitor/loadtest/start', {
+        method: 'POST',
+        body: JSON.stringify(loadForm),
+      });
+      const d = await res.json();
+      if (!res.ok) {
+        setLoadMsg(d.error === 'LOAD_TEST_DISABLED'
+          ? 'LOAD_TEST_ENABLED=true を設定すると開始できます'
+          : `開始失敗: ${d.error ?? 'unknown'}`);
+        return;
+      }
+      setLoadMsg(`開始: ${d.run.id}`);
+      setLoadSelectedRunId(d.run.id);
+      await fetchLoadStatus();
+      await fetchLoadLogs(d.run.id);
+    } catch {
+      setLoadMsg('開始リクエストに失敗しました');
+    }
+  };
+
+  const handleStopLoadTest = async (runId = loadSelectedRunId) => {
+    if (!runId) return;
+    await authFetch('/api/admin/monitor/loadtest/stop', {
+      method: 'POST',
+      body: JSON.stringify({ runId }),
+    });
+    await fetchLoadStatus();
+    await fetchLoadLogs(runId);
+  };
+
+  const handleStopAllLoadTests = async () => {
+    await authFetch('/api/admin/monitor/loadtest/stop-all', { method: 'POST', body: JSON.stringify({}) });
+    await fetchLoadStatus();
+    if (loadSelectedRunId) await fetchLoadLogs(loadSelectedRunId);
+  };
+
+  const handleExportLoadTest = async (runId = loadSelectedRunId) => {
+    if (!runId) return;
+    try {
+      const res = await authFetch(`/api/admin/monitor/loadtest/export/${runId}`);
+      const d = await res.json();
+      setLoadExport({ jsonl: d.jsonl ?? '', markdown: d.markdown ?? '' });
+    } catch {
+      setLoadMsg('エクスポート取得に失敗しました');
+    }
   };
 
   const fetchBots = () => {
@@ -261,6 +395,22 @@ export default function AdminPage() {
 
   // ボットタブ選択時にリストを更新
   useEffect(() => { if (tab === 'bots') fetchBots(); }, [tab]);
+
+  useEffect(() => {
+    if (tab !== 'loadtest') return;
+    fetchLoadStatus().then((d) => {
+      const runId = loadSelectedRunId || d?.runs?.[0]?.id || '';
+      if (runId) fetchLoadLogs(runId);
+    });
+    const timer = setInterval(() => {
+      fetchLoadStatus().then((d) => {
+        const runId = loadSelectedRunId || d?.runs?.[0]?.id || '';
+        if (runId) fetchLoadLogs(runId);
+      });
+    }, 2000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, loadSelectedRunId]);
 
   const fetchBlindSchedules = async () => {
     setBlindsLoading(true);
@@ -574,6 +724,7 @@ export default function AdminPage() {
     '27sd': '2-7 Single Draw (NL)',
     mix3: 'Mix-3 (2-7/Badugi/A-5)',
     'beast+': 'BEAST+',
+    horse: 'HORSE',
     stud_mix: 'Stud Mix',
     stud_s: '7 Card Stud',
     stud_e: 'Stud Hi/Lo',
@@ -596,12 +747,13 @@ export default function AdminPage() {
 
         {/* タブ */}
         <div style={S.tabs}>
-          {(['users', 'tournaments', 'bots', 'blinds'] as Tab[]).map((t) => (
+          {(['users', 'tournaments', 'bots', 'blinds', 'loadtest'] as Tab[]).map((t) => (
             <button key={t} style={{ ...S.tab, ...(tab === t ? S.tabActive : {}) }} onClick={() => setTab(t)}>
               {t === 'users' ? `👥 ユーザー (${usersTotal})`
                 : t === 'tournaments' ? `🏆 トーナメント (${tournaments.length})`
                 : t === 'bots' ? `🤖 ボット (${bots.length})`
-                : `🎚 ブラインド設定`}
+                : t === 'blinds' ? `🎚 ブラインド設定`
+                : `📈 負荷テスト`}
             </button>
           ))}
         </div>
@@ -686,6 +838,7 @@ export default function AdminPage() {
                     <option value="27sd">2-7 Single Draw (NL)</option>
                     <option value="mix3">Mix-3 (2-7 / Badugi / A-5)</option>
                     <option value="beast+">BEAST+ (B/E/A/S/T/Razz)</option>
+                    <option value="horse">HORSE (Hold'em / Omaha8 / Razz / Stud / Stud8)</option>
                     <option value="stud_mix">Stud Mix (7Stud / Hi-Lo / Razz)</option>
                     <option value="stud_s">7 Card Stud</option>
                     <option value="stud_e">Stud Hi/Lo</option>
@@ -1277,6 +1430,119 @@ export default function AdminPage() {
         )}
 
         {/* ===== ブラインド設定 ===== */}
+        {tab === 'loadtest' && (
+          <div style={S.section}>
+            <div style={S.card}>
+              <h2 style={S.cardTitle}>負荷テスト</h2>
+              <div style={{ fontSize: 12, color: 'var(--cream-dim)', fontFamily: 'var(--font-body)', lineHeight: 1.6, marginBottom: 12 }}>
+                既存ゲームへ参加しない一時的な Socket.IO クライアントを起動します。初期実装は接続のみ/観戦のみで、ベットや着席は行いません。
+                開始にはサーバー環境変数 <code>LOAD_TEST_ENABLED=true</code> が必要です。
+              </div>
+
+              <div style={S.formGrid}>
+                <label style={S.label}>
+                  対象URL
+                  <input style={S.input} value={loadForm.targetUrl} onChange={(e) => setLoadForm(f => ({ ...f, targetUrl: e.target.value }))} placeholder="空なら現在の管理画面ホスト" />
+                </label>
+                <label style={S.label}>
+                  モード
+                  <select style={S.input} value={loadForm.mode} onChange={(e) => setLoadForm(f => ({ ...f, mode: e.target.value as 'connect' | 'spectate' }))}>
+                    <option value="spectate">観戦</option>
+                    <option value="connect">接続のみ</option>
+                  </select>
+                </label>
+                <label style={S.label}>
+                  接続数
+                  <input style={S.input} type="number" min={1} max={loadStatus?.maxBots ?? 50} value={loadForm.count} onChange={(e) => setLoadForm(f => ({ ...f, count: Number(e.target.value) }))} />
+                </label>
+                <label style={S.label}>
+                  接続間隔(ms)
+                  <input style={S.input} type="number" min={0} max={10000} value={loadForm.rampMs} onChange={(e) => setLoadForm(f => ({ ...f, rampMs: Number(e.target.value) }))} />
+                </label>
+                <label style={S.label}>
+                  継続秒数
+                  <input style={S.input} type="number" min={5} max={1800} value={loadForm.durationSec} onChange={(e) => setLoadForm(f => ({ ...f, durationSec: Number(e.target.value) }))} />
+                </label>
+                <label style={S.label}>
+                  tableId（観戦時）
+                  <input style={S.input} value={loadForm.tableId} onChange={(e) => setLoadForm(f => ({ ...f, tableId: e.target.value }))} placeholder="例: tournament-table-..." />
+                </label>
+                <label style={S.label}>
+                  tournamentId（観戦時）
+                  <input style={S.input} value={loadForm.tournamentId} onChange={(e) => setLoadForm(f => ({ ...f, tournamentId: e.target.value }))} placeholder="tableId未指定時に使用" />
+                </label>
+              </div>
+
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+                <button style={S.createBtn} onClick={handleStartLoadTest}>開始</button>
+                <button style={{ ...S.createBtn, background: '#8b1a1a' }} onClick={() => handleStopLoadTest()}>選択Run停止</button>
+                <button style={{ ...S.createBtn, background: '#5a2020' }} onClick={handleStopAllLoadTests}>全停止</button>
+                <button style={S.createBtn} onClick={() => fetchLoadStatus()}>更新</button>
+                <button style={S.createBtn} onClick={() => handleExportLoadTest()}>Codex用出力</button>
+              </div>
+
+              {loadMsg && <div style={{ marginTop: 10, color: loadMsg.includes('失敗') || loadMsg.includes('設定') ? '#ff9999' : '#88dd88', fontSize: 13 }}>{loadMsg}</div>}
+              <div style={{ marginTop: 10, fontSize: 12, color: loadStatus?.enabled ? '#88dd88' : '#ffcc88', fontFamily: 'var(--font-body)' }}>
+                状態: {loadStatus?.enabled ? '有効' : '無効'} / 最大 {loadStatus?.maxBots ?? '-'} 接続
+              </div>
+            </div>
+
+            <div style={S.card}>
+              <h2 style={S.cardTitle}>実行中/履歴</h2>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
+                <select style={{ ...S.input, maxWidth: 420 }} value={loadSelectedRunId} onChange={(e) => { setLoadSelectedRunId(e.target.value); fetchLoadLogs(e.target.value); setLoadExport(null); }}>
+                  <option value="">Runを選択</option>
+                  {(loadStatus?.runs ?? []).map(run => (
+                    <option key={run.id} value={run.id}>{run.id} / {run.status} / {run.config.mode} / {run.config.count}</option>
+                  ))}
+                </select>
+              </div>
+
+              {(loadStatus?.runs ?? []).filter(r => !loadSelectedRunId || r.id === loadSelectedRunId).slice(0, 1).map(run => (
+                <div key={run.id} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: 8, marginBottom: 12 }}>
+                  {[
+                    ['active', run.metrics.active],
+                    ['connected', run.metrics.connected],
+                    ['failed', run.metrics.connectFailed],
+                    ['disconnect', run.metrics.disconnected],
+                    ['gameState', run.metrics.gameStateReceived],
+                    ['avg ms', run.metrics.avgLatencyMs ?? '-'],
+                    ['max ms', run.metrics.maxLatencyMs ?? '-'],
+                    ['errors', run.metrics.errors],
+                  ].map(([k, v]) => (
+                    <div key={String(k)} style={{ background: 'rgba(0,0,0,0.22)', border: '1px solid rgba(201,168,76,0.18)', borderRadius: 6, padding: '8px 10px' }}>
+                      <div style={{ color: 'var(--gold-dim)', fontSize: 11, fontFamily: 'var(--font-title)' }}>{k}</div>
+                      <div style={{ color: 'var(--cream)', fontSize: 18, fontWeight: 700 }}>{String(v)}</div>
+                    </div>
+                  ))}
+                </div>
+              ))}
+
+              <textarea
+                readOnly
+                style={{ ...S.input, minHeight: 260, fontFamily: 'Consolas, monospace', fontSize: 11, whiteSpace: 'pre' }}
+                value={loadLogs.map(l => JSON.stringify(l)).join('\n')}
+              />
+            </div>
+
+            {loadExport && (
+              <div style={S.card}>
+                <h2 style={S.cardTitle}>Codex解析用出力</h2>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                  <label style={S.label}>
+                    Markdown Summary
+                    <textarea readOnly style={{ ...S.input, minHeight: 260, fontFamily: 'Consolas, monospace', fontSize: 11 }} value={loadExport.markdown} />
+                  </label>
+                  <label style={S.label}>
+                    Raw JSONL
+                    <textarea readOnly style={{ ...S.input, minHeight: 260, fontFamily: 'Consolas, monospace', fontSize: 11 }} value={loadExport.jsonl} />
+                  </label>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {tab === 'blinds' && (
           <div style={S.section}>
             {blindMsg && (

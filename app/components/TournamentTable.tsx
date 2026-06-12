@@ -417,8 +417,14 @@ export default function TournamentTable({
     const ACTION_LABEL: Record<string,string> = {
       fold:'フォールド', check:'チェック', call:'コール', bet:'ベット', raise:'レイズ',
     };
-    const onPlayerAction = ({ playerName, action }: { playerName:string; action:string }) => {
-      const label = ACTION_LABEL[action] ?? action;
+    const onPlayerAction = ({ playerName, action, amount, bigBlind }: { playerName:string; action:string; amount?:number; bigBlind?:number }) => {
+      let label = ACTION_LABEL[action] ?? action;
+      if (isNoLimitMode && (action === 'bet' || action === 'raise') && typeof amount === 'number' && Number.isFinite(amount)) {
+        const bb = bigBlind || meta?.bigBlind || 0;
+        const bbText = bb > 0 ? `${Math.round((amount / bb) * 10) / 10}BB` : '';
+        const amountText = amount.toLocaleString();
+        label = `${ACTION_LABEL[action] ?? action} 【${amountText}${bbText ? ` (${bbText})` : ''}】`;
+      }
       setActionFlash(prev => ({
         ...prev,
         [playerName]: { label, key: Date.now() },
@@ -447,7 +453,7 @@ export default function TournamentTable({
       socket.off('playerAction', onPlayerAction);
       socket.off('gameStarted', onGameStarted);
     };
-  }, []);
+  }, [isNoLimitMode, meta?.bigBlind]);
 
   // drawCount フラッシュ管理（PokerTable.tsx と同ロジック）
   useEffect(() => {

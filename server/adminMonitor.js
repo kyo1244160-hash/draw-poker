@@ -45,6 +45,7 @@ const { getTournament: getTournamentDB, getEntries } = require('./db/tournament'
 const { updateTournamentStatus } = require('./db/admin');
 
 const router = express.Router();
+const loadTestManager = require('./loadtest/loadTestManager');
 
 // io インスタンス（index.js から setIo() で注入）
 let _io = null;
@@ -129,6 +130,50 @@ async function requireAdmin(req, res, next) {
 }
 
 router.use(requireAdmin);
+
+// ===== Load Test 管理 =====
+router.get('/loadtest/status', (req, res) => {
+  res.json(loadTestManager.getStatus());
+});
+
+router.post('/loadtest/start', (req, res) => {
+  try {
+    const host = req.get('x-forwarded-host') || req.get('host');
+    const proto = req.get('x-forwarded-proto') || req.protocol || 'http';
+    const targetUrl = req.body?.targetUrl || (host ? `${proto}://${host}` : '');
+    const result = loadTestManager.startRun({ ...req.body, targetUrl });
+    log(`[adminMonitor] loadtest start run=${result.id} count=${result.config.count} mode=${result.config.mode} by ${req.adminId}`);
+    res.json({ ok: true, run: result });
+  } catch (err) {
+    res.status(err.statusCode || 500).json({ ok: false, error: err.message || 'LOAD_TEST_ERROR' });
+  }
+});
+
+router.post('/loadtest/stop', (req, res) => {
+  const runId = req.body?.runId;
+  const run = runId ? loadTestManager.stopRun(runId, 'admin_stop') : null;
+  if (!run) return res.status(404).json({ ok: false, error: 'RUN_NOT_FOUND' });
+  log(`[adminMonitor] loadtest stop run=${runId} by ${req.adminId}`);
+  res.json({ ok: true, run });
+});
+
+router.post('/loadtest/stop-all', (req, res) => {
+  const stopped = loadTestManager.stopAll('admin_stop_all');
+  log(`[adminMonitor] loadtest stop-all count=${stopped.length} by ${req.adminId}`);
+  res.json({ ok: true, stopped });
+});
+
+router.get('/loadtest/logs/:runId', (req, res) => {
+  const logs = loadTestManager.getLogs(req.params.runId, req.query.limit ?? 500);
+  if (!logs) return res.status(404).json({ ok: false, error: 'RUN_NOT_FOUND' });
+  res.json({ ok: true, runId: req.params.runId, logs });
+});
+
+router.get('/loadtest/export/:runId', (req, res) => {
+  const data = loadTestManager.exportRun(req.params.runId);
+  if (!data) return res.status(404).json({ ok: false, error: 'RUN_NOT_FOUND' });
+  res.json({ ok: true, runId: req.params.runId, ...data });
+});
 
 // ===== ヘルパー =====
 function _tableSnapshot(tableId) {

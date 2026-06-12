@@ -46,6 +46,14 @@ const MAX_PLAYERS = cfg.MAX_PLAYERS;
 const STUD_MODES = ['stud_s', 'stud_e', 'razz'];
 function isStudMode(mode) { return STUD_MODES.includes(mode); }
 
+function _isBotPlayerLike(player) {
+  return !!player?.isBot
+    || (typeof player?.id === 'string' && player.id.startsWith('tbot::'))
+    || (typeof player?.accountId === 'string' && (
+      player.accountId.startsWith('tbot::') || player.accountId.startsWith('bot::')
+    ));
+}
+
 // フェーズ定義
 const STREETS = ['3rd', '4th', '5th', '6th', '7th'];
 const PHASES = [
@@ -1167,7 +1175,7 @@ function syncFromGameManager(gmRoom, currentMode) {
     chips:      gp.chips,
     sittingOut: !!gp.sittingOut,
     disconnected: gp.disconnected ?? false,
-    isBot:      gp.isBot ?? false,
+    isBot:      _isBotPlayerLike(gp),
     accountId:  gp.accountId ?? null,
     _studWaitOnce: _waitOnceById.get(gp.id) ?? false,
     // スタッド用フィールドは startStudHand で初期化される。

@@ -211,6 +211,15 @@ function _botProgressSnapshot(room) {
 
 const _pendingStudBot = new Map();
 
+function _isStudBotPlayer(player, botIds) {
+  return !!player?.isBot
+    || !!botIds?.has?.(player?.id)
+    || (typeof player?.id === 'string' && player.id.startsWith('tbot::'))
+    || (typeof player?.accountId === 'string' && (
+      player.accountId.startsWith('tbot::') || player.accountId.startsWith('bot::')
+    ));
+}
+
 /**
  * スタッドテーブルでBOTのターンなら自動アクションを実行する。
  * tournamentBotManager の _tableBots を流用して BOT 判定する。
@@ -225,7 +234,7 @@ function triggerStudBotActions(tableId, botIds, onActionDone) {
   if (!botIds || botIds.size === 0) return;
 
   const cur = room.players[room.actionIndex];
-  if (!cur || !botIds.has(cur.id)) {
+  if (!cur || !_isStudBotPlayer(cur, botIds)) {
     logDev(`[StudBot] ${tableId.slice(-8)} turn not bot → skip`);
     log(`[stud-bot] skip table=${tableId.slice(-8)} reason=turn-not-bot ${_botProgressSnapshot(room)}`);
     return;

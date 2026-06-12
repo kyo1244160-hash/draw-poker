@@ -58,7 +58,7 @@ const CHIP_VALUES = [1, 5, 10, 25, 50, 100];
 const BET_MIN = 1;
 const BET_MAX = 100;  // サーバーと同値に統一
 const SUIT_SYMBOL: Record<string,string> = { S:'♠', H:'♥', D:'♦', C:'♣' };
-const SUIT_COLOR:  Record<string,string> = { S:'#1a1a2e', H:'#c0392b', D:'#c0392b', C:'#1a1a2e' };
+const SUIT_COLOR:  Record<string,string> = { S:'#1a1a2e', H:'#c0392b', D:'#1f63d8', C:'#228833' };
 const RANK_LABEL:  Record<string,string> = { T:'10', J:'J', Q:'Q', K:'K', A:'A' };
 const PHASE_LABEL: Record<string,string> = {
   waiting:'待機中', betting:'ベット', dealt:'配布中',
@@ -69,18 +69,21 @@ const PHASE_LABEL: Record<string,string> = {
 function CardFace({ code, size='md' }: { code:string; size?:'sm'|'md'|'lg' }) {
   const r=code[0], s=code[1];
   const label=RANK_LABEL[r]??r, col=SUIT_COLOR[s]??'#1a1a2e', sym=SUIT_SYMBOL[s]??s;
-  const [w,h,fs] = size==='lg'?[62,90,18]:size==='md'?[48,70,14]:[34,50,10];
+  const [w,h,fs,cornerFs] = size==='lg'?[66,96,30,13]:size==='md'?[52,76,24,11]:[38,56,17,9];
   return (
     <div style={{width:w,height:h,borderRadius:6,background:'white',
       border:'1.5px solid rgba(0,0,0,0.15)',boxShadow:'0 2px 6px rgba(0,0,0,0.3)',
       display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
       position:'relative',flexShrink:0,userSelect:'none'}}>
-      <div style={{position:'absolute',top:2,left:4,fontSize:fs-4,color:col,lineHeight:1,fontWeight:700}}>
+      <div style={{position:'absolute',top:3,left:4,fontSize:cornerFs,color:col,lineHeight:1,fontWeight:900}}>
         {label}<br/>{sym}
       </div>
-      <div style={{fontSize:fs+2,color:col,lineHeight:1}}>{sym}</div>
-      <div style={{position:'absolute',bottom:2,right:4,fontSize:fs-4,color:col,
-        lineHeight:1,fontWeight:700,transform:'rotate(180deg)'}}>
+      <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:2,color:col,lineHeight:0.95}}>
+        <div style={{fontSize:fs,fontWeight:900,fontFamily:'Georgia,"Times New Roman",serif'}}>{label}</div>
+        <div style={{fontSize:Math.round(fs*0.82),fontWeight:800}}>{sym}</div>
+      </div>
+      <div style={{position:'absolute',bottom:3,right:4,fontSize:cornerFs,color:col,
+        lineHeight:1,fontWeight:900,transform:'rotate(180deg)'}}>
         {label}<br/>{sym}
       </div>
     </div>

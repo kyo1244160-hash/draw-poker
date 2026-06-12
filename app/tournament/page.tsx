@@ -14,6 +14,7 @@ const MODE_LABEL: Record<string, string> = {
   '27sd': '2-7 Single Draw',
   mix3: 'Mix-3',
   'beast+': 'BEAST+',
+  horse: 'HORSE',
   stud_mix: 'Stud Mix',
   stud_s: '7 Card Stud',
   stud_e: 'Stud Hi/Lo',

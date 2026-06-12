@@ -241,8 +241,8 @@ function startTournament(opts) {
 
   // 全テーブルでゲーム開始（onTimeoutを渡してタイムアウト処理を有効化）
   for (const tableId of tournament.tableIds) {
-    if (['stud_mix', 'stud_s', 'stud_e', 'razz'].includes(tournament.mode)) {
-      log(`[TM] ${id}: skip draw startGame for stud table ${tableId.slice(-8)} mode=${tournament.mode}`);
+    if (['stud_mix', 'stud_s', 'stud_e', 'razz', 'horse'].includes(tournament.mode)) {
+      log(`[TM] ${id}: skip draw startGame for non-draw opening table ${tableId.slice(-8)} mode=${tournament.mode}`);
       continue;
     }
     const onTimeout = _makeTimeoutHandler ? _makeTimeoutHandler(tableId) : null;
