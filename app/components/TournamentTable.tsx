@@ -642,8 +642,8 @@ export default function TournamentTable({
       window.addEventListener('pointerup', onUp);
       window.addEventListener('pointercancel', onUp);
     };
-    const isPreDrawBet = meta?.phase === 'bet0';
-    const quickAmounts = (isPreDrawBet
+    const isPreDrawOpeningBet = meta?.phase === 'bet0' && isBet;
+    const quickAmounts = (isPreDrawOpeningBet
       ? [
           { label: '2BB', value: bigBlind * 2 },
           { label: '3BB', value: bigBlind * 3 },
