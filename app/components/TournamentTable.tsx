@@ -524,7 +524,8 @@ export default function TournamentTable({
   // ===== NLベット関連ヘルパー =====
   // 送信するベット額を決定。ショートスタック時は maxBet 固定（オールイン）
   const getNLSendAmount = (s: PlayerState): number => {
-    const isBet      = (meta?.currentBet ?? 0) === 0;
+    const currentBet = meta?.currentBet ?? 0;
+    const isBet      = currentBet === 0;
     const minBet     = s.minBet ?? meta?.bigBlind ?? 10;
     const minRaiseT  = s.minRaiseTotal ?? ((meta?.currentBet ?? 0) + (meta?.bigBlind ?? 10));
     const maxBet     = s.maxBetTotal ?? ((s.bet ?? 0) + (s.chips ?? 0));
@@ -547,7 +548,8 @@ export default function TournamentTable({
   const NLBetControl = ({compact = false}:{compact?: boolean}) => {
     if (!self || !self.canRaise || !selfIsNL) return null;
 
-    const isBet      = (meta?.currentBet ?? 0) === 0;
+    const currentBet = meta?.currentBet ?? 0;
+    const isBet      = currentBet === 0;
     const minBet     = self.minBet ?? meta?.bigBlind ?? 10;
     const minRaiseT  = self.minRaiseTotal ?? ((meta?.currentBet ?? 0) + (meta?.bigBlind ?? 10));
     const maxBet     = self.maxBetTotal ?? ((self.bet ?? 0) + (self.chips ?? 0));
@@ -642,18 +644,22 @@ export default function TournamentTable({
       window.addEventListener('pointerup', onUp);
       window.addEventListener('pointercancel', onUp);
     };
-    const isPreDrawOpeningBet = meta?.phase === 'bet0' && isBet;
-    const quickAmounts = (isPreDrawOpeningBet
+    const toCallForRaise = Math.max(0, currentBet - (self.bet ?? 0));
+    const potAfterCall = pot + toCallForRaise;
+    const percentTarget = (pct: number) =>
+      isBet ? Math.floor(pot * pct) : currentBet + Math.floor(potAfterCall * pct);
+    const useBBQuickAmounts = meta?.phase === 'bet0' && currentBet <= bigBlind;
+    const quickAmounts = (useBBQuickAmounts
       ? [
           { label: '2BB', value: bigBlind * 2 },
           { label: '3BB', value: bigBlind * 3 },
           { label: '4BB', value: bigBlind * 4 },
         ]
       : [
-          { label: '33%',  value: Math.floor(pot * 0.33) },
-          { label: '50%',  value: Math.floor(pot * 0.50) },
-          { label: '75%',  value: Math.floor(pot * 0.75) },
-          { label: '100%', value: pot },
+          { label: '33%',  value: percentTarget(0.33) },
+          { label: '50%',  value: percentTarget(0.50) },
+          { label: '75%',  value: percentTarget(0.75) },
+          { label: '100%', value: percentTarget(1.00) },
         ]
     ).map(q => ({ ...q, value: Math.max(lowerBound, Math.min(maxBet, q.value)) }));
 
