@@ -125,6 +125,9 @@ export default function AdminPage() {
   const [users,         setUsers]         = useState<User[]>([]);
   const [usersTotal,    setUsersTotal]    = useState(0);   // 全件数（タブ表示用）
   const [userPage,      setUserPage]      = useState(0);   // 現在のページ（0始まり）
+  const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
+  const [deletingUsers, setDeletingUsers] = useState(false);
+  const [userMsg, setUserMsg] = useState('');
   const USER_PAGE_SIZE = 50;
   const [tournaments,   setTournaments]   = useState<Tournament[]>([]);
   const [schedules,     setSchedules]     = useState<BlindSchedule[]>([]);
@@ -234,6 +237,15 @@ export default function AdminPage() {
         ...(opts.headers ?? {}),
       },
     });
+  };
+
+  const fetchUsersPage = async (page = userPage) => {
+    const res = await fetch(`/api/admin/users?offset=${page * USER_PAGE_SIZE}&limit=${USER_PAGE_SIZE}`);
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error ?? 'ユーザー一覧の取得に失敗しました');
+    setUsers(d.users ?? []);
+    setUsersTotal(d.total ?? d.users?.length ?? 0);
+    setSelectedUserIds([]);
   };
 
   const fetchLoadStatus = async () => {
@@ -620,11 +632,54 @@ export default function AdminPage() {
     ]).then(([u, t, s]) => {
       setUsers(u.users ?? []);
       setUsersTotal(u.total ?? u.users?.length ?? 0);
+      setSelectedUserIds([]);
       setTournaments(t.tournaments ?? []);
       setSchedules(s.schedules ?? []);
       setLoading(false);
     }).catch(() => setError('データの取得に失敗しました'));
   }, [status]);
+
+  const toggleUserSelection = (accountId: string, checked: boolean) => {
+    setSelectedUserIds((prev) => checked
+      ? [...new Set([...prev, accountId])]
+      : prev.filter((id) => id !== accountId));
+  };
+
+  const toggleVisibleUsers = (checked: boolean) => {
+    setSelectedUserIds(checked ? users.map((u) => u.id) : []);
+  };
+
+  const handleDeleteSelectedUsers = async () => {
+    if (selectedUserIds.length === 0) return;
+    const ok = window.confirm(`選択した ${selectedUserIds.length} 人のユーザーを削除します。この操作は取り消せません。`);
+    if (!ok) return;
+
+    setDeletingUsers(true);
+    setUserMsg('');
+    try {
+      const res = await fetch('/api/admin/users', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountIds: selectedUserIds }),
+      });
+      const d = await res.json();
+      if (!res.ok) {
+        setUserMsg(`削除エラー: ${d.error ?? 'unknown'}`);
+        return;
+      }
+
+      const deletedCount = d.deletedCount ?? d.deletedIds?.length ?? selectedUserIds.length;
+      const remainingTotal = Math.max(0, usersTotal - deletedCount);
+      const nextPage = userPage > 0 && userPage * USER_PAGE_SIZE >= remainingTotal ? userPage - 1 : userPage;
+      setUserPage(nextPage);
+      await fetchUsersPage(nextPage);
+      setUserMsg(`${deletedCount} 人のユーザーを削除しました`);
+    } catch {
+      setUserMsg('通信エラーが発生しました');
+    } finally {
+      setDeletingUsers(false);
+    }
+  };
 
   // ===== トーナメント作成 =====
   const handleCreate = async () => {
@@ -743,6 +798,9 @@ export default function AdminPage() {
   if (loading) return <div style={S.loading}>読み込み中...</div>;
   if (error)   return <div style={S.loading}>{error}</div>;
 
+  const allVisibleUsersSelected = users.length > 0 && users.every((u) => selectedUserIds.includes(u.id));
+  const selectedUserCount = selectedUserIds.length;
+
   return (
     <>
       <Head><title>管理画面 — Poker Room Pastis</title></Head>
@@ -771,30 +829,46 @@ export default function AdminPage() {
         {tab === 'users' && (
           <div style={S.section}>
             {/* ページネーション上部 */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10, flexWrap: 'wrap' }}>
               <span style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--cream-dim)' }}>
                 {userPage * USER_PAGE_SIZE + 1}〜{Math.min((userPage + 1) * USER_PAGE_SIZE, usersTotal)} 件 / 全 {usersTotal} 件
               </span>
               <button
+                style={{
+                  ...S.createBtn,
+                  background: 'linear-gradient(135deg,#8b1a1a,#5a1010)',
+                  border: '1px solid #cc4444',
+                  color: '#ffcccc',
+                  padding: '4px 14px',
+                  fontSize: 12,
+                  opacity: selectedUserCount === 0 || deletingUsers ? 0.45 : 1,
+                }}
+                disabled={selectedUserCount === 0 || deletingUsers}
+                onClick={handleDeleteSelectedUsers}
+              >
+                {deletingUsers ? '削除中...' : `選択ユーザー削除 (${selectedUserCount})`}
+              </button>
+              {userMsg && (
+                <span style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: userMsg.startsWith('削除エラー') || userMsg.startsWith('通信') ? '#ff9999' : '#88ee88' }}>
+                  {userMsg}
+                </span>
+              )}
+              <button
                 style={{ ...S.createBtn, padding: '4px 12px', fontSize: 12, opacity: userPage === 0 ? 0.4 : 1 }}
                 disabled={userPage === 0}
-                onClick={() => {
+                onClick={async () => {
                   const newPage = userPage - 1;
                   setUserPage(newPage);
-                  fetch(`/api/admin/users?offset=${newPage * USER_PAGE_SIZE}&limit=${USER_PAGE_SIZE}`)
-                    .then(r => r.json())
-                    .then(d => { setUsers(d.users ?? []); setUsersTotal(d.total ?? usersTotal); });
+                  await fetchUsersPage(newPage);
                 }}
               >← 前へ</button>
               <button
                 style={{ ...S.createBtn, padding: '4px 12px', fontSize: 12, opacity: (userPage + 1) * USER_PAGE_SIZE >= usersTotal ? 0.4 : 1 }}
                 disabled={(userPage + 1) * USER_PAGE_SIZE >= usersTotal}
-                onClick={() => {
+                onClick={async () => {
                   const newPage = userPage + 1;
                   setUserPage(newPage);
-                  fetch(`/api/admin/users?offset=${newPage * USER_PAGE_SIZE}&limit=${USER_PAGE_SIZE}`)
-                    .then(r => r.json())
-                    .then(d => { setUsers(d.users ?? []); setUsersTotal(d.total ?? usersTotal); });
+                  await fetchUsersPage(newPage);
                 }}
               >次へ →</button>
             </div>
@@ -802,7 +876,17 @@ export default function AdminPage() {
             <table style={S.table}>
               <thead>
                 <tr>
-                  {['ニックネーム', 'Google名', 'メール', 'ポイント', '変更回数', '登録日'].map((h) => (
+                  <th style={S.th}>
+                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={allVisibleUsersSelected}
+                        onChange={(e) => toggleVisibleUsers(e.target.checked)}
+                      />
+                      ニックネーム
+                    </label>
+                  </th>
+                  {['Google名', 'メール', 'ポイント', '変更回数', '登録日'].map((h) => (
                     <th key={h} style={S.th}>{h}</th>
                   ))}
                 </tr>
@@ -810,7 +894,16 @@ export default function AdminPage() {
               <tbody>
                 {users.map((u) => (
                   <tr key={u.id} style={S.tr}>
-                    <td style={S.td}>{u.nickname ?? <span style={{ color: '#888' }}>未設定</span>}</td>
+                    <td style={S.td}>
+                      <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                        <input
+                          type="checkbox"
+                          checked={selectedUserIds.includes(u.id)}
+                          onChange={(e) => toggleUserSelection(u.id, e.target.checked)}
+                        />
+                        <span>{u.nickname ?? <span style={{ color: '#888' }}>未設定</span>}</span>
+                      </label>
+                    </td>
                     <td style={S.td}>{u.google_name ?? '-'}</td>
                     <td style={{ ...S.td, fontSize: 12, color: 'var(--cream-dim)' }}>{u.email}</td>
                     <td style={{ ...S.td, textAlign: 'center' }}>{u.total_points ?? 0}</td>

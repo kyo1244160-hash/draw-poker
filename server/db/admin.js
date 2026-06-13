@@ -36,6 +36,67 @@ async function listUsers({ limit = 50, offset = 0 } = {}) {
   return { users: rows, total: count };
 }
 
+/** ユーザー削除（関連する履歴・参加情報も整理） */
+async function deleteUsers(accountIds) {
+  const ids = [...new Set((accountIds ?? []).filter((id) => typeof id === 'string' && id.trim()).map((id) => id.trim()))];
+  if (ids.length === 0) return { deletedIds: [] };
+
+  const deletedIds = await sql.begin(async (tx) => {
+    const activeRows = await tx`
+      SELECT DISTINCT account_id
+      FROM (
+        SELECT e.account_id
+        FROM tournament_entries e
+        JOIN tournaments t ON t.id = e.tournament_id
+        WHERE e.account_id IN ${tx(ids)}
+          AND e.cancelled_at IS NULL
+          AND t.status = 'running'
+        UNION
+        SELECT s.account_id
+        FROM tournament_seats s
+        JOIN tournaments t ON t.id = s.tournament_id
+        WHERE s.account_id IN ${tx(ids)}
+          AND t.status = 'running'
+      ) active
+    `;
+    if (activeRows.length > 0) {
+      const err = new Error('進行中トーナメントの参加者は削除できません');
+      err.code = 'ACTIVE_TOURNAMENT_USER';
+      err.accountIds = activeRows.map((row) => row.account_id);
+      throw err;
+    }
+
+    const [ringTable] = await tx`SELECT to_regclass('public.ring_hand_results') AS name`;
+    if (ringTable?.name) {
+      await tx`DELETE FROM ring_hand_results WHERE account_id IN ${tx(ids)}`;
+    }
+
+    await tx`DELETE FROM point_history WHERE account_id IN ${tx(ids)}`;
+    await tx`DELETE FROM tournament_chip_log WHERE account_id IN ${tx(ids)}`;
+    await tx`DELETE FROM tournament_results WHERE account_id IN ${tx(ids)}`;
+    await tx`DELETE FROM tournament_entries WHERE account_id IN ${tx(ids)}`;
+    await tx`
+      UPDATE tournament_seats
+      SET account_id = NULL, nickname = NULL
+      WHERE account_id IN ${tx(ids)}
+    `;
+    await tx`
+      UPDATE tournaments
+      SET created_by = NULL
+      WHERE created_by IN ${tx(ids)}
+    `;
+
+    const rows = await tx`
+      DELETE FROM accounts
+      WHERE id IN ${tx(ids)}
+      RETURNING id
+    `;
+    return rows.map((row) => row.id);
+  });
+
+  return { deletedIds };
+}
+
 /** トーナメント一覧 */
 async function listTournaments({ limit = 20, offset = 0 } = {}) {
   return sql`
@@ -244,4 +305,5 @@ module.exports = {
   updateBlindSchedule,
   deleteBlindSchedule,
   forceChangeNickname,
+  deleteUsers,
 };

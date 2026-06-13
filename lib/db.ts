@@ -88,6 +88,10 @@ export const forceChangeNickname: (
   accountId: string, nickname: string
 ) => Promise<{ account_id: string; nickname: string } | null> = adminDb.forceChangeNickname;
 
+export const deleteUsers: (
+  accountIds: string[]
+) => Promise<{ deletedIds: string[] }> = adminDb.deleteUsers;
+
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const pointsDb = require('../server/db/points');
 
