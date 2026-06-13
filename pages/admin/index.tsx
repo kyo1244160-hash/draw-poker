@@ -75,7 +75,7 @@ interface LoadTestRun {
   endedAt: string | null;
   config: {
     targetUrl: string;
-    mode: 'connect' | 'spectate';
+    mode: 'connect' | 'spectate' | 'tournament-player';
     count: number;
     tableId?: string;
     tournamentId?: string;
@@ -89,6 +89,13 @@ interface LoadTestRun {
     active: number;
     sockets: number;
     gameStateReceived: number;
+    tournamentRegistered?: number;
+    tableJoins?: number;
+    tableTransfers?: number;
+    actionsSent?: number;
+    drawActionsSent?: number;
+    betActionsSent?: number;
+    actionErrors?: number;
     avgLatencyMs: number | null;
     maxLatencyMs: number | null;
     errors: number;
@@ -198,11 +205,11 @@ export default function AdminPage() {
   const [tcPoints,    setTcPoints]   = useState(5000);
   const [tcMsg,       setTcMsg]      = useState('');
 
-  // 負荷テスト（既存ゲームへ参加しない一時Socket.IOクライアント）
+  // 負荷テスト（一時Socket.IOクライアント。実参加モードでは専用Botアカウントで参加）
   const [loadStatus, setLoadStatus] = useState<LoadTestStatus | null>(null);
   const [loadForm, setLoadForm] = useState({
     targetUrl: '',
-    mode: 'spectate' as 'connect' | 'spectate',
+    mode: 'spectate' as 'connect' | 'spectate' | 'tournament-player',
     count: 10,
     rampMs: 200,
     durationSec: 300,
@@ -266,6 +273,8 @@ export default function AdminPage() {
       if (!res.ok) {
         setLoadMsg(d.error === 'LOAD_TEST_DISABLED'
           ? 'LOAD_TEST_ENABLED=true を設定すると開始できます'
+          : d.error === 'TOURNAMENT_TARGET_REQUIRED'
+            ? 'トーナメント実参加には tournamentId が必要です'
           : `開始失敗: ${d.error ?? 'unknown'}`);
         return;
       }
@@ -1435,7 +1444,7 @@ export default function AdminPage() {
             <div style={S.card}>
               <h2 style={S.cardTitle}>負荷テスト</h2>
               <div style={{ fontSize: 12, color: 'var(--cream-dim)', fontFamily: 'var(--font-body)', lineHeight: 1.6, marginBottom: 12 }}>
-                既存ゲームへ参加しない一時的な Socket.IO クライアントを起動します。初期実装は接続のみ/観戦のみで、ベットや着席は行いません。
+                一時的な Socket.IO クライアントを起動します。接続のみ/観戦に加えて、テスト用Botアカウントでトーナメントへ実参加して自動プレイできます。
                 開始にはサーバー環境変数 <code>LOAD_TEST_ENABLED=true</code> が必要です。
               </div>
 
@@ -1446,13 +1455,14 @@ export default function AdminPage() {
                 </label>
                 <label style={S.label}>
                   モード
-                  <select style={S.input} value={loadForm.mode} onChange={(e) => setLoadForm(f => ({ ...f, mode: e.target.value as 'connect' | 'spectate' }))}>
+                  <select style={S.input} value={loadForm.mode} onChange={(e) => setLoadForm(f => ({ ...f, mode: e.target.value as 'connect' | 'spectate' | 'tournament-player' }))}>
                     <option value="spectate">観戦</option>
                     <option value="connect">接続のみ</option>
+                    <option value="tournament-player">トーナメント実参加</option>
                   </select>
                 </label>
                 <label style={S.label}>
-                  接続数
+                  接続数 / 参加Bot数
                   <input style={S.input} type="number" min={1} max={loadStatus?.maxBots ?? 50} value={loadForm.count} onChange={(e) => setLoadForm(f => ({ ...f, count: Number(e.target.value) }))} />
                 </label>
                 <label style={S.label}>
@@ -1468,10 +1478,15 @@ export default function AdminPage() {
                   <input style={S.input} value={loadForm.tableId} onChange={(e) => setLoadForm(f => ({ ...f, tableId: e.target.value }))} placeholder="例: tournament-table-..." />
                 </label>
                 <label style={S.label}>
-                  tournamentId（観戦時）
+                  tournamentId（観戦/実参加時）
                   <input style={S.input} value={loadForm.tournamentId} onChange={(e) => setLoadForm(f => ({ ...f, tournamentId: e.target.value }))} placeholder="tableId未指定時に使用" />
                 </label>
               </div>
+              {loadForm.mode === 'tournament-player' && (
+                <div style={{ marginTop: 8, fontSize: 12, color: '#ffcc88', fontFamily: 'var(--font-body)', lineHeight: 1.6 }}>
+                  実参加モードは tournamentId 必須です。BotはDBへ参加登録され、通常プレイヤーとして fold/check/call/bet/raise/draw を送信します。本番トーナメントでは使わず、テスト用トーナメントで実行してください。
+                </div>
+              )}
 
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
                 <button style={S.createBtn} onClick={handleStartLoadTest}>開始</button>
@@ -1506,6 +1521,10 @@ export default function AdminPage() {
                     ['failed', run.metrics.connectFailed],
                     ['disconnect', run.metrics.disconnected],
                     ['gameState', run.metrics.gameStateReceived],
+                    ['registered', run.metrics.tournamentRegistered ?? 0],
+                    ['tables', run.metrics.tableJoins ?? 0],
+                    ['actions', run.metrics.actionsSent ?? 0],
+                    ['actErr', run.metrics.actionErrors ?? 0],
                     ['avg ms', run.metrics.avgLatencyMs ?? '-'],
                     ['max ms', run.metrics.maxLatencyMs ?? '-'],
                     ['errors', run.metrics.errors],

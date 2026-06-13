@@ -68,6 +68,8 @@ export default function TournamentDrawPage() {
   const nextTableIdRef = useRef<string | null>(null); // 3秒遅延中の移動先テーブル
   const prevModeRef = useRef<string | null>(null); // ゲームチェンジ検出用
   const transferTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]); // テーブル移動時の再送タイマー管理
+  const actionPendingRef = useRef(false); // ボタン連打/通信遅延による同一手番の二重送信防止
+  const actionPendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // players と meta を1つのstateにまとめて1回のレンダリングで更新（カクつき防止）
   const [gameState,  setGameState]  = useState<{ players: PlayerState[]; meta: GameMeta | null }>({ players: [], meta: null });
@@ -218,6 +220,11 @@ export default function TournamentDrawPage() {
           setTimeout(() => socket.emit('getGameState', { roomId: currentRoomId }), 1000);
         }
         return;
+      }
+      actionPendingRef.current = false;
+      if (actionPendingTimerRef.current) {
+        clearTimeout(actionPendingTimerRef.current);
+        actionPendingTimerRef.current = null;
       }
       // 【001/008 デバッグ】isStud と currentMode の矛盾を検出してログ送信
       // currentMode はスタッド系なのに isStud が falsy、またはその逆を観測する。
@@ -530,6 +537,11 @@ export default function TournamentDrawPage() {
     // エラー
     onSocket('error', ({ message }: { message: string }) => {
       if (message === 'そのアクションはできません') {
+        actionPendingRef.current = false;
+        if (actionPendingTimerRef.current) {
+          clearTimeout(actionPendingTimerRef.current);
+          actionPendingTimerRef.current = null;
+        }
         // 一時的なトースト表示（3秒後に消える）＋ gameState を再取得
         setActionErrorMsg(message);
         setTimeout(() => setActionErrorMsg(null), 3000);
@@ -558,6 +570,10 @@ export default function TournamentDrawPage() {
       // 【修正】テーブル移動再送タイマーをクリーンアップ（アンマウント後の emit 防止）
       transferTimersRef.current.forEach(clearTimeout);
       transferTimersRef.current = [];
+      if (actionPendingTimerRef.current) {
+        clearTimeout(actionPendingTimerRef.current);
+        actionPendingTimerRef.current = null;
+      }
     };
   // 依存配列を空にする意図:
   // 全ソケットハンドラは tableIdRef / eliminatedRef / fetchReadyRef 等の Ref を経由して
@@ -673,6 +689,13 @@ export default function TournamentDrawPage() {
   // ===== アクションハンドラ =====
   function handleBetAction(action: string, amount?: number) {
     if (!tableIdRef.current) return;
+    if (actionPendingRef.current) return;
+    actionPendingRef.current = true;
+    if (actionPendingTimerRef.current) clearTimeout(actionPendingTimerRef.current);
+    actionPendingTimerRef.current = setTimeout(() => {
+      actionPendingRef.current = false;
+      actionPendingTimerRef.current = null;
+    }, 2500);
     socket.emit('betAction', { roomId: tableIdRef.current, action, amount });
   }
 

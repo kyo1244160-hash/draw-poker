@@ -98,6 +98,7 @@ export interface GameMeta {
   currentMode: string;
   handCount: number;
   dealerIndex?: number;
+  timerRemaining?: number;
   timerLimit?: number;
   pendingPlayers?: string[];
   isTournament?: boolean;

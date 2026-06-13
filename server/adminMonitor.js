@@ -136,12 +136,12 @@ router.get('/loadtest/status', (req, res) => {
   res.json(loadTestManager.getStatus());
 });
 
-router.post('/loadtest/start', (req, res) => {
+router.post('/loadtest/start', async (req, res) => {
   try {
     const host = req.get('x-forwarded-host') || req.get('host');
     const proto = req.get('x-forwarded-proto') || req.protocol || 'http';
     const targetUrl = req.body?.targetUrl || (host ? `${proto}://${host}` : '');
-    const result = loadTestManager.startRun({ ...req.body, targetUrl });
+    const result = await loadTestManager.startRun({ ...req.body, targetUrl });
     log(`[adminMonitor] loadtest start run=${result.id} count=${result.config.count} mode=${result.config.mode} by ${req.adminId}`);
     res.json({ ok: true, run: result });
   } catch (err) {

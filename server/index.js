@@ -222,6 +222,17 @@ app.prepare().then(async () => {
       return next();
     }
 
+    // 管理画面の負荷テスト用一時プレイヤー。
+    // LOAD_TEST_ENABLED=true の時だけ許可し、通常ユーザー認証とは分離する。
+    if (process.env.LOAD_TEST_ENABLED === 'true' && socket.handshake.auth?.loadTest === true) {
+      const accountId = String(socket.handshake.auth?.accountId ?? '');
+      const nickname = String(socket.handshake.auth?.botName ?? 'LoadBot').slice(0, 12);
+      if (accountId.startsWith('bot_load_') && nickname.length >= 2) {
+        socket.data.user = { accountId, nickname, isBot: true, isLoadTest: true };
+        return next();
+      }
+    }
+
     // トークンなし → ゲストとして接続を許可（ルーム一覧表示のみ）
     if (!token) {
       socket.data.user = null;
@@ -291,6 +302,11 @@ app.prepare().then(async () => {
       io.to(roomId).emit('timerUpdate', { remaining: Math.round(remaining), limit: room._timerLimit });
     }
     for (const [roomId, room] of studManager.studRooms) {
+      if (!room._timerStart || !room._timerLimit) continue;
+      const remaining = Math.max(0, room._timerLimit - (Date.now() - room._timerStart) / 1000);
+      io.to(roomId).emit('timerUpdate', { remaining: Math.round(remaining), limit: room._timerLimit });
+    }
+    for (const [roomId, room] of boardManager.boardRooms) {
       if (!room._timerStart || !room._timerLimit) continue;
       const remaining = Math.max(0, room._timerLimit - (Date.now() - room._timerStart) / 1000);
       io.to(roomId).emit('timerUpdate', { remaining: Math.round(remaining), limit: room._timerLimit });
@@ -870,6 +886,7 @@ app.prepare().then(async () => {
         const updated = studManager.studBetAction(roomId, socket.id, action, amount);
         if (!updated) {
           socket.emit('error', { message: 'そのアクションはできません' });
+          _emitStateToSocket(socket, roomId);
           return;
         }
         io.to(roomId).emit('playerAction', {
@@ -887,15 +904,21 @@ app.prepare().then(async () => {
       if (_isBoardActive(roomId)) {
         const br = boardManager.getBoardRoom(roomId);
         const actingP = br?.players.find((p) => p.id === socket.id);
+        const beforePlayerBet = actingP?.bet ?? 0;
         const updated = boardManager.boardBetAction(roomId, socket.id, action);
         if (!updated) {
           socket.emit('error', { message: 'そのアクションはできません' });
           return;
         }
+        const afterP = updated.players.find((p) => p.id === socket.id);
+        const amount = Math.max(0, (afterP?.bet ?? beforePlayerBet) - beforePlayerBet);
         resetTimeout(roomId, socket.id);
         io.to(roomId).emit('playerAction', {
           playerName: actingP ? actingP.name : '',
           action,
+          amount,
+          totalBet: afterP?.bet ?? beforePlayerBet,
+          currentBet: updated.currentBet,
         });
         _broadcast(io, roomId);
         if (updated.phase === 'showdown') {
@@ -2200,9 +2223,33 @@ function _emitStateToSocket(socket, tableId) {
   if (_isBoardActive(tableId)) {
     const room = boardManager.getBoardRoom(tableId);
     if (!room) return;
-    const state = boardManager.buildBoardGameState(room, socket.id);
+    const gmRoom = getRoom(tableId);
+    const user = socket.data?.user;
+    const waitPlayer = [...(gmRoom?.players ?? []), ...(gmRoom?.pendingPlayers ?? [])].find((p) =>
+      (p.id === socket.id || (user?.accountId && p.accountId === user.accountId)) &&
+      !room.players.some((bp) => bp.id === p.id || (p.accountId && bp.accountId === p.accountId))
+    );
+    const state = boardManager.buildBoardGameState(room, waitPlayer ? null : socket.id);
     const meta = state.find((x) => x._meta);
     const players = state.filter((x) => !x._meta);
+    if (waitPlayer) {
+      players.push({
+        id: waitPlayer.id,
+        name: waitPlayer.name,
+        chips: waitPlayer.chips ?? 0,
+        bet: 0,
+        folded: false,
+        sittingOut: true,
+        disconnected: false,
+        hand: [],
+        isSelf: true,
+        isMyTurn: false,
+        isDealer: false,
+        isSB: false,
+        isBB: false,
+        isPendingPlayer: true,
+      });
+    }
     socket.emit('gameState', { players, meta });
     return;
   }
@@ -2366,13 +2413,47 @@ function _broadcastBoard(io, roomId) {
   if (!room) return;
 
   let anySocketSent = false;
+  const sentSocketIds = new Set();
   for (const player of room.players) {
     const s = io.sockets.sockets.get(player.id);
     if (!s) continue;
     anySocketSent = true;
+    sentSocketIds.add(player.id);
     const state = boardManager.buildBoardGameState(room, player.id);
     const meta = state.find((x) => x._meta);
     const players = state.filter((x) => !x._meta);
+    s.emit('gameState', { players, meta });
+  }
+  const gmRoom = getRoom(roomId);
+  const boardAccountIds = new Set(room.players.map((p) => p.accountId).filter(Boolean));
+  const boardIds = new Set(room.players.map((p) => p.id));
+  for (const waitPlayer of [...(gmRoom?.players ?? []), ...(gmRoom?.pendingPlayers ?? [])]) {
+    if (!waitPlayer?.id || sentSocketIds.has(waitPlayer.id)) continue;
+    const alreadyInBoard = boardIds.has(waitPlayer.id) || (waitPlayer.accountId && boardAccountIds.has(waitPlayer.accountId));
+    if (alreadyInBoard) continue;
+    const s = io.sockets.sockets.get(waitPlayer.id);
+    if (!s) continue;
+    anySocketSent = true;
+    sentSocketIds.add(waitPlayer.id);
+    const state = boardManager.buildBoardGameState(room, null);
+    const meta = state.find((x) => x._meta);
+    const players = state.filter((x) => !x._meta);
+    players.push({
+      id: waitPlayer.id,
+      name: waitPlayer.name,
+      chips: waitPlayer.chips ?? 0,
+      bet: 0,
+      folded: false,
+      sittingOut: true,
+      disconnected: false,
+      hand: [],
+      isSelf: true,
+      isMyTurn: false,
+      isDealer: false,
+      isSB: false,
+      isBB: false,
+      isPendingPlayer: true,
+    });
     s.emit('gameState', { players, meta });
   }
   if (!anySocketSent && room.phase === 'showdown') {
@@ -2381,7 +2462,11 @@ function _broadcastBoard(io, roomId) {
 
   const spectators = _spectators.get(roomId);
   if (spectators && spectators.size > 0) {
-    const playerSocketIds = new Set(room.players.map((p) => p.id));
+    const playerSocketIds = new Set([
+      ...room.players.map((p) => p.id),
+      ...(gmRoom?.players?.map((p) => p.id) ?? []),
+      ...(gmRoom?.pendingPlayers?.map((p) => p.id) ?? []),
+    ]);
     const state = boardManager.buildBoardGameState(room, null);
     const meta = state.find((x) => x._meta);
     const players = state.filter((x) => !x._meta);
@@ -2393,35 +2478,103 @@ function _broadcastBoard(io, roomId) {
   }
 
   if (tournamentManager.isTournamentTable(roomId)) {
-    triggerBoardBotActions(roomId, (tblId, botName, botAction) => {
+    const botIds = tournamentBotManager.getBotIds
+      ? tournamentBotManager.getBotIds(roomId)
+      : null;
+    const effectiveBotIds = new Set(botIds ? [...botIds] : []);
+    for (const p of room.players ?? []) {
+      if (_isBoardBotLike(p)) effectiveBotIds.add(p.id);
+    }
+    if (effectiveBotIds.size > 0 && boardManager.isBoardBettingPhase(room.phase)) {
+      log(`[board-broadcast] trigger-bots table=${roomId.slice(-8)} botCount=${effectiveBotIds.size} ${_boardLogSnapshot(room, effectiveBotIds)}`);
+    } else if (effectiveBotIds.size > 0) {
+      log(`[board-broadcast] skip-bots table=${roomId.slice(-8)} reason=phase-not-betting ${_boardLogSnapshot(room, effectiveBotIds)}`);
+    } else {
+      log(`[board-broadcast] no-bots table=${roomId.slice(-8)} ${_boardLogSnapshot(room, effectiveBotIds)}`);
+    }
+    triggerBoardBotActions(roomId, effectiveBotIds, (tblId, botName, botAction, info = {}) => {
       if (botName && botAction) {
-        io.to(tblId).emit('playerAction', { playerName: botName, action: botAction });
+        io.to(tblId).emit('playerAction', {
+          playerName: botName,
+          action: botAction,
+          amount: info.amount,
+          totalBet: info.totalBet,
+          currentBet: info.currentBet,
+        });
+        log(`[board-broadcast] emitted-playerAction table=${tblId.slice(-8)} bot=${botName} action=${botAction} amount=${info.amount ?? 0} totalBet=${info.totalBet ?? 0}`);
       }
-      _broadcast(io, tblId);
-      const br = boardManager.getBoardRoom(tblId);
-      if (br?.phase === 'showdown') _onBoardShowdown(io, tblId);
+      const continueBroadcast = () => {
+        _broadcast(io, tblId);
+        const br = boardManager.getBoardRoom(tblId);
+        if (br?.phase === 'showdown') _onBoardShowdown(io, tblId);
+      };
+      if (info.phaseChanged) {
+        const delayMs = 900;
+        _boardBotPausedUntil.set(tblId, Date.now() + delayMs);
+        setTimeout(() => {
+          _boardBotPausedUntil.delete(tblId);
+          continueBroadcast();
+        }, delayMs);
+      } else {
+        continueBroadcast();
+      }
     });
   }
 }
 
 const _pendingBoardBot = new Map();
+const _boardBotPausedUntil = new Map();
 
-function triggerBoardBotActions(roomId, onActionDone) {
+function _isBoardBotLike(p, botIds = null) {
+  return !!p?.isBot
+    || (botIds && p?.id && botIds.has(p.id))
+    || String(p?.id ?? '').startsWith('tbot::')
+    || String(p?.accountId ?? '').startsWith('tbot::')
+    || String(p?.accountId ?? '').startsWith('bot::')
+    || !!(tournamentBotManager.isTournamentBotName && tournamentBotManager.isTournamentBotName(p?.name));
+}
+
+function _boardLogSnapshot(room, botIds = null) {
+  if (!room) return 'room=null';
+  const cur = room.actionIndex >= 0 ? room.players[room.actionIndex] : null;
+  const players = (room.players ?? []).map((p, i) => (
+    `${i}:${p.name}${_isBoardBotLike(p, botIds) ? '[B]' : ''}${p.folded ? '/F' : ''}${p.sittingOut ? '/S' : ''}${p.acted ? '/A' : '/-'}:bet${p.bet}:chips${p.chips}`
+  )).join('|');
+  return `phase=${room.phase} mode=${room.currentMode} actionIndex=${room.actionIndex} cur=${cur ? `${cur.name}${_isBoardBotLike(cur, botIds) ? '[B]' : ''}` : 'none'} currentBet=${room.currentBet} pot=${room.pot} players=[${players}]`;
+}
+
+function triggerBoardBotActions(roomId, botIdsOrCallback, maybeOnActionDone) {
+  const botIds = botIdsOrCallback instanceof Set ? botIdsOrCallback : null;
+  const onActionDone = botIdsOrCallback instanceof Set ? maybeOnActionDone : botIdsOrCallback;
   const room = boardManager.getBoardRoom(roomId);
   if (!room || !boardManager.isBoardBettingPhase(room.phase)) return;
+  const pausedUntil = _boardBotPausedUntil.get(roomId) ?? 0;
+  if (pausedUntil > Date.now()) {
+    logDev(`[board-bot] ${roomId.slice(-8)} paused ${Math.ceil(pausedUntil - Date.now())}ms before next street action`);
+    return;
+  }
   const cur = room.players[room.actionIndex];
-  const isBot = !!cur?.isBot
-    || String(cur?.id ?? '').startsWith('tbot::')
-    || String(cur?.accountId ?? '').startsWith('tbot::');
+  const isBot = _isBoardBotLike(cur, botIds);
   if (!cur || !isBot) return;
   const key = `${roomId}::${cur.id}`;
-  if (_pendingBoardBot.has(key)) return;
+  if (_pendingBoardBot.has(key)) {
+    logDev(`[board-bot] ${roomId.slice(-8)} ${cur.name} pending → skip duplicate`);
+    return;
+  }
   _pendingBoardBot.set(key, true);
+  log(`[board-bot] ${roomId.slice(-8)} schedule ${cur.name} ${_boardLogSnapshot(room, botIds)}`);
   setTimeout(() => {
     _pendingBoardBot.delete(key);
     const r = boardManager.getBoardRoom(roomId);
     const p = r?.players[r?.actionIndex];
-    if (!r || !p || p.id !== cur.id || !boardManager.isBoardBettingPhase(r.phase)) return;
+    if (!r || !p || p.id !== cur.id || !boardManager.isBoardBettingPhase(r.phase)) {
+      log(`[board-bot] ${roomId.slice(-8)} skip scheduled action bot=${cur.name} state-changed ${_boardLogSnapshot(r, botIds)}`);
+      return;
+    }
+    const beforePhase = r.phase;
+    const beforeActionIndex = r.actionIndex;
+    const beforeCurrentBet = r.currentBet;
+    const beforePlayerBet = p.bet;
     const toCall = Math.max(0, r.currentBet - p.bet);
     const canRaise = p.chips > 0 && r.raiseCount < cfg.MAX_RAISES
       && r.players.some((op) => op.id !== p.id && !op.folded && !op.sittingOut && op.chips > 0);
@@ -2439,7 +2592,19 @@ function triggerBoardBotActions(roomId, onActionDone) {
       action = toCall <= 0 ? 'check' : 'fold';
       acted = !!boardManager.boardBetAction(roomId, p.id, action);
     }
-    if (acted && onActionDone) onActionDone(roomId, p.name, action);
+    const afterRoom = boardManager.getBoardRoom(roomId);
+    const afterP = afterRoom?.players.find((x) => x.id === p.id);
+    const amount = Math.max(0, (afterP?.bet ?? beforePlayerBet) - beforePlayerBet);
+    const phaseChanged = !!afterRoom && beforePhase !== afterRoom.phase;
+    log(`[board-bot] ${roomId.slice(-8)} ${p.name} action=${action} acted=${acted} actionPhase=${beforePhase} actionIndex=${beforeActionIndex} toCall=${toCall} currentBetBefore=${beforeCurrentBet} phaseAfter=${afterRoom?.phase ?? 'none'} ${_boardLogSnapshot(afterRoom, botIds)}`);
+    if (acted && onActionDone) onActionDone(roomId, p.name, action, {
+      phaseChanged,
+      beforePhase,
+      afterPhase: afterRoom?.phase,
+      amount,
+      totalBet: afterP?.bet ?? beforePlayerBet,
+      currentBet: afterRoom?.currentBet,
+    });
   }, 500 + Math.random() * 1000);
 }
 

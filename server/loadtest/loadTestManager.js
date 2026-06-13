@@ -1,16 +1,21 @@
 /**
  * Temporary Socket.IO load-test runner for admin use.
  *
- * The runner only supports "connect" and "spectate" modes. It never joins a
- * game as a player and never sends game actions, so it should not mutate live
- * game state beyond normal spectator socket membership.
+ * Modes:
+ * - connect:          open Socket.IO connections only.
+ * - spectate:         subscribe as spectators and receive gameState.
+ * - tournament-player: register temporary bot accounts, join the tournament,
+ *                      and play simple automatic actions through Socket.IO.
  */
 
 const { io: createClient } = require('socket.io-client');
+const sql = require('../db/client');
+const { registerEntry } = require('../db/tournament');
 
 const MAX_LOGS = 2000;
 const DEFAULT_RAMP_MS = 200;
 const DEFAULT_DURATION_SEC = 300;
+const BET_PHASES = new Set(['preflop', 'flop', 'turn', 'river']);
 
 const runs = new Map();
 
@@ -66,6 +71,7 @@ function _summaryMarkdown(run) {
   const snap = _snapshotRun(run);
   const errors = run.logs.filter((l) => l.type.includes('error') || l.type === 'disconnect').slice(-20);
   const states = run.logs.filter((l) => l.type === 'game_state').slice(-10);
+  const actions = run.logs.filter((l) => l.type === 'action_emit').slice(-20);
   return [
     '# Load Test Report',
     '',
@@ -84,6 +90,10 @@ function _summaryMarkdown(run) {
     `- disconnected: ${snap.metrics.disconnected}`,
     `- active: ${snap.metrics.active}`,
     `- gameStateReceived: ${snap.metrics.gameStateReceived}`,
+    `- tournamentRegistered: ${snap.metrics.tournamentRegistered ?? 0}`,
+    `- tableJoins: ${snap.metrics.tableJoins ?? 0}`,
+    `- actionsSent: ${snap.metrics.actionsSent ?? 0}`,
+    `- actionErrors: ${snap.metrics.actionErrors ?? 0}`,
     `- avgLatencyMs: ${snap.metrics.avgLatencyMs ?? '-'}`,
     `- maxLatencyMs: ${snap.metrics.maxLatencyMs ?? '-'}`,
     `- errors: ${snap.metrics.errors}`,
@@ -91,6 +101,11 @@ function _summaryMarkdown(run) {
     '## Recent State Samples',
     '```jsonl',
     ...states.map((e) => JSON.stringify(e)),
+    '```',
+    '',
+    '## Recent Action Samples',
+    '```jsonl',
+    ...actions.map((e) => JSON.stringify(e)),
     '```',
     '',
     '## Recent Error Samples',
@@ -108,9 +123,133 @@ function _updateLatency(run, latencyMs) {
   run.metrics.maxLatencyMs = Math.max(run.metrics.maxLatencyMs ?? 0, latencyMs);
 }
 
+function _isBetPhase(phase) {
+  return typeof phase === 'string' && (phase.startsWith('bet') || BET_PHASES.has(phase));
+}
+
+function _isDrawPhase(phase) {
+  return typeof phase === 'string' && phase.startsWith('draw');
+}
+
+function _safeActionAmount(action, self, meta) {
+  if (action !== 'bet' && action !== 'raise') return undefined;
+  if (self?.isNL) {
+    const amount = (meta?.currentBet ?? 0) <= 0 ? self.minBet : self.minRaiseTotal;
+    return Number.isFinite(amount) && amount > 0 ? amount : undefined;
+  }
+  const options = Array.isArray(self?.betSizeOptions) ? self.betSizeOptions.filter((n) => Number.isFinite(n) && n > 0) : [];
+  if (options.length > 1) return options[0];
+  return undefined;
+}
+
+function _decideBetAction(self, meta) {
+  if (!self || self.isAllIn) return { action: self?.canCheck ? 'check' : 'call' };
+  if (self.mustBringIn) return { action: 'bringIn' };
+
+  const toCall = Math.max(0, Number(self.toCall ?? 0));
+  const canCheck = !!self.canCheck || toCall <= 0;
+  const canRaise = !!self.canRaise;
+  let action;
+
+  if (toCall > 0) {
+    if (canRaise && Math.random() < 0.08) action = 'raise';
+    else action = Math.random() < 0.88 ? 'call' : 'fold';
+  } else if (canCheck) {
+    action = canRaise && Math.random() < 0.18 ? 'bet' : 'check';
+  } else {
+    action = 'call';
+  }
+
+  return { action, amount: _safeActionAmount(action, self, meta) };
+}
+
+function _decideDrawIndices(self, meta) {
+  const hand = Array.isArray(self?.hand) ? self.hand : [];
+  const visible = hand.map((code, i) => ({ code, i })).filter((c) => c.code && c.code !== '??');
+  if (visible.length === 0) return [];
+  const mode = meta?.currentMode ?? '';
+  const maxDiscard = mode === 'badugi' ? 1 : 2;
+  const discardCount = Math.random() < 0.25 ? 0 : Math.min(maxDiscard, Math.floor(Math.random() * (maxDiscard + 1)));
+  return visible
+    .sort(() => Math.random() - 0.5)
+    .slice(0, discardCount)
+    .map((c) => c.i)
+    .sort((a, b) => a - b);
+}
+
+function _scheduleTournamentAction(run, bot, payload) {
+  const meta = payload?.meta ?? null;
+  const players = Array.isArray(payload?.players) ? payload.players : [];
+  const self = players.find((p) => p?.isSelf);
+  if (!meta || !self || !self.isMyTurn || self.isPendingPlayer || self.folded || self.sittingOut) return;
+  const tableId = meta.roomId || bot.tableId || run.config.tableId;
+  if (!tableId) return;
+
+  const actionKey = `${tableId}::${meta.handCount ?? 0}::${meta.phase}::${self.bet ?? 0}::${self.toCall ?? 0}`;
+  if (bot.pendingActionKey === actionKey) return;
+  bot.pendingActionKey = actionKey;
+
+  const delay = 180 + Math.floor(Math.random() * 620);
+  setTimeout(() => {
+    if (run.status !== 'running' || !bot.socket?.connected) return;
+    if (_isDrawPhase(meta.phase)) {
+      const indices = _decideDrawIndices(self, meta);
+      bot.socket.emit('drawCards', { roomId: tableId, indices });
+      run.metrics.actionsSent += 1;
+      run.metrics.drawActionsSent += 1;
+      _log(run, 'action_emit', { botId: bot.id, tableId, phase: meta.phase, action: 'draw', indices });
+      return;
+    }
+    if (_isBetPhase(meta.phase)) {
+      const decision = _decideBetAction(self, meta);
+      bot.socket.emit('betAction', { roomId: tableId, action: decision.action, amount: decision.amount });
+      run.metrics.actionsSent += 1;
+      run.metrics.betActionsSent += 1;
+      _log(run, 'action_emit', { botId: bot.id, tableId, phase: meta.phase, action: decision.action, amount: decision.amount ?? null, toCall: self.toCall ?? 0 });
+    }
+  }, delay);
+}
+
+async function _ensureLoadTestAccount(accountId, nickname) {
+  const email = `${accountId.replace(/[^a-zA-Z0-9_-]/g, '_')}@loadtest.local`;
+  await sql`
+    INSERT INTO accounts (id, email, google_name)
+    VALUES (${accountId}, ${email}, ${nickname})
+    ON CONFLICT (id) DO UPDATE
+      SET google_name = EXCLUDED.google_name
+  `;
+  await sql`
+    INSERT INTO profiles (account_id, nickname, change_count)
+    VALUES (${accountId}, ${nickname}, 0)
+    ON CONFLICT (account_id) DO UPDATE
+      SET nickname = EXCLUDED.nickname
+  `;
+}
+
+async function _prepareTournamentPlayers(run) {
+  if (!run.config.tournamentId) {
+    const err = new Error('TOURNAMENT_TARGET_REQUIRED');
+    err.statusCode = 400;
+    throw err;
+  }
+  const stampPart = run.id.replace(/^load-/, '').slice(10, 14);
+  const suffix = run.id.slice(-4);
+  for (let i = 0; i < run.config.count; i++) {
+    const num = String(i + 1).padStart(3, '0');
+    const accountId = `bot_load_${run.id}_${num}`;
+    const nickname = `L${stampPart}${suffix}${num}`;
+    await _ensureLoadTestAccount(accountId, nickname);
+    await registerEntry(run.config.tournamentId, accountId);
+    run.players[i] = { accountId, nickname };
+    run.metrics.tournamentRegistered += 1;
+    _log(run, 'tournament_register', { botId: accountId, nickname, tournamentId: run.config.tournamentId });
+  }
+}
+
 function _createBot(run, index) {
-  const botId = `loadbot::${run.id}::${String(index + 1).padStart(3, '0')}`;
-  const botName = `LoadBot-${String(index + 1).padStart(3, '0')}`;
+  const prepared = run.players[index] ?? null;
+  const botId = prepared?.accountId ?? `loadbot::${run.id}::${String(index + 1).padStart(3, '0')}`;
+  const botName = prepared?.nickname ?? `LoadBot-${String(index + 1).padStart(3, '0')}`;
   const startedAt = Date.now();
   const socket = createClient(run.config.targetUrl, {
     path: '/socket.io',
@@ -121,6 +260,8 @@ function _createBot(run, index) {
       loadTest: true,
       botName,
       botId,
+      accountId: prepared?.accountId,
+      mode: run.config.mode,
     },
   });
   const bot = {
@@ -130,6 +271,8 @@ function _createBot(run, index) {
     connected: false,
     lastEventAt: null,
     gameStateCount: 0,
+    tableId: null,
+    pendingActionKey: null,
   };
   run.bots.set(botId, bot);
   _log(run, 'connect_start', { botId, botName });
@@ -147,6 +290,9 @@ function _createBot(run, index) {
         loadTest: true,
       });
       _log(run, 'spectate_emit', { botId, tableId: run.config.tableId || null, tournamentId: run.config.tournamentId || null });
+    } else if (run.config.mode === 'tournament-player') {
+      socket.emit('t:getMyTable', { tournamentId: run.config.tournamentId });
+      _log(run, 'tournament_get_table_emit', { botId, tournamentId: run.config.tournamentId });
     }
   });
 
@@ -163,12 +309,39 @@ function _createBot(run, index) {
     _log(run, 'disconnect', { botId, reason });
   });
 
+  socket.on('t:tournamentStarting', ({ tableId, tournamentId }) => {
+    bot.tableId = tableId;
+    run.metrics.tableJoins += 1;
+    _log(run, 'table_join', { botId, tableId, tournamentId });
+    socket.emit('getGameState', { roomId: tableId });
+  });
+
+  socket.on('t:tableTransfer', ({ toTableId }) => {
+    bot.tableId = toTableId;
+    run.metrics.tableTransfers += 1;
+    _log(run, 'table_transfer', { botId, tableId: toTableId });
+    socket.emit('getGameState', { roomId: toTableId });
+  });
+
+  socket.on('t:pendingTableTransfer', ({ tableId }) => {
+    bot.tableId = tableId;
+    run.metrics.tableTransfers += 1;
+    _log(run, 'pending_table_transfer', { botId, tableId });
+    socket.emit('getGameState', { roomId: tableId });
+  });
+
+  socket.on('gameStarted', () => {
+    bot.pendingActionKey = null;
+    if (bot.tableId) socket.emit('getGameState', { roomId: bot.tableId });
+  });
+
   socket.on('gameState', (payload) => {
     bot.gameStateCount += 1;
     bot.lastEventAt = Date.now();
     run.metrics.gameStateReceived += 1;
     const meta = payload?.meta ?? null;
     if (meta) {
+      if (meta.roomId) bot.tableId = meta.roomId;
       _log(run, 'game_state', {
         botId,
         tableId: meta.roomId ?? run.config.tableId ?? null,
@@ -179,15 +352,18 @@ function _createBot(run, index) {
         handCount: meta.handCount ?? null,
       });
     }
+    if (run.config.mode === 'tournament-player') _scheduleTournamentAction(run, bot, payload);
   });
 
   socket.on('error', (err) => {
     run.metrics.errors += 1;
+    run.metrics.actionErrors += 1;
+    bot.pendingActionKey = null;
     _log(run, 'socket_error', { botId, message: err?.message ?? String(err) });
   });
 }
 
-function startRun(configInput = {}) {
+async function startRun(configInput = {}) {
   if (process.env.LOAD_TEST_ENABLED !== 'true') {
     const err = new Error('LOAD_TEST_DISABLED');
     err.statusCode = 403;
@@ -195,7 +371,9 @@ function startRun(configInput = {}) {
   }
 
   const count = _safeNumber(configInput.count, 5, 1, _safeNumber(process.env.LOAD_TEST_MAX_BOTS, 50, 1, 300));
-  const mode = configInput.mode === 'spectate' ? 'spectate' : 'connect';
+  const mode = ['connect', 'spectate', 'tournament-player'].includes(configInput.mode)
+    ? configInput.mode
+    : 'connect';
   const targetUrl = String(configInput.targetUrl || '').trim();
   if (!targetUrl || !/^https?:\/\//.test(targetUrl)) {
     const err = new Error('INVALID_TARGET_URL');
@@ -204,6 +382,11 @@ function startRun(configInput = {}) {
   }
   if (mode === 'spectate' && !configInput.tableId && !configInput.tournamentId) {
     const err = new Error('SPECTATE_TARGET_REQUIRED');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (mode === 'tournament-player' && !configInput.tournamentId) {
+    const err = new Error('TOURNAMENT_TARGET_REQUIRED');
     err.statusCode = 400;
     throw err;
   }
@@ -223,6 +406,7 @@ function startRun(configInput = {}) {
       rampMs: _safeNumber(configInput.rampMs, DEFAULT_RAMP_MS, 0, 10000),
       durationSec: _safeNumber(configInput.durationSec, DEFAULT_DURATION_SEC, 5, 1800),
     },
+    players: [],
     bots: new Map(),
     timers: [],
     logs: [],
@@ -231,6 +415,13 @@ function startRun(configInput = {}) {
       connectFailed: 0,
       disconnected: 0,
       gameStateReceived: 0,
+      tournamentRegistered: 0,
+      tableJoins: 0,
+      tableTransfers: 0,
+      actionsSent: 0,
+      drawActionsSent: 0,
+      betActionsSent: 0,
+      actionErrors: 0,
       errors: 0,
       latencySamples: 0,
       latencyTotalMs: 0,
@@ -240,6 +431,18 @@ function startRun(configInput = {}) {
   };
   runs.set(run.id, run);
   _log(run, 'run_start', { config: run.config });
+
+  if (mode === 'tournament-player') {
+    try {
+      await _prepareTournamentPlayers(run);
+    } catch (err) {
+      run.status = 'failed';
+      run.endedAt = _now();
+      run.metrics.errors += 1;
+      _log(run, 'run_failed', { message: err?.message ?? String(err) });
+      throw err;
+    }
+  }
 
   for (let i = 0; i < count; i++) {
     const timer = setTimeout(() => {

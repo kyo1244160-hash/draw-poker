@@ -43,6 +43,10 @@ const BOT_NAME_POOL = [
   'Fold-Frank', 'Bet-Betty',
 ];
 
+function isTournamentBotName(name) {
+  return typeof name === 'string' && BOT_NAME_POOL.includes(name);
+}
+
 function _pickBotName(existingNames) {
   const used = new Set(existingNames);
   for (const name of BOT_NAME_POOL) {
@@ -271,6 +275,7 @@ module.exports = {
   removeBots,
   eliminateZeroChipBots,
   isTournamentBotId,
+  isTournamentBotName,
   moveBot,
   getBotIds,
 };
