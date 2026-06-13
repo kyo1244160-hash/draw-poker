@@ -244,6 +244,11 @@ async function _prepareTournamentPlayers(run) {
     run.metrics.tournamentRegistered += 1;
     _log(run, 'tournament_register', { botId: accountId, nickname, tournamentId: run.config.tournamentId });
   }
+  const tm = require('../tournament/tournamentManager');
+  if (tm.triggerSitAndGoCheck) {
+    tm.triggerSitAndGoCheck(run.config.tournamentId);
+    _log(run, 'sng_check_triggered', { tournamentId: run.config.tournamentId, registered: run.metrics.tournamentRegistered });
+  }
 }
 
 function _createBot(run, index) {
@@ -273,6 +278,7 @@ function _createBot(run, index) {
     gameStateCount: 0,
     tableId: null,
     pendingActionKey: null,
+    tableLookupRequestedAt: null,
   };
   run.bots.set(botId, bot);
   _log(run, 'connect_start', { botId, botName });
@@ -292,6 +298,7 @@ function _createBot(run, index) {
       _log(run, 'spectate_emit', { botId, tableId: run.config.tableId || null, tournamentId: run.config.tournamentId || null });
     } else if (run.config.mode === 'tournament-player') {
       socket.emit('t:getMyTable', { tournamentId: run.config.tournamentId });
+      bot.tableLookupRequestedAt = Date.now();
       _log(run, 'tournament_get_table_emit', { botId, tournamentId: run.config.tournamentId });
     }
   });
@@ -309,10 +316,19 @@ function _createBot(run, index) {
     _log(run, 'disconnect', { botId, reason });
   });
 
-  socket.on('t:tournamentStarting', ({ tableId, tournamentId }) => {
+  socket.on('t:tournamentStarting', ({ tableId, tournamentId, direct }) => {
+    if (run.config.mode === 'tournament-player' && !direct) {
+      if (tournamentId === run.config.tournamentId) {
+        bot.tableLookupRequestedAt = Date.now();
+        socket.emit('t:getMyTable', { tournamentId: run.config.tournamentId });
+        _log(run, 'tournament_start_notice', { botId, tournamentId, announcedTableId: tableId });
+      }
+      return;
+    }
     bot.tableId = tableId;
     run.metrics.tableJoins += 1;
-    _log(run, 'table_join', { botId, tableId, tournamentId });
+    bot.tableLookupRequestedAt = null;
+    _log(run, 'table_join', { botId, tableId, tournamentId, direct: !!direct });
     socket.emit('getGameState', { roomId: tableId });
   });
 
@@ -450,6 +466,21 @@ async function startRun(configInput = {}) {
       _createBot(run, i);
     }, i * run.config.rampMs);
     run.timers.push(timer);
+  }
+
+  if (mode === 'tournament-player') {
+    const lookupTimer = setInterval(() => {
+      if (run.status !== 'running') return;
+      for (const bot of run.bots.values()) {
+        if (!bot.socket?.connected || bot.tableId) continue;
+        const last = bot.tableLookupRequestedAt ?? 0;
+        if (Date.now() - last < 3000) continue;
+        bot.tableLookupRequestedAt = Date.now();
+        bot.socket.emit('t:getMyTable', { tournamentId: run.config.tournamentId });
+        _log(run, 'tournament_get_table_retry', { botId: bot.id, tournamentId: run.config.tournamentId });
+      }
+    }, 3000);
+    run.timers.push(lookupTimer);
   }
 
   const stopTimer = setTimeout(() => stopRun(run.id, 'duration_elapsed'), run.config.durationSec * 1000);

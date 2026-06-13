@@ -380,7 +380,7 @@ app.prepare().then(async () => {
           socket.join(tableId);
           _removeSpectatorSocket(socket.id, tableId);
           currentRoom = { name: user.nickname ?? '', roomId: tableId };
-          socket.emit('t:tournamentStarting', { tournamentId, tableId });
+          socket.emit('t:tournamentStarting', { tournamentId, tableId, direct: true });
           logDev(`[t:getMyTable] ${user.nickname} → ${tableId}`);
           // 【重要】player.id 更新後、本人に gameState を直接送信する。
           //
@@ -470,7 +470,7 @@ app.prepare().then(async () => {
               socket.join(retryTableId);
               _removeSpectatorSocket(socket.id, retryTableId);
               currentRoom = { name: user.nickname ?? '', roomId: retryTableId };
-              socket.emit('t:tournamentStarting', { tournamentId, tableId: retryTableId });
+              socket.emit('t:tournamentStarting', { tournamentId, tableId: retryTableId, direct: true });
               // gameState を本人に直接送信（_broadcast 待ちにしない）
               _emitStateToSocket(socket, retryTableId);
               // 接続直後に現在のステータスを本人のソケットに直接送信
@@ -532,7 +532,7 @@ app.prepare().then(async () => {
               _jr2(_destTid2, socket.id, _nick2, { accountId: user.accountId, existingChips: _dcEntry.chips });
               socket.join(_destTid2);
               _removeSpectatorSocket(socket.id, _destTid2);
-              socket.emit('t:tournamentStarting', { tournamentId, tableId: _destTid2 });
+            socket.emit('t:tournamentStarting', { tournamentId, tableId: _destTid2, direct: true });
               const _sp2 = tournamentManager.getTournamentStatusPayload(tournamentId);
               if (_sp2) socket.emit('t:tournamentStatus', _sp2);
               const _bp2 = tournamentManager.getCurrentBlindPayload(tournamentId);
@@ -575,7 +575,7 @@ app.prepare().then(async () => {
             if (statusPayloadF) socket.emit('t:tournamentStatus', statusPayloadF);
             const blindPayloadF = tournamentManager.getCurrentBlindPayload(tournamentId);
             if (blindPayloadF) socket.emit('t:blindUpdate', blindPayloadF);
-            socket.emit('t:tournamentStarting', { tournamentId, tableId: existingTidFinal });
+            socket.emit('t:tournamentStarting', { tournamentId, tableId: existingTidFinal, direct: true });
             _emitStateToSocket(socket, existingTidFinal);
             _broadcast(io, existingTidFinal);
           } else {
@@ -623,7 +623,7 @@ app.prepare().then(async () => {
               if (joinResult === 'active' || joinResult === 'pending') {
                 tournamentManager.incrementTotalPlayers(tournamentId, 1);
               }
-              socket.emit('t:tournamentStarting', { tournamentId, tableId: destTid });
+              socket.emit('t:tournamentStarting', { tournamentId, tableId: destTid, direct: true });
               _emitStateToSocket(socket, destTid);
               io.to(destTid).emit('t:playerArrived', { playerName: nickname });
               // 【lateReg broadcast修正】スタッドハンド進行中は _broadcast を遅延させる。

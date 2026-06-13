@@ -1410,7 +1410,7 @@ async function triggerSitAndGoCheck(tournamentId) {
     const preBotCount = getPreBotCount(tournamentId);
     const totalCount = entries.length + preBotCount;
 
-    log(`[SNG] ${tournamentId.slice(-8)}: ${entries.length} humans + ${preBotCount} bots = ${totalCount}/${minPlayers}`);
+    log(`[SNG] ${tournamentId.slice(-8)}: ${entries.length} entries + ${preBotCount} preBots = ${totalCount}/${minPlayers}`);
     // キャンセル競合調査用: エントリー一覧を出力（開発環境のみ）
     logDev(`[SNG-debug] ${tournamentId.slice(-8)}: entries at check time = [${entries.map(e => e.nickname ?? e.account_id?.slice(-8)).join(', ')}]`);
 
