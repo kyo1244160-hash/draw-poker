@@ -9,6 +9,7 @@ interface Props {
   blind:  BlindUpdate | null;
   status: TournamentStatus | null;
   tournamentName?: string;
+  showBbAnte?: boolean;
 }
 
 function useCountdown(seconds: number, running: boolean) {
@@ -126,7 +127,7 @@ const badge = (bg: string, border: string, color: string): React.CSSProperties =
   flexShrink: 0,
 });
 
-export default function TournamentInfoBar({ blind, status }: Props) {
+export default function TournamentInfoBar({ blind, status, showBbAnte = false }: Props) {
   const isBreak  = blind?.isBreak ?? false;
   // pendingLevelUp: サーバーフラグ優先、フォールバックとして secondsToNextLevel===0 を使用
   const cdRunning = isBreak || (!blind?.isLastLevel && (blind?.secondsToNextLevel ?? 0) > 0);
@@ -163,7 +164,9 @@ export default function TournamentInfoBar({ blind, status }: Props) {
           {blind && (
             <span style={badge('rgba(201,168,76,0.15)', 'var(--gold-dim)', 'var(--cream)')}>
               Lv{blind.level}&nbsp;
-              <span style={{ color: '#88ee88' }}>{blind.sb}/{blind.bb}</span>
+              <span style={{ color: '#88ee88' }}>
+                {blind.sb}/{blind.bb}{showBbAnte && (blind.bbAnte ?? 0) > 0 ? `/${blind.bbAnte}` : ''}
+              </span>
             </span>
           )}
 
@@ -184,7 +187,9 @@ export default function TournamentInfoBar({ blind, status }: Props) {
           {/* 次レベル */}
           {blind?.nextSb && !blind.isLastLevel && !pendingLevelUp && (
             <span style={{ fontFamily: 'var(--font-title)', fontSize: 10, color: 'var(--cream-dim)', flexShrink: 0 }}>
-              次&nbsp;<span style={{ color: '#aaddff' }}>{blind.nextSb}/{blind.nextBb}</span>
+              次&nbsp;<span style={{ color: '#aaddff' }}>
+                {blind.nextSb}/{blind.nextBb}{showBbAnte && (blind.nextBbAnte ?? 0) > 0 ? `/${blind.nextBbAnte}` : ''}
+              </span>
             </span>
           )}
 

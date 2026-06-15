@@ -33,7 +33,12 @@ export default function SpectatorView({
         height: 32, minHeight: 32, maxHeight: 32, overflow: 'hidden',
       }}>
         <div style={{ flex: 1, minWidth: 0, overflow: 'hidden', display: 'flex', alignItems: 'center' }}>
-          <TournamentInfoBar blind={blind} status={status} tournamentName={tournamentName} />
+          <TournamentInfoBar
+            blind={blind}
+            status={status}
+            tournamentName={tournamentName}
+            showBbAnte={!!meta?.isNL && meta?.currentMode === '27sd'}
+          />
         </div>
         {/* 観戦バッジ */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>

@@ -756,6 +756,9 @@ export default function TournamentTable({
     if (isSpectator) {
       return <div style={{...infoTextStyle(compact),color:'#b088ff',border:'1px solid #6644aa',borderRadius:6,padding:'4px 0'}}>観戦中</div>;
     }
+    if (self?.isAway) {
+      return <div style={{...infoTextStyle(compact),color:'#ffe0a0',border:'1px solid rgba(201,168,76,0.45)',borderRadius:6,padding:'6px 0'}}>離席中</div>;
+    }
     if (phase==='waiting') {
       return <div style={infoTextStyle(compact)}>{players.length<2?'もう1人参加を待っています':'ゲームを準備中...'}</div>;
     }
@@ -815,6 +818,7 @@ export default function TournamentTable({
         {p.isDealer&&<Badge bg="#c9a84c" color="#1a1200" label="BTN"/>}
         {p.isSB&&<Badge bg="#2244aa" color="#fff" label="SB"/>}
         {p.isBB&&<Badge bg="#b85a10" color="#fff" label="BB"/>}
+        {p.isAway&&<Badge bg="#7a4b12" color="#ffe0a0" label="離席中"/>}
         {p.folded&&!p.sittingOut&&<Badge bg="#444" color="#aaa" label="FOLD"/>}
         {p.isWinner&&<Badge bg="#f0d060" color="#1a1200" label="🏆 WIN"/>}
       </div>
@@ -909,7 +913,7 @@ export default function TournamentTable({
               )}
               {isBetPhase&&(meta?.currentBet??0)>0&&<div style={{fontSize:12,color:'#ffcc44',marginTop:1,fontFamily:'var(--font-body)'}}>BET {meta?.currentBet}</div>}
               {isBetPhase&&!isNoLimitMode&&<div style={{fontSize:9,color:'rgba(255,255,255,0.4)',fontFamily:'var(--font-body)'}}>Bet {raiseCount}/5</div>}
-              {blind&&<div style={{fontSize:10,color:'#88ee88',marginTop:3,fontFamily:'var(--font-title)'}}>Lv.{blind.level} {blind.sb}/{blind.bb}</div>}
+              {blind&&<div style={{fontSize:10,color:'#88ee88',marginTop:3,fontFamily:'var(--font-title)'}}>Lv.{blind.level} {blind.sb}/{blind.bb}{(meta?.bbAnte ?? 0) > 0 ? `/${meta?.bbAnte}` : ''}</div>}
               {blind&&!blind.isLastLevel&&blindCountdown>0&&(
                 <div style={{fontSize:10,fontFamily:'var(--font-title)',color:blindCountdown<60?'#ff6666':'rgba(255,255,255,0.5)',marginTop:1}}>⏱ {fmtBlind(blindCountdown)}</div>
               )}
@@ -956,7 +960,7 @@ export default function TournamentTable({
             const {left,top} = getPos(p);
             const flash  = actionFlash[p.name];
             const dflash = drawFlash[p.id];
-            const active = p.isMyTurn && !p.folded && !p.sittingOut;
+            const active = p.isMyTurn && !p.folded && !p.sittingOut && !p.isAway;
             // リングゲームと同じ: 常にボックス上
             const flashTop = -38;
             const dflashTop = flash ? -62 : -38;
@@ -1160,7 +1164,7 @@ export default function TournamentTable({
 
   const renderMobile = (p:PlayerState) => {
     const {left,top} = getPosMobile(p);
-    const active = p.isMyTurn&&!p.folded&&!p.sittingOut;
+    const active = p.isMyTurn&&!p.folded&&!p.sittingOut&&!p.isAway;
     const dc = isDrawPhase ? (p.drewThisRound?p.drawCount:null) : (lastDrawCount[p.id]??null);
     const bw = p.isSelf ? SELF_W : OTH_W;
     const flash  = actionFlash[p.name];
@@ -1204,6 +1208,7 @@ export default function TournamentTable({
             {p.isDealer&&<Badge bg="#c9a84c" color="#1a1200" label="BTN"/>}
             {p.isSB&&<Badge bg="#2244aa" color="#fff" label="SB"/>}
             {p.isBB&&<Badge bg="#b85a10" color="#fff" label="BB"/>}
+            {p.isAway&&<Badge bg="#7a4b12" color="#ffe0a0" label="離席中"/>}
             {p.folded&&!p.sittingOut&&<Badge bg="#444" color="#aaa" label="FOLD"/>}
                 {p.isWinner&&<Badge bg="#f0d060" color="#1a1200" label="🏆 WIN"/>}
           </div>
@@ -1294,7 +1299,7 @@ export default function TournamentTable({
             {PHASE_LABEL[phase]}
           </div>
           {isBetPhase&&!isNoLimitMode&&<div style={{fontSize:isPortrait?10:8,color:'rgba(255,255,255,0.45)',fontFamily:'var(--font-body)'}}>Bet {raiseCount}/5</div>}
-          {blind&&<div style={{fontSize:isPortrait?10:8,color:'#88ee88',marginTop:2,fontFamily:'var(--font-title)'}}>Lv.{blind.level} {blind.sb}/{blind.bb}</div>}
+          {blind&&<div style={{fontSize:isPortrait?10:8,color:'#88ee88',marginTop:2,fontFamily:'var(--font-title)'}}>Lv.{blind.level} {blind.sb}/{blind.bb}{(meta?.bbAnte ?? 0) > 0 ? `/${meta?.bbAnte}` : ''}</div>}
           {blind&&!blind.isLastLevel&&blindCountdown>0&&(
             <div style={{fontSize:isPortrait?10:8,fontFamily:'var(--font-title)',color:blindCountdown<60?'#ff6666':'rgba(255,255,255,0.4)',marginTop:1}}>⏱{fmtBlind(blindCountdown)}</div>
           )}

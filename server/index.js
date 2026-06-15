@@ -46,7 +46,7 @@ const {
   getOrCreateRoom, joinRoom: joinPokerRoom,
   leaveRoom, startGame, drawCards, betAction, updateSelectedIndices,
   buildGameState, removePlayer, canAutoStart, getAllRooms,
-  incrementTimeout, resetTimeout,
+  incrementTimeout, resetTimeout, markAway,
   getRoomMode, getRoom, ensurePotsAwarded,
   isStudMode, isBoardMode, isMixMode, getMixCurrentMode, advanceModeRotation, peekNextMode,
   advanceDealerButton, advanceBbAnchor,
@@ -834,6 +834,19 @@ app.prepare().then(async () => {
       }
     });
 
+    socket.on('t:returnToSeat', ({ roomId }) => {
+      if (!roomId || typeof roomId !== 'string' || roomId.length > 64) return;
+      if (!tournamentManager.isTournamentTable(roomId)) return;
+      if (!_socketBelongsToTable(socket, roomId)) return;
+      _cancelTournamentDisconnectGrace(socket.id, 'return-to-seat');
+      _markTournamentAway(roomId, socket.id, false);
+      socket.join(roomId);
+      _removeSpectatorSocket(socket.id, roomId);
+      currentRoom = { name: socket.data.user?.nickname ?? '', roomId };
+      log(`[t:return-seat] ${socket.id.slice(-8)} in ${roomId.slice(-8)} name=${socket.data.user?.nickname ?? '-'}`);
+      _broadcast(io, roomId);
+    });
+
     // ----- ドロー中の選択インデックス更新 -----
     // クライアントがカードを選択するたびに送信 → タイムアウト時に自動交換で使用
     socket.on('updateSelected', ({ roomId, indices }) => {
@@ -1232,15 +1245,18 @@ app.prepare().then(async () => {
       const roomId = currentRoom.roomId;
 
       if (tournamentManager.isTournamentTable(roomId)) {
-        // トーナメントテーブル: active / pending どちらも即退室させず猶予を開始する。
-        // pending を除外すると、更新時に pendingPlayers から消えて lateReg の新規配置に落ち、
-        // 初期スタックで入り直せてしまう。
+        // トーナメントテーブル: 切断は退場ではなく離席中扱い。
+        // 席とチップは残し、以降の手番は最小損失で即時自動進行する。
         const { getOrCreateRoom: _gor } = require('./poker/gameManager');
         const _room = _gor(roomId);
-        const isPlayer = _room?.players.some(p => p.id === socket.id)
-                      || _room?.pendingPlayers?.some(p => p.id === socket.id);
-        if (isPlayer) {
-          _startTournamentDisconnectGrace(io, socket.id, roomId);
+        const player = _room?.players.find(p => p.id === socket.id)
+                    ?? _room?.pendingPlayers?.find(p => p.id === socket.id);
+        if (player) {
+          player.disconnected = true;
+          _markTournamentAway(roomId, socket.id, true);
+          log(`[t:away] ${socket.id.slice(-8)} in ${roomId.slice(-8)} name=${player.name} reason=disconnect`);
+          _autoActIfAwayCurrentTurn(io, roomId, socket.id);
+          _broadcast(io, roomId);
         }
         // 観戦者の場合は何もしない（すでに _spectators から削除済み）
       } else {
@@ -1388,6 +1404,41 @@ function _tc_leavePlayer(roomId, socketId) {
   if (t) _tc_broadcast(roomId);
 }
 
+function _markTournamentAway(roomId, playerId, isAway = true) {
+  if (!tournamentManager.isTournamentTable(roomId)) return false;
+  const gmMarked = markAway(roomId, playerId, isAway);
+  const studMarked = studManager.markStudAway?.(roomId, playerId, isAway) ?? false;
+  const boardMarked = boardManager.markBoardAway?.(roomId, playerId, isAway) ?? false;
+  return gmMarked || studMarked || boardMarked;
+}
+
+function _autoActIfAwayCurrentTurn(io, roomId, playerId) {
+  if (!tournamentManager.isTournamentTable(roomId)) return false;
+
+  const studRoom = studManager.getStudRoom(roomId);
+  const studPlayer = studRoom?.players?.[studRoom.actionIndex];
+  if (studPlayer?.id === playerId && String(studRoom.phase ?? '').startsWith('bet')) {
+    setTimeout(() => _makeStudTimeoutHandler(io, roomId)(roomId, studRoom.phase, playerId), 0);
+    return true;
+  }
+
+  const boardRoom = boardManager.getBoardRoom(roomId);
+  const boardPlayer = boardRoom?.players?.[boardRoom.actionIndex];
+  if (boardPlayer?.id === playerId && !['waiting', 'showdown'].includes(boardRoom.phase)) {
+    setTimeout(() => _makeTimeoutHandler(io, roomId)(roomId, boardRoom.phase, playerId), 0);
+    return true;
+  }
+
+  const room = getRoom(roomId);
+  const player = room?.players?.[room.actionIndex];
+  if (player?.id === playerId && (String(room.phase ?? '').startsWith('bet') || room.phase === 'draw')) {
+    setTimeout(() => _makeTimeoutHandler(io, roomId)(roomId, room.phase, playerId), 0);
+    return true;
+  }
+
+  return false;
+}
+
 /**
  * タイムアウト時の自動アクションハンドラ
  * ドロー: _selectedIndices に保存済みの選択カードを交換
@@ -1407,6 +1458,7 @@ function _makeStudTimeoutHandler(io, roomId) {
 
   return (rid, phase, playerId) => {
     log(`[stud-timeout] ${playerId.slice(-12)} in ${rid.slice(-8)} at ${phase}`);
+    _markTournamentAway(rid, playerId, true);
     const beforeRoom = studManager.getStudRoom(rid);
     const beforePlayer = beforeRoom?.players.find((p) => p.id === playerId);
     const timeoutAction = _timeoutActionFor(beforeRoom, beforePlayer);
@@ -1454,8 +1506,11 @@ function _makeTimeoutHandler(io, roomId) {
     const _r = getOrCreateRoom(rid);
     const _p = _r?.players.find(p => p.id === playerId);
     const _sock = io.sockets.sockets.get(playerId);
+    const _isTournamentTable = tournamentManager.isTournamentTable(rid);
+    if (_isTournamentTable) _markTournamentAway(rid, playerId, true);
+    const _isDisconnectGrace = _isTournamentTable && (!!_p?.disconnected || _tournamentGraceTimers.has(playerId));
     const _isAccountIdStyle = playerId && playerId.length > 30 && /^\d+$/.test(playerId);
-    log(`[timeout] ${playerId.slice(-12)} (name=${_p?.name ?? '?'} sock=${_sock ? 'OK' : 'NONE'}${_isAccountIdStyle ? ' AS_ACCOUNT_ID' : ''}) in ${rid.slice(-8)} at ${phase}`);
+    log(`[timeout] ${playerId.slice(-12)} (name=${_p?.name ?? '?'} sock=${_sock ? 'OK' : 'NONE'}${_isAccountIdStyle ? ' AS_ACCOUNT_ID' : ''}${_isDisconnectGrace ? ' GRACE' : ''}) in ${rid.slice(-8)} at ${phase}`);
 
     // アクション実行 ─ 成否を必ず確認する。
     //
@@ -1485,6 +1540,10 @@ function _makeTimeoutHandler(io, roomId) {
       _broadcast(io, rid);
       const br = boardManager.getBoardRoom(rid);
       if (br?.phase === 'showdown') _onBoardShowdown(io, rid);
+      if (_isDisconnectGrace) {
+        log(`[timeout-grace] ${playerId}: board auto-action applied during disconnect grace, skip timeout count`);
+        return;
+      }
       const shouldKick = incrementTimeout(rid, playerId);
       if (shouldKick) {
         setTimeout(() => {
@@ -1535,6 +1594,11 @@ function _makeTimeoutHandler(io, roomId) {
       io.to(rid).emit('showdown');
       if (room.isZoomTable) handleZoomShowdown(io, rid);
       else _scheduleAutoStart(io, rid);
+    }
+
+    if (_isDisconnectGrace) {
+      log(`[timeout-grace] ${playerId}: auto-action applied during disconnect grace, skip timeout count`);
+      return;
     }
 
     // 連続タイムアウトカウント → 3回で退室
@@ -1692,6 +1756,25 @@ function _cancelTournamentDisconnectGrace(socketId, reason = 'reconnected') {
   if (!entry) return;
   clearTimeout(entry.timer);
   _tournamentGraceTimers.delete(socketId);
+  const room = getOrCreateRoom(entry.roomId);
+  const reconnectTarget = room?.players.find((p) => p.id === socketId)
+    ?? room?.pendingPlayers?.find((p) => p.id === socketId);
+  if (reconnectTarget) {
+    reconnectTarget.disconnected = false;
+    reconnectTarget.timeoutCount = 0;
+  }
+  const studRoom = studManager.getStudRoom(entry.roomId);
+  const studTarget = studRoom?.players?.find((p) => p.id === socketId);
+  if (studTarget) {
+    studTarget.disconnected = false;
+    studTarget.timeoutCount = 0;
+  }
+  const boardRoom = boardManager.getBoardRoom(entry.roomId);
+  const boardTarget = boardRoom?.players?.find((p) => p.id === socketId);
+  if (boardTarget) {
+    boardTarget.disconnected = false;
+    boardTarget.timeoutCount = 0;
+  }
   log(`[t:grace-cancel] ${socketId} reason=${reason}`);
 }
 

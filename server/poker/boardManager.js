@@ -107,6 +107,7 @@ function syncFromGameManager(gmRoom, currentMode) {
     folded: !!gp.sittingOut,
     acted: !!gp.sittingOut,
     sittingOut: !!gp.sittingOut,
+    isAway: !!gp.isAway,
     disconnected: gp.disconnected ?? false,
     isBot: !!gp.isBot || String(gp.id).startsWith('tbot::'),
     totalContribution: 0,
@@ -129,6 +130,16 @@ function syncToGameManager(gmRoom) {
   for (const gp of gmRoom.players) {
     if (gp.accountId && chipByAccount.has(gp.accountId)) gp.chips = chipByAccount.get(gp.accountId);
     else if (chipById.has(gp.id)) gp.chips = chipById.get(gp.id);
+  }
+  const awayByAccount = new Map();
+  const awayById = new Map();
+  for (const p of room.players) {
+    if (p.accountId) awayByAccount.set(p.accountId, !!p.isAway);
+    if (p.id) awayById.set(p.id, !!p.isAway);
+  }
+  for (const gp of gmRoom.players) {
+    if (gp.accountId && awayByAccount.has(gp.accountId)) gp.isAway = awayByAccount.get(gp.accountId);
+    else if (awayById.has(gp.id)) gp.isAway = awayById.get(gp.id);
   }
   gmRoom.handCount = room.handCount;
   gmRoom.phase = room.phase === 'showdown' ? 'showdown' : gmRoom.phase;
@@ -368,6 +379,15 @@ function startTimer(room) {
   if (limitSec <= 0 || !room._onTimeout) return;
   room._timerStart = Date.now();
   room._timerLimit = limitSec;
+  const cur0 = room.players[room.actionIndex];
+  if (room._isTournament && cur0?.isAway) {
+    room._timerLimit = 0;
+    room._timer = setTimeout(() => {
+      const cur = room.players[room.actionIndex];
+      if (cur && cur.isAway && room._onTimeout) room._onTimeout(room.id, room.phase, cur.id);
+    }, 0);
+    return;
+  }
   room._timer = setTimeout(() => {
     const cur = room.players[room.actionIndex];
     if (cur && room._onTimeout) room._onTimeout(room.id, room.phase, cur.id);
@@ -410,6 +430,7 @@ function buildBoardGameState(room, requesterId) {
       bet: p.bet,
       folded: p.folded,
       sittingOut: p.sittingOut,
+      isAway: p.isAway ?? false,
       disconnected: p.disconnected ?? false,
       hand: reveal ? p.hand : p.hand.map(() => '??'),
       isSelf,
@@ -573,6 +594,19 @@ function updateBoardPlayerSocketId(roomId, accountId, nickname, newSocketId) {
   return true;
 }
 
+function markBoardAway(roomId, socketId, isAway = true) {
+  const room = boardRooms.get(roomId);
+  if (!room) return false;
+  const p = room.players.find((x) => x.id === socketId);
+  if (!p) return false;
+  p.isAway = !!isAway;
+  if (!isAway) {
+    p.disconnected = false;
+    p.timeoutCount = 0;
+  }
+  return true;
+}
+
 function getBoardRoom(roomId) {
   return boardRooms.get(roomId) ?? null;
 }
@@ -592,5 +626,6 @@ module.exports = {
   finishBoardHand,
   boardLeaveRoom,
   updateBoardPlayerSocketId,
+  markBoardAway,
   getBoardRoom,
 };

@@ -4,11 +4,13 @@ export interface BlindUpdate {
   level: number | null;          // nullの場合はブレイク
   sb: number;
   bb: number;
+  bbAnte?: number;
   smallBet: number;
   bigBet: number;
   secondsToNextLevel: number;
   nextSb: number | null;         // 次レベルのSB
   nextBb: number | null;         // 次レベルのBB
+  nextBbAnte?: number | null;    // 次レベルのBBアンティ
   isLastLevel: boolean;
   isBreak: boolean;              // 休憩中かどうか
   breakLabel: string | null;     // 休憩ラベル（"Break 1"等）
@@ -42,6 +44,7 @@ export interface PlayerState {
   folded: boolean;
   sittingOut: boolean;
   disconnected: boolean;
+  isAway?: boolean;
   hand: string[];       // '??' if hidden
   isSelf: boolean;
   isMyTurn: boolean;
@@ -116,6 +119,7 @@ export interface GameMeta {
   isNL?: boolean;
   bigBlind?: number;
   smallBlind?: number;
+  bbAnte?: number;
   lastRaiseSize?: number;
 }
 

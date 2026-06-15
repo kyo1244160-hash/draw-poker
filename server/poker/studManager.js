@@ -853,6 +853,7 @@ function buildStudGameState(room, requesterId) {
       id: p.id, name: p.name, chips: p.chips, bet: p.bet,
       folded: p.folded, sittingOut: p.sittingOut,
       disconnected: p.disconnected ?? false,
+      isAway: p.isAway ?? false,
       // hand は { code, up } のオブジェクト配列（gameManager は string配列だが
       // StudTable は studCards を参照する。互換のため hand にも code 配列を入れる）
       hand: handCards.map((c) => c.code),
@@ -946,6 +947,14 @@ function _startTimer(room) {
   room._timerLimit = limit;
   room._timerStart = Date.now();
   log(`[stud-timer] start limit=${limit} target=${cur0 ? `${cur0.name}${cur0.isBot ? '[B]' : ''}` : 'none'} ${_progressSnapshot(room)}`);
+  if (room._isTournament && cur0?.isAway) {
+    room._timerLimit = 0;
+    room._timer = setTimeout(() => {
+      const cur = room.players[room.actionIndex];
+      if (cur && cur.isAway && room._onTimeout) room._onTimeout(room.id, room.phase, cur.id);
+    }, 0);
+    return;
+  }
   room._timer = setTimeout(() => {
     // 発火時点で actionIndex を再読み込みする（クロージャで古い player を
     // 捕捉しないため。gameManager._startTimer と同方式）
@@ -1174,6 +1183,7 @@ function syncFromGameManager(gmRoom, currentMode) {
     name:       gp.name,
     chips:      gp.chips,
     sittingOut: !!gp.sittingOut,
+    isAway:     !!gp.isAway,
     disconnected: gp.disconnected ?? false,
     isBot:      _isBotPlayerLike(gp),
     accountId:  gp.accountId ?? null,
@@ -1216,14 +1226,22 @@ function syncToGameManager(gmRoom) {
     if (p.accountId) chipByAccount.set(p.accountId, p.chips);
     if (p.id)        chipById.set(p.id, p.chips);
   }
+  const awayByAccount = new Map();
+  const awayById = new Map();
+  for (const p of room.players) {
+    if (p.accountId) awayByAccount.set(p.accountId, !!p.isAway);
+    if (p.id) awayById.set(p.id, !!p.isAway);
+  }
   // pendingPlayers（次ハンドから参加する待機者）のidセット。
   // これらは studRoom にまだ存在しなくて当然なので WARN を出さない。
   const _pendingIds = new Set((gmRoom.pendingPlayers ?? []).map((p) => p.id));
   for (const gp of gmRoom.players) {
     if (gp.accountId && chipByAccount.has(gp.accountId)) {
       gp.chips = chipByAccount.get(gp.accountId);
+      gp.isAway = awayByAccount.get(gp.accountId) ?? !!gp.isAway;
     } else if (chipById.has(gp.id)) {
       gp.chips = chipById.get(gp.id);
+      gp.isAway = awayById.get(gp.id) ?? !!gp.isAway;
     } else if (_pendingIds.has(gp.id) || gp._studWaitOnce) {
       // lateReg 待機中（このハンドには不参加）→ studRoom にいなくて正常。WARN不要。
     } else {
@@ -1258,6 +1276,19 @@ function updateStudPlayerSocketId(roomId, accountId, nickname, newSocketId) {
   // 手番中だった場合に備え、actionIndex は配列インデックス基準なので id 変更で影響なし
   p.id = newSocketId;
   if (p.disconnected) p.disconnected = false;
+  return true;
+}
+
+function markStudAway(roomId, socketId, isAway = true) {
+  const room = studRooms.get(roomId);
+  if (!room) return false;
+  const p = room.players.find((x) => x.id === socketId);
+  if (!p) return false;
+  p.isAway = !!isAway;
+  if (!isAway) {
+    p.disconnected = false;
+    p.timeoutCount = 0;
+  }
   return true;
 }
 
@@ -1319,6 +1350,7 @@ module.exports = {
   syncFromGameManager,
   syncToGameManager,
   updateStudPlayerSocketId,
+  markStudAway,
   removePlayerForBalance,
   _awardStudPots,   // テスト用
   _nextActive,

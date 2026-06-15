@@ -65,6 +65,12 @@ function _roomIsNL(room) {
   return isNoLimitMode(room.currentMode || room.mode);
 }
 
+function _toNonNegativeInt(value, fallback = 0) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.floor(n));
+}
+
 /**
  * Mix系モード判定（複数ゲームをローテーションする親モード）
  * - 'mix'      : 2-7TD ↔ Badugi（2ゲーム）
@@ -300,6 +306,7 @@ function getOrCreateRoom(roomId, opts = {}) {
       lastRaiseSize:  0,
       smallBlind:     opts.smallBlind    ?? SMALL_BLIND,
       bigBlind:       opts.bigBlind      ?? BIG_BLIND,
+      bbAnte:         _toNonNegativeInt(opts.bbAnte, 0),
       smallBet:       opts.smallBet      ?? SMALL_BET,
       bigBet:         opts.bigBet        ?? BIG_BET,
       startingChips:  opts.startingChips ?? STARTING_CHIPS,
@@ -377,6 +384,7 @@ function joinRoom(roomId, socketId, name, opts = {}) {
     hand: [], bet: 0, folded: false,
     acted: false, drewThisRound: false, drawCount: null,
     sittingOut: false,
+    isAway: false,
     timeoutCount: 0,   // 連続タイムアウト回数（3回で退室）
     isBot: !!opts.isBot || (typeof socketId === 'string' && socketId.startsWith('tbot::')),
   };
@@ -443,6 +451,7 @@ function startGame(roomId, onTimeout) {
     const pb = room._pendingBlind;
     room.smallBlind = pb.sb;
     room.bigBlind   = pb.bb;
+    room.bbAnte     = _toNonNegativeInt(pb.bbAnte, 0);
     room.smallBet   = pb.smallBet;
     room.bigBet     = pb.bigBet;
     room._pendingBlind = null;
@@ -518,6 +527,12 @@ function startGame(roomId, onTimeout) {
   // dead SB（SB席が待機中/不在）の場合は SB をポストしない。
   if (!sbDead) _postBlind(room, sbIndex, room.smallBlind);
   _postBlind(room, bbIndex, room.bigBlind);
+  const effectiveBbAnte = _roomIsNL(room) && room.currentMode === '27sd'
+    ? _toNonNegativeInt(room.bbAnte, 0)
+    : 0;
+  if (effectiveBbAnte > 0) {
+    _postAnte(room, bbIndex, effectiveBbAnte);
+  }
 
   // 次ハンドの BB基準計算のために、今ハンドの BB/SB プレイヤーIDを記録。
   room._lastBbId = room.players[bbIndex]?.id ?? null;
@@ -571,6 +586,16 @@ function _postBlind(room, idx, amount) {
   if (!p) return;
   const actual = Math.min(amount, p.chips);
   p.chips -= actual; p.bet += actual; room.pot += actual; p.totalContribution = (p.totalContribution??0) + actual;
+}
+
+function _postAnte(room, idx, amount) {
+  const p = room.players[idx];
+  if (!p) return;
+  const actual = Math.min(_toNonNegativeInt(amount, 0), p.chips);
+  if (actual <= 0) return;
+  p.chips -= actual;
+  room.pot += actual;
+  p.totalContribution = (p.totalContribution ?? 0) + actual;
 }
 
 /**
@@ -757,6 +782,14 @@ function _startTimer(room) {
   room._timerStart = Date.now();
   room._timerLimit = limitSec;
   const cur = room.players[room.actionIndex];
+  if (room._isTournament && cur?.isAway) {
+    room._timerLimit = 0;
+    room._timer = setTimeout(() => {
+      const cur2 = room.players[room.actionIndex];
+      if (cur2 && cur2.isAway && room._onTimeout) room._onTimeout(room.id, room.phase, cur2.id);
+    }, 0);
+    return;
+  }
   if (room.isZoomTable) {
   }
   room._timer = setTimeout(() => {
@@ -1261,6 +1294,7 @@ function buildGameState(room, requesterId) {
       id: p.id, name: p.name, chips: p.chips, bet: p.bet,
       folded: p.folded, sittingOut: p.sittingOut,
       disconnected: p.disconnected ?? false,
+      isAway: p.isAway ?? false,
       hand: reveal ? p.hand : p.hand.map(() => '??'),
       isSelf, isMyTurn,
       drewThisRound: p.drewThisRound, drawCount: p.drawCount,
@@ -1363,6 +1397,7 @@ function buildGameState(room, requesterId) {
     playerStates.push({
       id: pendingSelf.id, name: pendingSelf.name, chips: pendingSelf.chips,
       bet: 0, folded: false, sittingOut: false, disconnected: false,
+      isAway: pendingSelf.isAway ?? false,
       hand: [], isSelf: true, isMyTurn: false,
       drewThisRound: false, drawCount: null,
       isWinner: false, isDealer: false, isSB: false, isBB: false,
@@ -1413,6 +1448,7 @@ function buildGameState(room, requesterId) {
     // NL対応情報
     isNL:           _roomIsNL(room),
     bigBlind:       room.bigBlind,
+    bbAnte:         _roomIsNL(room) && room.currentMode === '27sd' ? _toNonNegativeInt(room.bbAnte, 0) : 0,
     lastRaiseSize:  room.lastRaiseSize || room.bigBlind,
   };
 
@@ -1573,6 +1609,12 @@ function incrementTimeout(roomId, socketId) {
   if (!room) return false;
   const player = room.players.find((p) => p.id === socketId);
   if (!player) return false;
+  if (room._isTournament) {
+    player.isAway = true;
+    player.disconnected = player.disconnected ?? false;
+    player.timeoutCount = 0;
+    return false;
+  }
   player.timeoutCount = (player.timeoutCount || 0) + 1;
   return player.timeoutCount >= 3;
 }
@@ -1583,6 +1625,19 @@ function resetTimeout(roomId, socketId) {
   if (!room) return;
   const player = room.players.find((p) => p.id === socketId);
   if (player) player.timeoutCount = 0;
+}
+
+function markAway(roomId, socketId, isAway = true) {
+  const room = rooms.get(roomId);
+  if (!room) return false;
+  const player = [...room.players, ...room.pendingPlayers].find((p) => p.id === socketId);
+  if (!player) return false;
+  player.isAway = !!isAway;
+  if (!isAway) {
+    player.disconnected = false;
+    player.timeoutCount = 0;
+  }
+  return true;
 }
 
 function getRoom(roomId) { return rooms.get(roomId) || null; }
@@ -1622,6 +1677,7 @@ module.exports = {
   startGame, drawCards, betAction, updateSelectedIndices,
   buildGameState, removePlayer, canAutoStart, getAllRooms,
   incrementTimeout, resetTimeout,
+  markAway,
   getRoomMode, getRoom, deleteRoom, renamePlayer,
   ensurePotsAwarded,
   // モード判定（他モジュールから共有利用するため公開）

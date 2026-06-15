@@ -93,6 +93,8 @@ export default function TournamentDrawPage() {
   const lastSelfChipsRef = useRef<number | null>(null);
   const eliminatedRef = useRef<boolean>(false); // クロージャ問題回避用 ref
   const [connected,  setConnected]  = useState(false);
+  const [realtimeConnected, setRealtimeConnected] = useState(socket.connected);
+  const [connectionNotice, setConnectionNotice] = useState<string | null>(socket.connected ? null : '接続中...');
   const [errorMsg,   setErrorMsg]   = useState<string | null>(null);
   const [isSpectator, setIsSpectator] = useState(false);
   const [actionErrorMsg, setActionErrorMsg] = useState<string | null>(null); // 一時的なアクションエラートースト
@@ -174,6 +176,33 @@ export default function TournamentDrawPage() {
       registeredSocketHandlers.push([event, handler]);
       socket.on(event, handler);
     };
+    const requestFreshTableState = () => {
+      socket.emit('t:getMyTable', { tournamentId });
+      const roomId = tableIdRef.current;
+      if (roomId) {
+        socket.emit('getGameState', { roomId });
+        setTimeout(() => socket.emit('getGameState', { roomId }), 500);
+      }
+    };
+
+    const handleSocketConnect = () => {
+      setRealtimeConnected(true);
+      setConnectionNotice(null);
+      requestFreshTableState();
+    };
+    const handleSocketDisconnect = () => {
+      setRealtimeConnected(false);
+      setConnectionNotice('リアルタイム接続が切れました。復帰中です...');
+      actionPendingRef.current = false;
+      if (actionPendingTimerRef.current) {
+        clearTimeout(actionPendingTimerRef.current);
+        actionPendingTimerRef.current = null;
+      }
+    };
+    const handleSocketConnectError = () => {
+      setRealtimeConnected(false);
+      setConnectionNotice('再接続できません。通信状態を確認しています...');
+    };
 
     // App Router は SessionProvider の外なので useSession() が使えない
     // /api/auth/session から accountId を取得して ref に保持する
@@ -187,6 +216,31 @@ export default function TournamentDrawPage() {
     //   特に socket.connected===true で同期的に emit するパスでは、
     //   イベントループのタイミング次第で listener 登録より先にサーバー応答が
     //   到着する理論的リスクがあるため、リスナー登録を先に行う。
+
+    onSocket('connect', handleSocketConnect);
+    onSocket('disconnect', handleSocketDisconnect);
+    onSocket('connect_error', handleSocketConnectError);
+
+    const handleResume = () => {
+      if (document.visibilityState === 'hidden') return;
+      if (socket.connected) {
+        setRealtimeConnected(true);
+        setConnectionNotice(null);
+        requestFreshTableState();
+      } else {
+        setRealtimeConnected(false);
+        setConnectionNotice('接続を復帰しています...');
+        connectWithAuth().then(ok => {
+          if (!cancelled && ok && socket.connected) {
+            setRealtimeConnected(true);
+            setConnectionNotice(null);
+            requestFreshTableState();
+          }
+        });
+      }
+    };
+    document.addEventListener('visibilitychange', handleResume);
+    window.addEventListener('focus', handleResume);
 
     // ゲーム状態（playersとmetaを1回のsetStateでまとめて更新）
     onSocket('gameState', (raw: unknown) => {
@@ -559,13 +613,17 @@ export default function TournamentDrawPage() {
       if (cancelled) return;
       if (!ok) { router.push('/'); return; }
       setConnected(true);
-      socket.emit('t:getMyTable', { tournamentId });
+      setRealtimeConnected(socket.connected);
+      setConnectionNotice(socket.connected ? null : '接続を復帰しています...');
+      requestFreshTableState();
     });
     // 接続済みの場合は connectWithAuth が即 true を返すが、上の then 内の emit は
     // 次のマイクロタスクで実行される。リスナーは同期登録済みのため取り逃しは発生しない。
 
     return () => {
       cancelled = true;
+      document.removeEventListener('visibilitychange', handleResume);
+      window.removeEventListener('focus', handleResume);
       registeredSocketHandlers.forEach(([event, handler]) => socket.off(event, handler));
       // 【修正】テーブル移動再送タイマーをクリーンアップ（アンマウント後の emit 防止）
       transferTimersRef.current.forEach(clearTimeout);
@@ -688,6 +746,11 @@ export default function TournamentDrawPage() {
 
   // ===== アクションハンドラ =====
   function handleBetAction(action: string, amount?: number) {
+    if (selfIsAway) return;
+    if (!socket.connected || !realtimeConnected) {
+      setConnectionNotice('リアルタイム接続が切れています。復帰後に操作してください。');
+      return;
+    }
     if (!tableIdRef.current) return;
     if (actionPendingRef.current) return;
     actionPendingRef.current = true;
@@ -700,11 +763,18 @@ export default function TournamentDrawPage() {
   }
 
   function handleDrawCards(indices: number[]) {
+    if (selfIsAway) return;
+    if (!socket.connected || !realtimeConnected) {
+      setConnectionNotice('リアルタイム接続が切れています。復帰後に操作してください。');
+      return;
+    }
     if (!tableIdRef.current) return;
     socket.emit('drawCards', { roomId: tableIdRef.current, indices });
   }
 
   function handleUpdateSelected(indices: number[]) {
+    if (selfIsAway) return;
+    if (!socket.connected || !realtimeConnected) return;
     if (!tableIdRef.current) return;
     socket.emit('updateSelected', { roomId: tableIdRef.current, indices });
   }
@@ -727,6 +797,18 @@ export default function TournamentDrawPage() {
       size: 8 + (i % 3) * 4,
     })),
   []);
+  const selfPlayer = players.find((p) => p.isSelf);
+  const selfIsAway = !!selfPlayer?.isAway;
+
+  function handleReturnToSeat() {
+    const roomId = tableIdRef.current;
+    if (!roomId) return;
+    if (!socket.connected || !realtimeConnected) {
+      setConnectionNotice('リアルタイム接続が切れています。復帰後に着席してください。');
+      return;
+    }
+    socket.emit('t:returnToSeat', { roomId });
+  }
 
   // ===== 未接続 =====
   if (!connected) {
@@ -742,7 +824,31 @@ export default function TournamentDrawPage() {
 
   return (
     <GameErrorBoundary label="TournamentDrawPage">
-    <div style={{ height:'100dvh', display:'flex', flexDirection:'column' as const, overflow:'hidden', background:'var(--felt)', color:'var(--cream)', fontFamily:'var(--font-body)' }}>
+    <div style={{ height:'100dvh', display:'flex', flexDirection:'column' as const, overflow:'hidden', background:'var(--felt)', color:'var(--cream)', fontFamily:'var(--font-body)', position:'relative' as const }}>
+
+      {(!realtimeConnected || connectionNotice) && (
+        <div style={{
+          position:'absolute', inset:0, zIndex:2000,
+          display:'flex', alignItems:'center', justifyContent:'center',
+          background:'rgba(0,0,0,0.52)', backdropFilter:'blur(2px)',
+          pointerEvents:'auto',
+        }}>
+          <div style={{
+            width:'min(360px, calc(100vw - 32px))',
+            border:'1px solid var(--gold-dim)', borderRadius:8,
+            background:'rgba(5,24,14,0.96)',
+            padding:'18px 20px', textAlign:'center' as const,
+            boxShadow:'0 10px 40px rgba(0,0,0,0.55)',
+          }}>
+            <p style={{ margin:'0 0 8px', fontFamily:'var(--font-title)', fontSize:15, color:'var(--gold)', letterSpacing:'0.06em' }}>
+              接続を確認しています
+            </p>
+            <p style={{ margin:0, fontSize:13, color:'var(--cream-dim)', lineHeight:1.6 }}>
+              {connectionNotice ?? 'リアルタイム接続を復帰しています...'}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* ナビバー — ロゴなし・完全1行でトーナメント情報を表示 */}
       <nav style={{
@@ -753,7 +859,7 @@ export default function TournamentDrawPage() {
       }}>
         {/* トーナメント情報バー（左寄せ・flex:1で最大幅使用）*/}
         <div style={{ flex:1, minWidth:0, overflow:'hidden', display:'flex', alignItems:'center' }}>
-          <TournamentInfoBar blind={blind} status={status} />
+          <TournamentInfoBar blind={blind} status={status} showBbAnte={!!meta?.isNL && meta?.currentMode === '27sd'} />
         </div>
         <button
           onClick={() => { window.location.href = '/'; }}
@@ -835,6 +941,33 @@ export default function TournamentDrawPage() {
           />
         )}
       </div>
+
+      {selfIsAway && !isSpectator && (
+        <div style={{
+          position:'absolute', left:'50%', bottom:18, transform:'translateX(-50%)',
+          zIndex:1600, width:'min(360px, calc(100vw - 28px))',
+          display:'flex', flexDirection:'column' as const, gap:8,
+          padding:'12px 14px', borderRadius:8,
+          border:'1px solid rgba(201,168,76,0.75)',
+          background:'rgba(7,30,18,0.96)', boxShadow:'0 8px 32px rgba(0,0,0,0.5)',
+          textAlign:'center' as const,
+        }}>
+          <div style={{ fontFamily:'var(--font-body)', fontSize:12, color:'var(--cream-dim)', lineHeight:1.5 }}>
+            現在は離席中です。手番は自動で最小損失の処理になります。
+          </div>
+          <button
+            onClick={handleReturnToSeat}
+            style={{
+              width:'100%', border:'none', borderRadius:6,
+              background:'linear-gradient(135deg, var(--gold), var(--gold-dim))',
+              color:'#1a1200', fontFamily:'var(--font-title)', fontSize:15,
+              fontWeight:700, padding:'10px 16px', cursor:'pointer',
+            }}
+          >
+            着席
+          </button>
+        </div>
+      )}
 
       {/* 一時的なアクションエラートースト（3秒で自動消去） */}
       {actionErrorMsg && (

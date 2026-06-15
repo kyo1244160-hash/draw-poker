@@ -53,3 +53,25 @@ SET
   description = EXCLUDED.description,
   levels = EXCLUDED.levels,
   late_level_cutoff = EXCLUDED.late_level_cutoff;
+
+-- 100/200/300 のように BB Ante = BB * 1.5 を付与する。
+-- levels は他ゲームでも共用可能だが、実際に徴収するのはサーバー側で NL2-7SD(27sd) に限定する。
+UPDATE blind_schedules
+SET levels = (
+  SELECT jsonb_agg(
+    CASE
+      WHEN (lv->>'bb') ~ '^[0-9]+$' AND (lv->>'bb')::integer > 0 THEN
+        jsonb_set(
+          lv,
+          '{bbAnte}',
+          to_jsonb((((lv->>'bb')::integer * 3) / 2)),
+          true
+        )
+      ELSE
+        lv
+    END
+    ORDER BY ord
+  )
+  FROM jsonb_array_elements(levels) WITH ORDINALITY AS e(lv, ord)
+)
+WHERE id = 'nl27sd_5min_36';

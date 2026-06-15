@@ -94,6 +94,12 @@ function _makeTableId(tournamentId) {
   return `t-${tournamentId}-${_tableSeq}`;
 }
 
+function _toNonNegativeInt(value, fallback = 0) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.floor(n));
+}
+
 // ===== テーブル作成 =====
 function _createTable(tournament, playerInfos) {
   const tableId = _makeTableId(tournament.id);
@@ -108,6 +114,7 @@ function _createTable(tournament, playerInfos) {
     label:          `${tournament.name} Table`,
     smallBlind:     lv.sb,
     bigBlind:       lv.bb,
+    bbAnte:         _toNonNegativeInt(lv.bbAnte, 0),
     smallBet:       lv.smallBet,
     bigBet:         lv.bigBet,
     startingChips:  tournament.startingChips,
@@ -485,12 +492,13 @@ function applyPendingLevelUp(tournamentId) {
     const inProgress = room.phase !== 'waiting' && room.phase !== 'showdown';
     if (inProgress) {
       // 進行中: 次ハンド開始時に適用するため pending に保持
-      room._pendingBlind = { sb: lv.sb, bb: lv.bb, smallBet: lv.smallBet, bigBet: lv.bigBet };
+      room._pendingBlind = { sb: lv.sb, bb: lv.bb, bbAnte: _toNonNegativeInt(lv.bbAnte, 0), smallBet: lv.smallBet, bigBet: lv.bigBet };
       logDev(`[TM] blind-pending (in-progress phase=${room.phase}) ${tableId.slice(-8)}`);
     } else {
       // 待機中/showdown: 即時適用
       room.smallBlind    = lv.sb;
       room.bigBlind      = lv.bb;
+      room.bbAnte        = _toNonNegativeInt(lv.bbAnte, 0);
       room.smallBet      = lv.smallBet;
       room.bigBet        = lv.bigBet;
     }
@@ -780,12 +788,14 @@ function _broadcastBlindUpdate(tournament) {
     level:              lv.level,
     sb:                 lv.sb,
     bb:                 lv.bb,
+    bbAnte:             _toNonNegativeInt(lv.bbAnte, 0),
     smallBet:           lv.smallBet,
     bigBet:             lv.bigBet,
     secondsToNextLevel: lv.durationMinutes === 0 ? 0 : remaining,
     isLastLevel:        lv.durationMinutes === 0 && !lv.isBreak,
     nextSb:             nextLv?.sb   ?? null,
     nextBb:             nextLv?.bb   ?? null,
+    nextBbAnte:         nextLv ? _toNonNegativeInt(nextLv.bbAnte, 0) : null,
     isBreak:            !!lv.isBreak,
     breakLabel:         lv.isBreak ? (lv.breakLabel ?? 'Break') : null,
     lateRegOpen:        tournament.lateRegOpen ?? false,
@@ -926,12 +936,14 @@ function getCurrentBlindPayload(tournamentId) {
     level:              lv.level,
     sb:                 lv.sb,
     bb:                 lv.bb,
+    bbAnte:             _toNonNegativeInt(lv.bbAnte, 0),
     smallBet:           lv.smallBet,
     bigBet:             lv.bigBet,
     secondsToNextLevel: lv.durationMinutes === 0 ? 0 : remaining,
     isLastLevel:        lv.durationMinutes === 0 && !lv.isBreak,
     nextSb:             nextLvP?.sb ?? null,
     nextBb:             nextLvP?.bb ?? null,
+    nextBbAnte:         nextLvP ? _toNonNegativeInt(nextLvP.bbAnte, 0) : null,
     isBreak:            !!lv.isBreak,
     breakLabel:         lv.isBreak ? (lv.breakLabel ?? 'Break') : null,
     lateRegOpen:        t.lateRegOpen ?? false,

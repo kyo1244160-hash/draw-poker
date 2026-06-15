@@ -553,7 +553,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
             {players.map(p => {
               const { left, top } = getPos(p);
               const bh     = p.isSelf ? Math.floor(TH * 0.31) : Math.floor(TH * 0.25);
-              const active  = p.isMyTurn && !p.folded && !p.sittingOut;
+              const active  = p.isMyTurn && !p.folded && !p.sittingOut && !p.isAway;
               const flash   = actionFlash[p.name];
               const studCards = (p.studCards ?? (p.hand ?? []).map(code => ({ code, up: true }))) as StudCard[];
               return (
@@ -565,6 +565,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
                     <div style={{ display: 'flex', gap: 2, justifyContent: 'center', marginBottom: 2, flexWrap: 'wrap' }}>
                       {p.isDealer   && <Badge bg="#c9a84c" color="#1a1200" label="BTN" />}
                       {p.isBringIn  && <Badge bg="#b85a10" color="#ffd0a0" label="BI"  />}
+                      {p.isAway     && <Badge bg="#7a4b12" color="#ffe0a0" label="離席中" />}
                       {p.folded && !p.sittingOut && <Badge bg="#444" color="#aaa" label="FOLD" />}
                       {p.isWinner   && <Badge bg="#f0d060" color="#1a1200" label="🏆 WIN" />}
                     </div>
@@ -609,7 +610,8 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
             </div>
             {isSpectator && <div style={{ textAlign: 'center', fontSize: 12, color: '#b088ff', border: '1px solid #6644aa', borderRadius: 6, padding: '6px 0' }}>観戦中</div>}
             {!isSpectator && phase === 'waiting' && <div style={{ textAlign: 'center', fontSize: 13, color: 'var(--cream-dim)', fontFamily: 'var(--font-body)' }}>{players.length < 2 ? 'もう1人参加を待っています' : 'ゲームを準備中...'}</div>}
-            {!isSpectator && isBetPhase && isMyTurn && !self?.isAllIn && (
+            {!isSpectator && self?.isAway && <div style={{ textAlign: 'center', fontSize: 12, color: '#ffe0a0', border: '1px solid rgba(201,168,76,0.45)', borderRadius: 6, padding: '6px 0', background: 'rgba(122,75,18,0.18)' }}>離席中</div>}
+            {!isSpectator && !self?.isAway && isBetPhase && isMyTurn && !self?.isAllIn && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {self?.mustBringIn ? (
                   /* 【ブリングイン選択制】義務者: ブリングイン or コンプリートのみ（フォールド不可・支払い義務あり） */
@@ -628,7 +630,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
                 )}
               </div>
             )}
-            {!isSpectator && isBetPhase && isMyTurn && self?.isAllIn && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--gold)', fontFamily: 'var(--font-title)', fontWeight: 700 }}>⚡ オールイン中（待機）</div>}
+            {!isSpectator && !self?.isAway && isBetPhase && isMyTurn && self?.isAllIn && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--gold)', fontFamily: 'var(--font-title)', fontWeight: 700 }}>⚡ オールイン中（待機）</div>}
             {!isSpectator && isBetPhase && !isMyTurn && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--cream-dim)', fontFamily: 'var(--font-body)', fontStyle: 'italic' }}>{players.find(p => p.isMyTurn && !p.isSelf && !p.folded && !p.sittingOut)?.name ?? ''}がアクション中...</div>}
             {isShowdown && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--cream-dim)', fontFamily: 'var(--font-body)', fontStyle: 'italic' }}>次のゲームを準備中...</div>}
           </div>
@@ -736,7 +738,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
   const renderPlayer = (p: PlayerState) => {
     const { left, top } = getPosMobile(p);
     const bw     = p.isSelf ? SELF_W : OTH_W;
-    const active  = p.isMyTurn && !p.folded && !p.sittingOut;
+    const active  = p.isMyTurn && !p.folded && !p.sittingOut && !p.isAway;
     const flash   = actionFlash[p.name];
     const studCards = (p.studCards ?? (p.hand ?? []).map(code => ({ code, up: true }))) as StudCard[];
 
@@ -776,6 +778,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
           <div style={{ display: 'flex', gap: 2, justifyContent: 'center', marginBottom: 1, flexWrap: 'wrap', overflow: 'hidden' }}>
             {p.isDealer    && <Badge bg="#c9a84c" color="#1a1200"  label="BTN" />}
             {p.isBringIn   && <Badge bg="#b85a10" color="#ffd0a0"  label="BI"  />}
+            {p.isAway      && <Badge bg="#7a4b12" color="#ffe0a0" label="離席中" />}
             {p.folded && !p.sittingOut && <Badge bg="#555" color="#aaa" label="FOLD" />}
             {p.isWinner    && <Badge bg="#f0d060" color="#1a1200"  label="🏆 WIN" />}
             {p.disconnected && <Badge bg="#663333" color="#ffaaaa" label="切断" />}
@@ -903,7 +906,8 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
       {isSpectator && <div style={{ textAlign: 'center', fontSize: 12, color: '#b088ff', border: '1px solid #6644aa', borderRadius: 6, padding: '6px 0' }}>観戦中</div>}
       {!isSpectator && self?.isPendingPlayer && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--gold-dim)', fontFamily: 'var(--font-body)', padding: '8px 0' }}>次のハンドから参加します...</div>}
       {!isSpectator && !self?.isPendingPlayer && phase === 'waiting' && <div style={{ textAlign: 'center', fontSize: 13, color: 'var(--cream-dim)', fontFamily: 'var(--font-body)', padding: '8px 0' }}>{players.length < 2 ? 'もう1人参加を待っています' : 'ゲームを準備中...'}</div>}
-      {!isSpectator && isBetPhase && isMyTurn && !self?.isAllIn && (
+      {!isSpectator && self?.isAway && <div style={{ textAlign: 'center', fontSize: 12, color: '#ffe0a0', border: '1px solid rgba(201,168,76,0.45)', borderRadius: 6, padding: '8px 0', background: 'rgba(122,75,18,0.18)' }}>離席中</div>}
+      {!isSpectator && !self?.isAway && isBetPhase && isMyTurn && !self?.isAllIn && (
         self?.mustBringIn ? (
           /* 【ブリングイン選択制】義務者: ブリングイン or コンプリートのみ（フォールド不可・支払い義務あり） */
           <div style={{ display: 'flex', gap: 6 }}>
@@ -920,7 +924,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
         </div>
         )
       )}
-      {!isSpectator && isBetPhase && isMyTurn && self?.isAllIn && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--gold)', fontFamily: 'var(--font-title)', padding: '8px 0', fontWeight: 700 }}>⚡ オールイン中（待機）</div>}
+      {!isSpectator && !self?.isAway && isBetPhase && isMyTurn && self?.isAllIn && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--gold)', fontFamily: 'var(--font-title)', padding: '8px 0', fontWeight: 700 }}>⚡ オールイン中（待機）</div>}
       {!isSpectator && isBetPhase && !isMyTurn && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--cream-dim)', fontFamily: 'var(--font-body)', padding: '8px 0', fontStyle: 'italic' }}>{players.find(p => p.isMyTurn && !p.isSelf && !p.folded && !p.sittingOut)?.name ?? ''}がアクション中...</div>}
       {isShowdown && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--cream-dim)', fontFamily: 'var(--font-body)', padding: '8px 0', fontStyle: 'italic' }}>次のゲームを準備中...</div>}
     </div>

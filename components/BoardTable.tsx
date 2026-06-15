@@ -295,6 +295,7 @@ export default function BoardTable({ players, meta, timer, isSpectator, onBetAct
     const toCall = self?.toCall ?? 0;
     if (self?.isPendingPlayer) return <Info compact={compact}>次のハンドから参加します...</Info>;
     if (isSpectator) return <Info compact={compact}>観戦中</Info>;
+    if (self?.isAway) return <Info compact={compact}>離席中</Info>;
     if (phase === 'waiting') return <Info compact={compact}>{players.length < 2 ? 'もう1人参加を待っています' : 'ゲームを準備中...'}</Info>;
     if (isBetPhase && isMyTurn && !self?.folded) {
       return (
@@ -379,6 +380,7 @@ export default function BoardTable({ players, meta, timer, isSpectator, onBetAct
         {p.isDealer && <Badge bg="#c9a84c" color="#1a1200" label="BTN" />}
         {p.isSB && <Badge bg="#2244aa" color="#fff" label="SB" />}
         {p.isBB && <Badge bg="#b85a10" color="#fff" label="BB" />}
+        {p.isAway && <Badge bg="#7a4b12" color="#ffe0a0" label="離席中" />}
         {p.folded && !p.sittingOut && <Badge bg="#444" color="#aaa" label="FOLD" />}
         {p.isWinner && <Badge bg="#f0d060" color="#1a1200" label="WIN" />}
       </div>
@@ -451,7 +453,7 @@ export default function BoardTable({ players, meta, timer, isSpectator, onBetAct
             const hasFlash = !!actionFlash[p.name];
             return (
             <div key={p.id} style={{ position: 'absolute', left: pos.left, top: pos.top, zIndex: hasFlash ? 30 : p.isSelf ? 3 : 2 }}>
-              {renderPlayer(p, { w: boxW, h: pos.h }, p.isSelf ? ((p.hand?.length ?? 0) > 2 ? 'sm2' : 'md') : 'sm', !!p.isMyTurn)}
+              {renderPlayer(p, { w: boxW, h: pos.h }, p.isSelf ? ((p.hand?.length ?? 0) > 2 ? 'sm2' : 'md') : 'sm', !!p.isMyTurn && !p.isAway)}
               </div>
             );
           })}
@@ -560,7 +562,7 @@ export default function BoardTable({ players, meta, timer, isSpectator, onBetAct
                 p,
                 { w: pos.w, h: pos.h },
                 p.isSelf ? (portrait ? 'sm' : ((p.hand?.length ?? 0) > 2 ? 'xs' : 'sm')) : 'xs',
-                !!p.isMyTurn
+                !!p.isMyTurn && !p.isAway
               )}
             </div>
           );
