@@ -723,17 +723,19 @@ function _isInRRoPWaitZone(myIdx, dealerIdx, sbIdx, n) {
 }
 
 /**
- * 【デッドボタン対応】新規/移動プレイヤーが「次ハンドで SB または BTN 位置」に
- * 就くかを判定する。就く場合は1ハンド待機させ、ボタン通過後（CO相当以降）に
- * 参加させる（トーナメント正式ルール: SB席・BTN席の新規はボタン通過まで待つ）。
+ * 【デッドボタン対応】新規/移動プレイヤーが「次ハンドの待機ゾーン」に
+ * 入るかを判定する。入る場合は1ハンド待機させ、ボタン通過後（CO相当以降）に
+ * 参加させる。
  *
  * BB基準（assignBlindsByBB と同じ前進規則）で次ハンドの SB/BTN を求める:
  *   次SB  = 前BB席, 次BTN = 前SB席
- * 新規は通常、配列末尾に追加されるため SB/BTN（既存プレイヤーの席）には就かず、
- * この関数は false を返す（＝BB位置かそれ以降で即参加）。テーブルバランシングで
- * 特定席に挿入される稀なケースでのみ true（待機）になる。
+ *
+ * 待機ゾーンは RRoP Rule 16 に従い、次BTNから次SBまで（両端含む）。
+ * 以前は次BTN/次SBそのものだけを待機対象にしていたため、BTNとSBの間へ
+ * 追加された新規プレイヤーが即参加し、ドロー順の先頭になることがあった。
  */
 function _shouldWaitForButton(room, newIdx) {
+  const n = room.players.length;
   let prevBbIdx = -1;
   if (room._lastBbId != null) {
     prevBbIdx = room.players.findIndex((p) => p.id === room._lastBbId);
@@ -743,13 +745,13 @@ function _shouldWaitForButton(room, newIdx) {
     const dealerRef = room.fixedDealerIdx >= 0 ? room.fixedDealerIdx : room.dealerIndex;
     const sbRef     = room.fixedSbIdx     >= 0 ? room.fixedSbIdx
                     : _nextActiveFromSafe(room, dealerRef);
-    return newIdx === dealerRef || newIdx === sbRef;
+    return _isInRRoPWaitZone(newIdx, dealerRef, sbRef, n);
   }
   const nextSbIdx = prevBbIdx;  // 次SB = 前BB席
   let prevSbIdx = -1;
   if (room._lastSbId != null) prevSbIdx = room.players.findIndex((p) => p.id === room._lastSbId);
   const nextBtnIdx = prevSbIdx >= 0 ? prevSbIdx : _prevActiveFromSafe(room, nextSbIdx);
-  return newIdx === nextSbIdx || newIdx === nextBtnIdx;
+  return _isInRRoPWaitZone(newIdx, nextBtnIdx, nextSbIdx, n);
 }
 
 function _resetDrawRound(room) {
