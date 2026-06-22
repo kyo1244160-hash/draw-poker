@@ -172,11 +172,31 @@ function triggerBotActions(tableId, onActionDone) {
 
     let acted = false;
     let doneAction = null;
+    let actionInfo = null;
+    const beforePhase = room2.phase;
+    const beforePot = room2.pot;
+    const beforeCurrentBet = room2.currentBet;
+    const beforePlayerBet = cur.bet ?? 0;
     if (room2.phase.startsWith('draw')) {
       // モデル推論（room あり版）
       const indices = await decideBotDrawWithRoom(room2, cur, room2.currentMode);
       acted = !!drawCards(tableId, botId, indices);
-      log(`[BOT-DEBUG] ${cur.name}(${room2.currentMode}) DRAW hand=[${(cur.hand||[]).join(',')}] discard=[${indices.join(',')}] phase=${room2.phase}`);
+      const room3 = getOrCreateRoom(tableId);
+      const afterP = room3?.players.find((p) => p.id === botId);
+      doneAction = acted ? null : doneAction;
+      actionInfo = {
+        action: 'draw',
+        phaseBefore: beforePhase,
+        phaseAfter: room3?.phase ?? beforePhase,
+        drawCount: afterP?.drawCount ?? indices.length,
+        amount: 0,
+        totalBet: afterP?.bet ?? beforePlayerBet,
+        currentBetBefore: beforeCurrentBet,
+        currentBet: room3?.currentBet ?? beforeCurrentBet,
+        potBefore: beforePot,
+        potAfter: room3?.pot ?? beforePot,
+      };
+      log(`[BOT-DEBUG] ${cur.name}(${room2.currentMode}) DRAW hand=[${(cur.hand||[]).join(',')}] discard=[${indices.join(',')}] phase=${beforePhase}->${room3?.phase ?? beforePhase}`);
       logDev(`[TBotM] ${tableId.slice(-8)} ${cur.name} draw ${indices.length}枚 acted=${acted}`);
     } else if (room2.phase.startsWith('bet')) {
       // モデル推論（async）
@@ -184,14 +204,27 @@ function triggerBotActions(tableId, onActionDone) {
       // NLモードならベット/レイズ額を決定
       const amount = decideBotBetAmount(room2, cur, action);
       acted = !!betAction(tableId, botId, action, amount);
+      const room3 = getOrCreateRoom(tableId);
+      const afterP = room3?.players.find((p) => p.id === botId);
       if (acted) doneAction = action;
-      log(`[BOT-DEBUG] ${cur.name}(${room2.currentMode}) BET action=${action}${amount?' amt='+amount:''} hand=[${(cur.hand||[]).join(',')}] chips=${cur.chips} pot=${room2.pot} currentBet=${room2.currentBet} phase=${room2.phase}`);
+      actionInfo = {
+        action,
+        phaseBefore: beforePhase,
+        phaseAfter: room3?.phase ?? beforePhase,
+        amount: Math.max(0, (afterP?.bet ?? beforePlayerBet) - beforePlayerBet),
+        totalBet: afterP?.bet ?? beforePlayerBet,
+        currentBetBefore: beforeCurrentBet,
+        currentBet: room3?.currentBet ?? beforeCurrentBet,
+        potBefore: beforePot,
+        potAfter: room3?.pot ?? beforePot,
+      };
+      log(`[BOT-DEBUG] ${cur.name}(${room2.currentMode}) BET action=${action}${amount?' amt='+amount:''} hand=[${(cur.hand||[]).join(',')}] chips=${cur.chips} pot=${beforePot}->${room3?.pot ?? beforePot} currentBet=${beforeCurrentBet}->${room3?.currentBet ?? beforeCurrentBet} phase=${beforePhase}->${room3?.phase ?? beforePhase}`);
       logDev(`[TBotM] ${tableId.slice(-8)} ${cur.name} ${action} acted=${acted} chips=${cur.chips}`);
     }
 
     if (acted && onActionDone) {
-      const actionAmount = room2.isNL && (doneAction === 'bet' || doneAction === 'raise') ? cur.bet : undefined;
-      onActionDone(tableId, cur.name, doneAction, actionAmount, room2.isNL ? room2.bigBlind : undefined);
+      const actionAmount = doneAction && room2.isNL && (doneAction === 'bet' || doneAction === 'raise') ? actionInfo?.totalBet : actionInfo?.amount;
+      onActionDone(tableId, cur.name, doneAction, actionAmount, room2.isNL ? room2.bigBlind : undefined, actionInfo);
     }
   }, delay);
 }

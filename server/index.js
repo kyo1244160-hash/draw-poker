@@ -168,7 +168,15 @@ function getLobbyList() {
 function _recordHandAction(roomLike, action) {
   if (!roomLike || !tournamentManager.isTournamentTable(roomLike.id)) return;
   if (!Array.isArray(roomLike._handHistoryActions)) roomLike._handHistoryActions = [];
-  roomLike._handHistoryActions.push({ ts: new Date().toISOString(), ...action });
+  const phaseBefore = action.phaseBefore ?? action.phase ?? null;
+  const phaseAfter = action.phaseAfter ?? roomLike.phase ?? phaseBefore;
+  roomLike._handHistoryActions.push({
+    ts: new Date().toISOString(),
+    ...action,
+    phase: phaseBefore,
+    phaseBefore,
+    phaseAfter,
+  });
 }
 
 function _cardsForHistory(p) {
@@ -224,6 +232,7 @@ function _buildHandHistoryPayload(roomId, source, roomLike) {
     playersStart: room._handHistoryStartPlayers ?? [],
     actions: room._handHistoryActions ?? [],
     board: room.board ?? [],
+    finalPot: (room.players ?? []).reduce((sum, p) => sum + (p.totalContribution ?? 0), 0),
     potAfterAward: room.pot ?? gmRoom?.pot ?? 0,
     playersEnd,
     winners: playersEnd
@@ -950,11 +959,13 @@ app.prepare().then(async () => {
       if (!roomId || typeof roomId !== 'string' || roomId.length > 64) return;
       if (!Array.isArray(indices) || indices.length > 5) return;
       if (!getRoom(roomId)) return;  // 存在しないroomIdは無視（空ルーム生成防止）
-      const beforePhase = getRoom(roomId)?.phase ?? null;
+      const roomBefore = getRoom(roomId);
+      const beforePhase = roomBefore?.phase ?? null;
+      const beforePot = roomBefore?.pot ?? null;
       const room = drawCards(roomId, socket.id, indices);
       if (!room) { socket.emit('error', { message: 'ドローできません（あなたのターンではありません）' }); return; }
       const actedPlayer = room.players.find((p) => p.id === socket.id);
-      _recordHandAction(room, { phase: beforePhase, playerName: actedPlayer?.name ?? '', action: 'draw', drawCount: actedPlayer?.drawCount ?? indices.length });
+      _recordHandAction(room, { phaseBefore: beforePhase, phaseAfter: room.phase, playerName: actedPlayer?.name ?? '', action: 'draw', drawCount: actedPlayer?.drawCount ?? indices.length, potBefore: beforePot, potAfter: room.pot });
       resetTimeout(roomId, socket.id);  // アクション成功 → タイムアウトカウントリセット
       _broadcast(io, roomId);
       // ZoomテーブルはzoomManagerが管理するためindex.jsからはautoStartしない
@@ -992,6 +1003,8 @@ app.prepare().then(async () => {
         const actingP = sr?.players.find((p) => p.id === socket.id);
         const beforePhase = sr?.phase ?? null;
         const beforePlayerBet = actingP?.bet ?? 0;
+        const beforePot = sr?.pot ?? null;
+        const beforeCurrentBet = sr?.currentBet ?? null;
         const updated = studManager.studBetAction(roomId, socket.id, action, amount);
         if (!updated) {
           socket.emit('error', { message: 'そのアクションはできません' });
@@ -1000,12 +1013,16 @@ app.prepare().then(async () => {
         }
         const afterP = updated.players.find((p) => p.id === socket.id);
         _recordHandAction(updated, {
-          phase: beforePhase,
+          phaseBefore: beforePhase,
+          phaseAfter: updated.phase,
           playerName: actingP ? actingP.name : '',
           action,
           amount: Math.max(0, (afterP?.bet ?? beforePlayerBet) - beforePlayerBet),
           totalBet: afterP?.bet ?? beforePlayerBet,
+          currentBetBefore: beforeCurrentBet,
           currentBet: updated.currentBet,
+          potBefore: beforePot,
+          potAfter: updated.pot,
         });
         io.to(roomId).emit('playerAction', {
           playerName: actingP ? actingP.name : '',
@@ -1024,6 +1041,8 @@ app.prepare().then(async () => {
         const actingP = br?.players.find((p) => p.id === socket.id);
         const beforePhase = br?.phase ?? null;
         const beforePlayerBet = actingP?.bet ?? 0;
+        const beforePot = br?.pot ?? null;
+        const beforeCurrentBet = br?.currentBet ?? null;
         const updated = boardManager.boardBetAction(roomId, socket.id, action);
         if (!updated) {
           socket.emit('error', { message: 'そのアクションはできません' });
@@ -1032,12 +1051,16 @@ app.prepare().then(async () => {
         const afterP = updated.players.find((p) => p.id === socket.id);
         const amount = Math.max(0, (afterP?.bet ?? beforePlayerBet) - beforePlayerBet);
         _recordHandAction(updated, {
-          phase: beforePhase,
+          phaseBefore: beforePhase,
+          phaseAfter: updated.phase,
           playerName: actingP ? actingP.name : '',
           action,
           amount,
           totalBet: afterP?.bet ?? beforePlayerBet,
+          currentBetBefore: beforeCurrentBet,
           currentBet: updated.currentBet,
+          potBefore: beforePot,
+          potAfter: updated.pot,
         });
         resetTimeout(roomId, socket.id);
         io.to(roomId).emit('playerAction', {
@@ -1064,6 +1087,8 @@ app.prepare().then(async () => {
       // アクション前のプレイヤー名を記録
       const roomBefore = getRoom(roomId);
       const beforePhase = roomBefore?.phase ?? null;
+      const beforePot = roomBefore?.pot ?? null;
+      const beforeCurrentBet = roomBefore?.currentBet ?? null;
       const actingPlayer = roomBefore
         ? roomBefore.players.find((p) => p.id === socket.id)
         : null;
@@ -1087,12 +1112,16 @@ app.prepare().then(async () => {
       const actedAfter = room.players.find((p) => p.id === socket.id);
       const amountDelta = Math.max(0, (actedAfter?.bet ?? beforePlayerBet) - beforePlayerBet);
       _recordHandAction(room, {
-        phase: beforePhase,
+        phaseBefore: beforePhase,
+        phaseAfter: room.phase,
         playerName: actingPlayer ? actingPlayer.name : '',
         action,
         amount: amountDelta,
         totalBet: actedAfter?.bet ?? beforePlayerBet,
+        currentBetBefore: beforeCurrentBet,
         currentBet: room.currentBet,
+        potBefore: beforePot,
+        potAfter: room.pot,
       });
       const actionAmount = room.isNL && (action === 'bet' || action === 'raise')
         ? actedAfter?.bet
@@ -2594,12 +2623,23 @@ function _broadcastStud(io, roomId) {
     }
     if (effectiveBotIds.size > 0 && room.phase && room.phase.startsWith('bet')) {
       log(`[stud-broadcast] trigger-bots table=${roomId.slice(-8)} botCount=${effectiveBotIds.size} ${_studLogSnapshot(room)}`);
-      studBotManager.triggerStudBotActions(roomId, effectiveBotIds, (tblId, botName, botAction) => {
+      studBotManager.triggerStudBotActions(roomId, effectiveBotIds, (tblId, botName, botAction, info = {}) => {
         const beforeCallbackRoom = studManager.getStudRoom(tblId);
         log(`[stud-broadcast] bot-callback table=${tblId.slice(-8)} bot=${botName ?? 'unknown'} action=${botAction ?? 'unknown'} ${_studLogSnapshot(beforeCallbackRoom)}`);
         if (botName && botAction) {
           const _srBot = studManager.getStudRoom(tblId);
-          _recordHandAction(_srBot, { phase: _srBot?.phase ?? null, playerName: botName, action: botAction });
+          _recordHandAction(_srBot, {
+            phaseBefore: info.phaseBefore ?? _srBot?.phase ?? null,
+            phaseAfter: info.phaseAfter ?? _srBot?.phase ?? null,
+            playerName: botName,
+            action: botAction,
+            amount: info.amount ?? 0,
+            totalBet: info.totalBet,
+            currentBetBefore: info.currentBetBefore,
+            currentBet: info.currentBet,
+            potBefore: info.potBefore,
+            potAfter: info.potAfter,
+          });
           io.to(tblId).emit('playerAction', { playerName: botName, action: botAction });
           log(`[stud-broadcast] emitted-playerAction table=${tblId.slice(-8)} bot=${botName} action=${botAction}`);
         }
@@ -2706,7 +2746,18 @@ function _broadcastBoard(io, roomId) {
     triggerBoardBotActions(roomId, effectiveBotIds, (tblId, botName, botAction, info = {}) => {
       if (botName && botAction) {
         const _brBot = boardManager.getBoardRoom(tblId);
-        _recordHandAction(_brBot, { phase: info.beforePhase ?? _brBot?.phase ?? null, playerName: botName, action: botAction, amount: info.amount ?? 0, totalBet: info.totalBet ?? 0, currentBet: info.currentBet ?? 0 });
+        _recordHandAction(_brBot, {
+          phaseBefore: info.beforePhase ?? _brBot?.phase ?? null,
+          phaseAfter: info.afterPhase ?? _brBot?.phase ?? null,
+          playerName: botName,
+          action: botAction,
+          amount: info.amount ?? 0,
+          totalBet: info.totalBet ?? 0,
+          currentBetBefore: info.currentBetBefore,
+          currentBet: info.currentBet ?? 0,
+          potBefore: info.potBefore,
+          potAfter: info.potAfter,
+        });
         io.to(tblId).emit('playerAction', {
           playerName: botName,
           action: botAction,
@@ -2787,6 +2838,7 @@ function triggerBoardBotActions(roomId, botIdsOrCallback, maybeOnActionDone) {
     const beforePhase = r.phase;
     const beforeActionIndex = r.actionIndex;
     const beforeCurrentBet = r.currentBet;
+    const beforePot = r.pot;
     const beforePlayerBet = p.bet;
     const toCall = Math.max(0, r.currentBet - p.bet);
     const canRaise = p.chips > 0 && r.raiseCount < cfg.MAX_RAISES
@@ -2816,7 +2868,10 @@ function triggerBoardBotActions(roomId, botIdsOrCallback, maybeOnActionDone) {
       afterPhase: afterRoom?.phase,
       amount,
       totalBet: afterP?.bet ?? beforePlayerBet,
+      currentBetBefore: beforeCurrentBet,
       currentBet: afterRoom?.currentBet,
+      potBefore: beforePot,
+      potAfter: afterRoom?.pot,
     });
   }, 500 + Math.random() * 1000);
 }
@@ -3000,17 +3055,41 @@ function _broadcast(io, roomId) {
   // トーナメント BOT: ターンが来ていれば自動アクション
   // triggerBotActions は内部で二重スケジュール防止しているため安全に呼べる
   if (tournamentManager.isTournamentTable(roomId)) {
-    tournamentBotManager.triggerBotActions(roomId, (tblId, botName, botAction, amount, bigBlind) => {
+    tournamentBotManager.triggerBotActions(roomId, (tblId, botName, botAction, amount, bigBlind, info = {}) => {
       // betアクション（call/check/fold/bet/raise）のみplayerActionをemit
       // drawはdrawFlashで表示するためbotAction=nullで来る
       if (botName && botAction) {
         const _rBot = getRoom(tblId);
-        _recordHandAction(_rBot, { phase: _rBot?.phase ?? null, playerName: botName, action: botAction, amount: amount ?? 0, bigBlind });
+        _recordHandAction(_rBot, {
+          phaseBefore: info.phaseBefore ?? _rBot?.phase ?? null,
+          phaseAfter: info.phaseAfter ?? _rBot?.phase ?? null,
+          playerName: botName,
+          action: botAction,
+          amount: info.amount ?? amount ?? 0,
+          totalBet: info.totalBet,
+          currentBetBefore: info.currentBetBefore,
+          currentBet: info.currentBet,
+          potBefore: info.potBefore,
+          potAfter: info.potAfter,
+          bigBlind,
+        });
         io.to(tblId).emit('playerAction', { playerName: botName, action: botAction, amount, bigBlind });
       } else if (botName) {
         const _rBot = getRoom(tblId);
         const _pBot = _rBot?.players.find((p) => p.name === botName);
-        _recordHandAction(_rBot, { phase: _rBot?.phase ?? null, playerName: botName, action: 'draw', drawCount: _pBot?.drawCount ?? null });
+        _recordHandAction(_rBot, {
+          phaseBefore: info.phaseBefore ?? _rBot?.phase ?? null,
+          phaseAfter: info.phaseAfter ?? _rBot?.phase ?? null,
+          playerName: botName,
+          action: 'draw',
+          drawCount: info.drawCount ?? _pBot?.drawCount ?? null,
+          amount: 0,
+          totalBet: info.totalBet,
+          currentBetBefore: info.currentBetBefore,
+          currentBet: info.currentBet,
+          potBefore: info.potBefore,
+          potAfter: info.potAfter,
+        });
       }
       // _broadcast で次のBOTアクションをトリガーするが、
       // showdown判定は _broadcast 後の roomフェーズで行う（コールバック内では行わない）

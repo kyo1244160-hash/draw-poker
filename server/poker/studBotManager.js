@@ -277,13 +277,26 @@ function triggerStudBotActions(tableId, botIds, onActionDone) {
     const action = decideStudBetAction(room2, cur2);
     const beforePhase = room2.phase;
     const beforeIndex = room2.actionIndex;
+    const beforePot = room2.pot;
+    const beforeCurrentBet = room2.currentBet;
+    const beforePlayerBet = cur2.bet ?? 0;
     log(`[stud-bot] action-before table=${tableId.slice(-8)} bot=${cur2.name} action=${action} ${_botProgressSnapshot(room2)}`);
     const acted = !!sm.studBetAction(tableId, cur2.id, action, 0);
     const room3 = _getStudRoom(tableId);
     log(`[StudBot] ${tableId.slice(-8)} ${cur2.name}(${room2.currentMode}) ${action} acted=${acted} chips=${cur2.chips}`);
     log(`[stud-bot] action-after table=${tableId.slice(-8)} bot=${cur2.name} action=${action} acted=${acted} beforePhase=${beforePhase} beforeIndex=${beforeIndex} ${_botProgressSnapshot(room3)}`);
     if (acted && onActionDone) {
-      onActionDone(tableId, cur2.name, action);
+      const afterP = room3?.players.find((p) => p.id === cur2.id);
+      onActionDone(tableId, cur2.name, action, {
+        phaseBefore: beforePhase,
+        phaseAfter: room3?.phase ?? beforePhase,
+        amount: Math.max(0, (afterP?.bet ?? beforePlayerBet) - beforePlayerBet),
+        totalBet: afterP?.bet ?? beforePlayerBet,
+        currentBetBefore: beforeCurrentBet,
+        currentBet: room3?.currentBet ?? beforeCurrentBet,
+        potBefore: beforePot,
+        potAfter: room3?.pot ?? beforePot,
+      });
       const room4 = _getStudRoom(tableId);
       log(`[stud-bot] callback-done table=${tableId.slice(-8)} bot=${cur2.name} action=${action} ${_botProgressSnapshot(room4)}`);
     }
