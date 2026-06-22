@@ -189,6 +189,11 @@ export default function AdminPage() {
     finally { setResultViewLoading(false); }
   };
 
+
+  const handleDownloadHandHistory = (tournamentId: string) => {
+    window.location.href = `/api/admin/tournaments/${encodeURIComponent(tournamentId)}/hand-history`;
+  };
+
   // ボット管理
   interface BotInfo { id: number; roomId: string; name: string; connected: boolean; isFastFold?: boolean; }
   interface ThreeCardBotInfo { id: string; roomId: string; name: string; points: number; phase: string; }
@@ -1072,7 +1077,18 @@ export default function AdminPage() {
                 {tournaments.map((t) => (
                   <>
                   <tr key={t.id} style={S.tr}>
-                    <td style={S.td}>{t.name}</td>
+                    <td style={S.td}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 180 }}>
+                        <span style={{ flex: 1 }}>{t.name}</span>
+                        {t.status === 'finished' && (
+                          <button
+                            style={{ fontSize: 11, background: 'rgba(201,168,76,0.16)', border: '1px solid var(--gold-dim)', color: 'var(--gold)', borderRadius: 4, padding: '2px 7px', cursor: 'pointer', whiteSpace: 'nowrap' as const }}
+                            onClick={() => handleDownloadHandHistory(t.id)}
+                            title="ハンドヒストリー(JSONL)をダウンロード"
+                          >DL</button>
+                        )}
+                      </div>
+                    </td>
                     <td style={S.td}>{modeLabel(t.mode)}</td>
                     <td style={{ ...S.td, fontSize: 12 }}>{new Date(t.scheduled_start_at).toLocaleString('ja-JP')}</td>
                     <td style={S.td}>

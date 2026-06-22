@@ -175,6 +175,7 @@ function startBoardHand(room, onTimeout, opts = {}) {
     p.folded = !!p.sittingOut || waitThisHand;
     p.acted = !!p.sittingOut || waitThisHand;
     p.totalContribution = 0;
+    p._hhChipsBefore = p.chips;
     if (waitThisHand) p.sittingOut = true;
   }
 
@@ -184,6 +185,18 @@ function startBoardHand(room, onTimeout, opts = {}) {
   room.fixedSbIdx = blinds.sbIndex;
   room.fixedBbIdx = blinds.bbIndex;
   room._sbDead = blinds.sbDead;
+  room._handHistoryStartedAt = new Date().toISOString();
+  room._handHistoryActions = [];
+  room._handHistorySaved = false;
+  room._handHistoryStartPlayers = room.players.map((p, seat) => ({
+    seat,
+    name: p.name,
+    isBot: !!p.isBot,
+    chipsBefore: p._hhChipsBefore ?? p.chips,
+    position: seat === room.fixedDealerIdx ? 'BTN' : seat === room.fixedSbIdx ? 'SB' : seat === room.fixedBbIdx ? 'BB' : null,
+    sittingOut: !!p.sittingOut || !!p.folded,
+    cards: [...(p.hand ?? [])],
+  }));
 
   if (!blinds.sbDead) postBlind(room, blinds.sbIndex, room.smallBlind);
   postBlind(room, blinds.bbIndex, room.bigBlind);

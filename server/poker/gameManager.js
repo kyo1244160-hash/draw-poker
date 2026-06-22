@@ -499,6 +499,7 @@ function startGame(roomId, onTimeout) {
     p.drewThisRound    = false;
     p.drawCount        = null;
     p.totalContribution = 0;  // サイドポット計算用: このハンドの総投資額
+    p._hhChipsBefore = p.chips;
   }
 
   // SB / BB ポスト
@@ -544,6 +545,18 @@ function startGame(roomId, onTimeout) {
   room.fixedBbIdx     = bbIndex;
   room.isHeadsUp      = isHeadsUp;
   room._sbDead        = sbDead;
+  room._handHistoryStartedAt = new Date().toISOString();
+  room._handHistoryActions = [];
+  room._handHistorySaved = false;
+  room._handHistoryStartPlayers = room.players.map((p, seat) => ({
+    seat,
+    name: p.name,
+    isBot: !!p.isBot,
+    chipsBefore: p._hhChipsBefore ?? p.chips,
+    position: seat === room.fixedDealerIdx ? 'BTN' : seat === room.fixedSbIdx ? 'SB' : seat === room.fixedBbIdx ? 'BB' : null,
+    sittingOut: !!p.sittingOut || !!p.folded,
+    cards: [...(p.hand ?? [])],
+  }));
 
   // bet0（プリドロー）フェーズへ
   // 通常: UTG (BB の左隣) から開始し、最後に BB が option を持つ

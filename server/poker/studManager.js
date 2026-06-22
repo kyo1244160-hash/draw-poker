@@ -227,6 +227,7 @@ function startStudHand(room, onTimeout, opts = {}) {
     p.folded  = !!p.sittingOut;
     p.acted   = !!p.sittingOut;
     p.totalContribution = 0;
+    p._hhChipsBefore = p.chips;
     p.isBringIn = false;
     p.mustBringIn = false;  // 【ブリングイン選択制】前ハンドの義務フラグを必ずクリア
     if (!p.sittingOut) {
@@ -276,6 +277,18 @@ function startStudHand(room, onTimeout, opts = {}) {
   room.fixedDealerIdx = room.dealerIndex >= 0 ? room.dealerIndex : biIdx;
   room.dealerIndex    = biIdx;
   room.bringInIndex   = biIdx;
+  room._handHistoryStartedAt = new Date().toISOString();
+  room._handHistoryActions = [];
+  room._handHistorySaved = false;
+  room._handHistoryStartPlayers = room.players.map((p, seat) => ({
+    seat,
+    name: p.name,
+    isBot: !!p.isBot,
+    chipsBefore: p._hhChipsBefore ?? p.chips,
+    position: seat === room.fixedDealerIdx ? 'BTN' : seat === room.bringInIndex ? 'BI' : null,
+    sittingOut: !!p.sittingOut || !!p.folded,
+    cards: (p.cards ?? []).map((code, idx) => ({ code, up: !!p.faceUp?.[idx] })),
+  }));
 
   // acted 初期化
   for (const p of room.players) {

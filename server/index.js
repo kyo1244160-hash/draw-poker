@@ -62,6 +62,7 @@ const tcManager = require('./poker/threeCardManager');
 const { registerZoomHandlers, getAllPools, getWaitingCount, getTotalCount, handleZoomShowdown } = require('./zoom/zoomManager');
 const tournamentManager    = require('./tournament/tournamentManager');
 const tournamentBotManager = require('./tournament/tournamentBotManager');
+const { saveTournamentHandHistory } = require('./db/handHistory');
 
 // ===== Next.js =====
 const dev    = process.env.NODE_ENV !== 'production';
@@ -164,6 +165,94 @@ function getLobbyList() {
   return list;
 }
 
+function _recordHandAction(roomLike, action) {
+  if (!roomLike || !tournamentManager.isTournamentTable(roomLike.id)) return;
+  if (!Array.isArray(roomLike._handHistoryActions)) roomLike._handHistoryActions = [];
+  roomLike._handHistoryActions.push({ ts: new Date().toISOString(), ...action });
+}
+
+function _cardsForHistory(p) {
+  if (Array.isArray(p?.cards)) {
+    return p.cards.map((code, idx) => ({ code, up: !!p.faceUp?.[idx] }));
+  }
+  return [...(p?.hand ?? [])];
+}
+
+function _buildHandHistoryPayload(roomId, source, roomLike) {
+  const tournament = tournamentManager.getTournamentByTable(roomId);
+  const gmRoom = getRoom(roomId);
+  const room = roomLike ?? gmRoom;
+  if (!tournament || !room) return null;
+  const playersEnd = (room.players ?? []).map((p, seat) => {
+    const chipsBefore = p._hhChipsBefore ?? room._handHistoryStartPlayers?.find((sp) => sp.seat === seat)?.chipsBefore ?? null;
+    const chipsAfter = p.chips ?? null;
+    return {
+      seat,
+      name: p.name,
+      isBot: !!p.isBot || String(p.id ?? '').startsWith('tbot::'),
+      chipsBefore,
+      chipsAfter,
+      chipsDelta: Number.isFinite(chipsBefore) && Number.isFinite(chipsAfter) ? chipsAfter - chipsBefore : null,
+      folded: !!p.folded,
+      sittingOut: !!p.sittingOut,
+      isAway: !!p.isAway,
+      bet: p.bet ?? 0,
+      totalContribution: p.totalContribution ?? 0,
+      cards: _cardsForHistory(p),
+    };
+  });
+  const mode = room.currentMode ?? gmRoom?.currentMode ?? gmRoom?.mode ?? tournament.mode ?? source;
+  return {
+    schemaVersion: 1,
+    tournamentId: tournament.id,
+    tournamentName: tournament.name,
+    tableId: roomId,
+    handNo: room.handCount ?? gmRoom?.handCount ?? null,
+    engine: source,
+    mode,
+    startedAt: room._handHistoryStartedAt ?? null,
+    endedAt: new Date().toISOString(),
+    stakes: {
+      smallBlind: room.smallBlind ?? gmRoom?.smallBlind ?? null,
+      bigBlind: room.bigBlind ?? gmRoom?.bigBlind ?? null,
+      bbAnte: room.bbAnte ?? gmRoom?.bbAnte ?? 0,
+      smallBet: room.smallBet ?? gmRoom?.smallBet ?? null,
+      bigBet: room.bigBet ?? gmRoom?.bigBet ?? null,
+      ante: room.ante ?? null,
+      bringInAmount: room.bringInAmount ?? null,
+    },
+    playersStart: room._handHistoryStartPlayers ?? [],
+    actions: room._handHistoryActions ?? [],
+    board: room.board ?? [],
+    potAfterAward: room.pot ?? gmRoom?.pot ?? 0,
+    playersEnd,
+    winners: playersEnd
+      .filter((p) => typeof p.chipsDelta === 'number' && p.chipsDelta > 0)
+      .map((p) => ({ seat: p.seat, name: p.name, chipsDelta: p.chipsDelta })),
+  };
+}
+
+function _saveTournamentHandHistory(roomId, source, roomLike) {
+  if (!tournamentManager.isTournamentTable(roomId)) return;
+  const room = roomLike ?? getRoom(roomId);
+  if (!room || room._handHistorySaved) return;
+  const payload = _buildHandHistoryPayload(roomId, source, room);
+  if (!payload || !payload.handNo) return;
+  room._handHistorySaved = true;
+  const gmRoom = getRoom(roomId);
+  if (gmRoom && gmRoom !== room) gmRoom._handHistorySaved = true;
+  saveTournamentHandHistory({
+    tournamentId: payload.tournamentId,
+    tableId: roomId,
+    handNo: payload.handNo,
+    mode: payload.mode,
+    payload,
+  }).catch((err) => {
+    room._handHistorySaved = false;
+    if (gmRoom && gmRoom !== room) gmRoom._handHistorySaved = false;
+    log(`[hand-history] save failed table=${roomId.slice(-8)} hand=${payload.handNo}: ${err.message}`);
+  });
+}
 // ==========================================================
 // ■ サーバー起動
 // ==========================================================
@@ -186,6 +275,7 @@ app.prepare().then(async () => {
     const sql = require('./db/client');
     await sql`ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS late_reg_minutes INTEGER NOT NULL DEFAULT 0`;
     await sql`ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS late_reg_closed_at TIMESTAMPTZ`;
+    await require('./db/handHistory').ensureTournamentHandHistoryTable();
     await sql`ALTER TABLE tournaments DROP CONSTRAINT IF EXISTS tournament_mode_check`;
     await sql`
       ALTER TABLE tournaments
@@ -860,14 +950,18 @@ app.prepare().then(async () => {
       if (!roomId || typeof roomId !== 'string' || roomId.length > 64) return;
       if (!Array.isArray(indices) || indices.length > 5) return;
       if (!getRoom(roomId)) return;  // 存在しないroomIdは無視（空ルーム生成防止）
+      const beforePhase = getRoom(roomId)?.phase ?? null;
       const room = drawCards(roomId, socket.id, indices);
       if (!room) { socket.emit('error', { message: 'ドローできません（あなたのターンではありません）' }); return; }
+      const actedPlayer = room.players.find((p) => p.id === socket.id);
+      _recordHandAction(room, { phase: beforePhase, playerName: actedPlayer?.name ?? '', action: 'draw', drawCount: actedPlayer?.drawCount ?? indices.length });
       resetTimeout(roomId, socket.id);  // アクション成功 → タイムアウトカウントリセット
       _broadcast(io, roomId);
       // ZoomテーブルはzoomManagerが管理するためindex.jsからはautoStartしない
       if (room.phase === 'showdown') {
         if (tournamentManager.isTournamentTable(roomId)) {
           ensurePotsAwarded(roomId);  // ポット確定後に脱落チェック
+          _saveTournamentHandHistory(roomId, 'draw', room);
           tournamentManager.checkEliminations(roomId);
           // ※ ここで _broadcast を再送しない:
           //   checkEliminations が leaveRoom でプレイヤーを即削除するため
@@ -896,12 +990,23 @@ app.prepare().then(async () => {
       if (_isStudActive(roomId)) {
         const sr = studManager.getStudRoom(roomId);
         const actingP = sr?.players.find((p) => p.id === socket.id);
+        const beforePhase = sr?.phase ?? null;
+        const beforePlayerBet = actingP?.bet ?? 0;
         const updated = studManager.studBetAction(roomId, socket.id, action, amount);
         if (!updated) {
           socket.emit('error', { message: 'そのアクションはできません' });
           _emitStateToSocket(socket, roomId);
           return;
         }
+        const afterP = updated.players.find((p) => p.id === socket.id);
+        _recordHandAction(updated, {
+          phase: beforePhase,
+          playerName: actingP ? actingP.name : '',
+          action,
+          amount: Math.max(0, (afterP?.bet ?? beforePlayerBet) - beforePlayerBet),
+          totalBet: afterP?.bet ?? beforePlayerBet,
+          currentBet: updated.currentBet,
+        });
         io.to(roomId).emit('playerAction', {
           playerName: actingP ? actingP.name : '',
           action,
@@ -917,6 +1022,7 @@ app.prepare().then(async () => {
       if (_isBoardActive(roomId)) {
         const br = boardManager.getBoardRoom(roomId);
         const actingP = br?.players.find((p) => p.id === socket.id);
+        const beforePhase = br?.phase ?? null;
         const beforePlayerBet = actingP?.bet ?? 0;
         const updated = boardManager.boardBetAction(roomId, socket.id, action);
         if (!updated) {
@@ -925,6 +1031,14 @@ app.prepare().then(async () => {
         }
         const afterP = updated.players.find((p) => p.id === socket.id);
         const amount = Math.max(0, (afterP?.bet ?? beforePlayerBet) - beforePlayerBet);
+        _recordHandAction(updated, {
+          phase: beforePhase,
+          playerName: actingP ? actingP.name : '',
+          action,
+          amount,
+          totalBet: afterP?.bet ?? beforePlayerBet,
+          currentBet: updated.currentBet,
+        });
         resetTimeout(roomId, socket.id);
         io.to(roomId).emit('playerAction', {
           playerName: actingP ? actingP.name : '',
@@ -949,9 +1063,11 @@ app.prepare().then(async () => {
         ? amount : undefined;
       // アクション前のプレイヤー名を記録
       const roomBefore = getRoom(roomId);
+      const beforePhase = roomBefore?.phase ?? null;
       const actingPlayer = roomBefore
         ? roomBefore.players.find((p) => p.id === socket.id)
         : null;
+      const beforePlayerBet = actingPlayer?.bet ?? 0;
       const room = betAction(roomId, socket.id, action, _amt);
       if (!room) {
         // 原因をログ（開発環境のみ）
@@ -969,6 +1085,15 @@ app.prepare().then(async () => {
       }
       resetTimeout(roomId, socket.id);
       const actedAfter = room.players.find((p) => p.id === socket.id);
+      const amountDelta = Math.max(0, (actedAfter?.bet ?? beforePlayerBet) - beforePlayerBet);
+      _recordHandAction(room, {
+        phase: beforePhase,
+        playerName: actingPlayer ? actingPlayer.name : '',
+        action,
+        amount: amountDelta,
+        totalBet: actedAfter?.bet ?? beforePlayerBet,
+        currentBet: room.currentBet,
+      });
       const actionAmount = room.isNL && (action === 'bet' || action === 'raise')
         ? actedAfter?.bet
         : undefined;
@@ -983,6 +1108,7 @@ app.prepare().then(async () => {
       if (room.phase === 'showdown') {
         if (tournamentManager.isTournamentTable(roomId)) {
           ensurePotsAwarded(roomId);  // ポット確定後に脱落チェック
+          _saveTournamentHandHistory(roomId, 'draw', room);
           tournamentManager.checkEliminations(roomId);
           // ※ 2回目の _broadcast は送らない（drawCards と同様の理由）
         }
@@ -2472,6 +2598,8 @@ function _broadcastStud(io, roomId) {
         const beforeCallbackRoom = studManager.getStudRoom(tblId);
         log(`[stud-broadcast] bot-callback table=${tblId.slice(-8)} bot=${botName ?? 'unknown'} action=${botAction ?? 'unknown'} ${_studLogSnapshot(beforeCallbackRoom)}`);
         if (botName && botAction) {
+          const _srBot = studManager.getStudRoom(tblId);
+          _recordHandAction(_srBot, { phase: _srBot?.phase ?? null, playerName: botName, action: botAction });
           io.to(tblId).emit('playerAction', { playerName: botName, action: botAction });
           log(`[stud-broadcast] emitted-playerAction table=${tblId.slice(-8)} bot=${botName} action=${botAction}`);
         }
@@ -2577,6 +2705,8 @@ function _broadcastBoard(io, roomId) {
     }
     triggerBoardBotActions(roomId, effectiveBotIds, (tblId, botName, botAction, info = {}) => {
       if (botName && botAction) {
+        const _brBot = boardManager.getBoardRoom(tblId);
+        _recordHandAction(_brBot, { phase: info.beforePhase ?? _brBot?.phase ?? null, playerName: botName, action: botAction, amount: info.amount ?? 0, totalBet: info.totalBet ?? 0, currentBet: info.currentBet ?? 0 });
         io.to(tblId).emit('playerAction', {
           playerName: botName,
           action: botAction,
@@ -2703,6 +2833,7 @@ function _onBoardShowdown(io, roomId) {
     gmRoom._potAwarded = true;
   }
   if (tournamentManager.isTournamentTable(roomId)) {
+    _saveTournamentHandHistory(roomId, 'board', br);
     tournamentManager.checkEliminations(roomId);
   }
   io.to(roomId).emit('showdown');
@@ -2731,6 +2862,7 @@ function _onStudShowdown(io, roomId) {
     gmRoom._potAwarded = true;
   }
   if (tournamentManager.isTournamentTable(roomId)) {
+    _saveTournamentHandHistory(roomId, 'stud', sr);
     tournamentManager.checkEliminations(roomId);
   }
   io.to(roomId).emit('showdown');
@@ -2872,7 +3004,13 @@ function _broadcast(io, roomId) {
       // betアクション（call/check/fold/bet/raise）のみplayerActionをemit
       // drawはdrawFlashで表示するためbotAction=nullで来る
       if (botName && botAction) {
+        const _rBot = getRoom(tblId);
+        _recordHandAction(_rBot, { phase: _rBot?.phase ?? null, playerName: botName, action: botAction, amount: amount ?? 0, bigBlind });
         io.to(tblId).emit('playerAction', { playerName: botName, action: botAction, amount, bigBlind });
+      } else if (botName) {
+        const _rBot = getRoom(tblId);
+        const _pBot = _rBot?.players.find((p) => p.name === botName);
+        _recordHandAction(_rBot, { phase: _rBot?.phase ?? null, playerName: botName, action: 'draw', drawCount: _pBot?.drawCount ?? null });
       }
       // _broadcast で次のBOTアクションをトリガーするが、
       // showdown判定は _broadcast 後の roomフェーズで行う（コールバック内では行わない）
@@ -2882,6 +3020,7 @@ function _broadcast(io, roomId) {
       if (r?.phase === 'showdown') {
         ensurePotsAwarded(tblId);
         if (tournamentManager.isTournamentTable(tblId)) {
+          _saveTournamentHandHistory(tblId, 'draw', r);
           tournamentManager.checkEliminations(tblId);
         }
         _recordRingHandResults(tblId);  // リングゲーム損益記録
