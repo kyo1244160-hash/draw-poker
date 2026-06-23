@@ -350,8 +350,10 @@ function nextPhase(room) {
   }
 
   resetBetRound(room, next === 'turn' || next === 'river' ? room.bigBet : room.smallBet);
-  room.actionIndex = nextActiveFrom(room, room.fixedDealerIdx);
-  startTimer(room);
+  // 新ストリートの先頭はBTN左隣を起点にするが、オールイン済みやacted済みは
+  // ベット手番を持たないため、advanceBetActionでアクション可能者まで進める。
+  room.actionIndex = room.fixedDealerIdx;
+  advanceBetAction(room);
 }
 
 function resetBetRound(room, betSize) {

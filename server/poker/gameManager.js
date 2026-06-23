@@ -576,8 +576,8 @@ function startGame(roomId, onTimeout) {
 
   // 全員の acted を正しく初期化
   for (const p of room.players) {
-    if (p.sittingOut || p.folded) {
-      p.acted = true;   // 待機中・フォールドはスキップ
+    if (p.sittingOut || p.folded || p.chips <= 0) {
+      p.acted = true;   // 待機中・フォールド・オールイン済みはスキップ
     } else if (room.players.indexOf(p) === bbIndex) {
       // BB: ポスト済みだが option 権のため acted = false
       p.acted = false;
@@ -1169,10 +1169,13 @@ function _nextPhase(room) {
       betSize = isBigBetPhase(next) ? room.bigBet : room.smallBet;
     }
     _resetBetRound(room, betSize);
-    // ベットラウンド（bet1以降）: 通常/ヘッズアップ共にSB(dealer)から先行
+    // ベットラウンド（bet1以降）: 通常/ヘッズアップ共にSB(dealer)から先行。
+    // ただしオールイン済み(chips<=0)やacted済みのプレイヤーには手番を回さない。
+    // dealerRef を起点に _advanceBetAction へ通すことで、未行動かつアクション可能な
+    // 最初のプレイヤーを選び、全員アクション不要なら次フェーズへ進める。
     const dealerRef = room.fixedDealerIdx >= 0 ? room.fixedDealerIdx : room.dealerIndex;
-    room.actionIndex = _nextActiveFromSafe(room, dealerRef);
-    _startTimer(room);
+    room.actionIndex = dealerRef;
+    _advanceBetAction(room);
   } else if (next === 'showdown') {
     _clearTimer(room);
   }
