@@ -965,7 +965,7 @@ app.prepare().then(async () => {
       const room = drawCards(roomId, socket.id, indices);
       if (!room) { socket.emit('error', { message: 'ドローできません（あなたのターンではありません）' }); return; }
       const actedPlayer = room.players.find((p) => p.id === socket.id);
-      _recordHandAction(room, { phaseBefore: beforePhase, phaseAfter: room.phase, playerName: actedPlayer?.name ?? '', action: 'draw', drawCount: actedPlayer?.drawCount ?? indices.length, potBefore: beforePot, potAfter: room.pot });
+      _recordHandAction(room, { phaseBefore: beforePhase, phaseAfter: room.phase, playerName: actedPlayer?.name ?? '', action: 'draw', drawCount: actedPlayer?.drawCount ?? indices.length, amount: 0, potBefore: beforePot, potAfter: room.pot });
       resetTimeout(roomId, socket.id);  // アクション成功 → タイムアウトカウントリセット
       _broadcast(io, roomId);
       // ZoomテーブルはzoomManagerが管理するためindex.jsからはautoStartしない
