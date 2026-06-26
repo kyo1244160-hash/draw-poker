@@ -337,14 +337,18 @@ export default function TournamentTable({
     );
   };
 
-  // 自分から時計回りに他プレイヤーを並べる
+  // 自分から時計回りに他プレイヤーを並べる。
+  // 観戦時は isSelf が無いため、表示専用アンカーを1人だけ下座席に置く。
+  // isSelf 自体は変更しないので、手札公開や操作可否には影響しない。
+  const layoutAnchor = self ?? (isSpectator ? (players.find(p => p.isDealer) ?? players[0] ?? null) : null);
+  const isLayoutAnchor = (p: PlayerState) => !!layoutAnchor && p.id === layoutAnchor.id;
   const orderedOthers = (() => {
-    const selfIdx = players.findIndex(p => p.isSelf);
-    if (selfIdx < 0) return players.filter(p => !p.isSelf);
+    const anchorIdx = layoutAnchor ? players.findIndex(p => p.id === layoutAnchor.id) : -1;
+    if (anchorIdx < 0) return players.filter(p => !p.isSelf);
     const result: PlayerState[] = [];
     for (let i = 1; i < players.length; i++) {
-      const p = players[(selfIdx + i) % players.length];
-      if (!p.isSelf) result.push(p);
+      const p = players[(anchorIdx + i) % players.length];
+      if (p.id !== layoutAnchor?.id) result.push(p);
     }
     return result;
   })();
@@ -861,11 +865,11 @@ export default function TournamentTable({
 
     const getPos = (p:PlayerState) => {
       let ang: number;
-      if (p.isSelf) { ang = 90; }
+      if (isLayoutAnchor(p)) { ang = 90; }
       else {
         const idx = others.findIndex(o => o.id===p.id);
-        if (self) {
-          // 自分がいる場合: 自分の席（90°）を除いた5スロット
+        if (layoutAnchor) {
+          // 自分/観戦アンカーがいる場合: 下座席（90°）を除いた5スロット
           const slots = [150,-150,-90,-30,30];
           ang = slots[idx] ?? (-90+60*(idx+1));
         } else {
@@ -875,7 +879,7 @@ export default function TournamentTable({
         }
       }
       const rad = (ang*Math.PI)/180;
-      const bh = p.isSelf ? Math.floor(TH*0.31) : Math.floor(TH*0.25);
+      const bh = isLayoutAnchor(p) ? Math.floor(TH*0.31) : Math.floor(TH*0.25);
       return { left: CX+RX*Math.cos(rad)-BW/2, top: CY+RY*Math.sin(rad)-bh/2 };
     };
 
@@ -953,7 +957,7 @@ export default function TournamentTable({
             const btn = players.find(p=>p.isDealer);
             if (!btn || (meta?.dealerIndex??-1)<0) return null;
             const pos = getPos(btn);
-            const bh = btn.isSelf ? Math.floor(TH*0.31) : Math.floor(TH*0.25);
+            const bh = isLayoutAnchor(btn) ? Math.floor(TH*0.31) : Math.floor(TH*0.25);
             const cx = pos.left+BW/2, cy = pos.top+bh/2;
             const dx = cx-CX, dy = cy-CY;
             const dist = Math.sqrt(dx*dx+dy*dy);
@@ -1089,7 +1093,7 @@ export default function TournamentTable({
   // 未計測の場合は window.innerHeight からナビバー高さ(44px)を差し引いて近似する
   const availH = containerSize.h > 0 ? containerSize.h : Math.max(200, window.innerHeight - 44);
   const ACT_W_M = 148;
-  const ACT_H_M = 154;
+  const ACT_H_M = isSpectator ? 76 : 154;
 
   let TW_M: number, TH_M: number;
   if (isPortrait) {
@@ -1121,10 +1125,11 @@ export default function TournamentTable({
   const fs = { name: 9, chip: Math.max(10,Math.floor(OTH_W*0.105)) };
 
   const getPosMobile = (p:PlayerState) => {
-    const bw = p.isSelf ? SELF_W : OTH_W;
-    const bh = p.isSelf ? SELF_H : OTH_H;
+    const isAnchor = isLayoutAnchor(p);
+    const bw = isAnchor ? SELF_W : OTH_W;
+    const bh = isAnchor ? SELF_H : OTH_H;
     const selfActionGap = 4;
-    if (!p.isSelf && isPortrait && self) {
+    if (!isAnchor && isPortrait && layoutAnchor) {
       const idx = oth_m.findIndex(o => o.id===p.id);
       const selfTop = TH_M - SELF_H - selfActionGap;
       const outerBleed = Math.min(12, Math.max(6, TW_M * 0.03));
@@ -1148,10 +1153,10 @@ export default function TournamentTable({
       };
     }
     let ang: number;
-    if (p.isSelf) { ang = 90; }
+    if (isAnchor) { ang = 90; }
     else {
       const idx = oth_m.findIndex(o => o.id===p.id);
-      if (self) {
+      if (layoutAnchor) {
         ang = SLOTS_M[idx] ?? (-90+72*(idx+1));
       } else {
         const n = oth_m.length || 1;
@@ -1159,7 +1164,7 @@ export default function TournamentTable({
       }
     }
     const rad = (ang*Math.PI)/180;
-    if (p.isSelf && isPortrait) {
+    if (isAnchor && isPortrait) {
       const actionSafeGap = 48;
       return {
         left: Math.max(4, Math.min(TW_M - bw - 4, CX_M - bw / 2)),
@@ -1178,12 +1183,13 @@ export default function TournamentTable({
     const {left,top} = getPosMobile(p);
     const active = p.isMyTurn&&!p.folded&&!p.sittingOut&&!p.isAway;
     const dc = isDrawPhase ? (p.drewThisRound?p.drawCount:null) : (lastDrawCount[p.id]??null);
-    const bw = p.isSelf ? SELF_W : OTH_W;
+    const isAnchor = isLayoutAnchor(p);
+    const bw = isAnchor ? SELF_W : OTH_W;
     const flash  = actionFlash[p.name];
     const dflash = drawFlash[p.id];
     // リングゲームと同じ: 常にボックス上に表示（paddingTop:44で上段の見切れも防止）
     return (
-      <div key={p.id} style={{position:'absolute',left,top,width:bw,overflow:'visible',zIndex:(flash||dflash)?30:p.isSelf?3:2}}>
+      <div key={p.id} style={{position:'absolute',left,top,width:bw,overflow:'visible',zIndex:(flash||dflash)?30:isAnchor?3:2}}>
         {flash&&(
           <div key={flash.key} style={{
             position:'absolute',top:-32,
@@ -1213,7 +1219,7 @@ export default function TournamentTable({
           overflow:'visible',transition:'all 0.2s',
           border: active?'1.5px solid var(--gold)':p.isWinner?'3px solid var(--gold-bright)':'1px solid rgba(201,168,76,0.2)',
           boxShadow: active?'0 0 10px rgba(201,168,76,0.5)':p.isWinner?'0 0 30px rgba(240,208,96,0.85)':'none',
-          background: p.isSelf?'rgba(10,50,30,0.85)':active?'rgba(201,168,76,0.07)':'rgba(0,0,0,0.4)',
+          background: isAnchor?'rgba(10,50,30,0.85)':active?'rgba(201,168,76,0.07)':'rgba(0,0,0,0.4)',
           opacity: (p.folded&&!p.sittingOut)?0.4:p.sittingOut?0.5:1,
         }}>
           <div style={{display:'flex',gap:2,justifyContent:'center',marginBottom:1,flexWrap:'wrap'}}>
@@ -1224,7 +1230,7 @@ export default function TournamentTable({
             {p.folded&&!p.sittingOut&&<Badge bg="#444" color="#aaa" label="FOLD"/>}
                 {p.isWinner&&<Badge bg="#f0d060" color="#1a1200" label="🏆 WIN"/>}
           </div>
-          <div style={{fontFamily:'var(--font-title)',fontSize:p.isSelf?10:fs.name,color:p.isSelf?'var(--gold-bright)':'var(--cream)',
+          <div style={{fontFamily:'var(--font-title)',fontSize:isAnchor?10:fs.name,color:isAnchor?'var(--gold-bright)':'var(--cream)',
             whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',letterSpacing:'0.02em'}}>
             {p.isSelf?`${p.name}(YOU)`:p.name}
           </div>
@@ -1236,7 +1242,7 @@ export default function TournamentTable({
           <div style={{display:'flex',gap:2,justifyContent:'center',flexWrap:'nowrap',margin:'2px 0',overflow:'visible'}}>
             {(p.hand ?? []).map((code,j)=>(
               <div key={j} style={{display:'flex',flexDirection:'column',alignItems:'center'}}>
-                <Card code={code} size={p.isSelf?SELF_C:OTH_C}
+                <Card code={code} size={isAnchor?SELF_C:OTH_C}
                   selected={p.isSelf&&selected.includes(j)}
                   clickable={p.isSelf&&isDrawPhase&&isMyTurn&&!myDrew}
                   folded={p.folded}
@@ -1249,7 +1255,7 @@ export default function TournamentTable({
           </div>
           {(isDrawPhase||isBetPhase)&&dc!==null&&(
             <div style={{fontSize:Math.max(9,Math.floor(OTH_W*0.11)),color:'#fff',fontWeight:'700',marginTop:3,
-              background:p.isSelf?'rgba(20,80,180,0.7)':'rgba(40,100,200,0.55)',
+              background:isAnchor?'rgba(20,80,180,0.7)':'rgba(40,100,200,0.55)',
               borderRadius:4,padding:'1px 4px',display:'inline-block'}}>
               {dc===0?'pat':`${dc}枚`}
             </div>
@@ -1337,13 +1343,14 @@ export default function TournamentTable({
         const dp = players.find(p=>p.isDealer);
         if (!dp||(meta?.dealerIndex??-1)<0) return null;
         const {left:pl,top:pt} = getPosMobile(dp);
-        const bh2 = dp.isSelf?SELF_H:OTH_H, bw2 = dp.isSelf?SELF_W:OTH_W;
+        const dpAnchor = isLayoutAnchor(dp);
+        const bh2 = dpAnchor?SELF_H:OTH_H, bw2 = dpAnchor?SELF_W:OTH_W;
         const dcx = pl+bw2/2, dcy = pt+bh2/2;
         const ddx = dcx-CX_M, ddy = dcy-CY_M;
         const dd = Math.sqrt(ddx*ddx+ddy*ddy);
         const sc = dd>0?Math.max(0,(dd-80))/dd:0;
         // 自プレイヤーがディーラーの時は名前と重ならないよう左にオフセット
-        const selfDealerOffset = dp.isSelf ? -65 : 0;
+        const selfDealerOffset = dpAnchor ? -65 : 0;
         return (
           <div key="m-d" style={{position:'absolute',left:CX_M+ddx*sc-11+selfDealerOffset,top:CY_M+ddy*sc-11,
             width:22,height:22,borderRadius:'50%',background:'#fff',border:'2px solid #444',
@@ -1365,7 +1372,7 @@ export default function TournamentTable({
           {players.map(p=>{
             const {left,top}=getPosMobile(p);
             const idx=oth_m.findIndex(o=>o.id===p.id);
-            const ang=p.isSelf?90:(SLOTS_M[idx]??0);
+            const ang=isLayoutAnchor(p)?90:(SLOTS_M[idx]??0);
             return <div key={p.id}>{p.name.slice(0,8)}: ({Math.round(left)},{Math.round(top)}) {ang}°</div>;
           })}
         </div>
@@ -1381,9 +1388,9 @@ export default function TournamentTable({
       <div ref={containerRef} style={{display:'flex',flexDirection:'column',width:'100%',height:'100%',overflow:'visible'}}>
         <MobileTable/>
         {/* 下部アクションパネル */}
-        <div style={{flex:1,display:'flex',flexDirection:'column',justifyContent:'flex-end',
+        <div style={{flex:isSpectator?'0 0 auto':1,display:'flex',flexDirection:'column',justifyContent:'flex-end',
           background:'rgba(0,0,0,0.35)',borderTop:'1px solid rgba(201,168,76,0.2)',
-          padding:'6px 8px 8px',overflow:'hidden',minHeight:0}}>
+          padding:'6px 8px 8px',overflow:'hidden',minHeight:isSpectator?68:0}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
             <div style={{fontSize:9,color:'var(--gold-dim)',fontFamily:'var(--font-body)'}}>
               {effectiveMode==='badugi'?'★ Badugi: 全スート異なる低い4枚'

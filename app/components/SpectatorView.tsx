@@ -112,7 +112,7 @@ export default function SpectatorView({
       )}
 
       {/* ゲームテーブル — draw ページと完全同一の flex:1 全画面レイアウト */}
-      <div style={{ flex: 1, display: 'flex', overflow: 'visible', minHeight: 0, paddingTop: 28 }}>
+      <div style={{ flex: 1, display: 'flex', overflow: 'visible', minHeight: 0, paddingTop: 16, boxSizing: 'border-box' }}>
         <TournamentTable
           players={players}
           meta={meta}

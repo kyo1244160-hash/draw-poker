@@ -1254,16 +1254,29 @@ function balanceTables(tournamentId) {
   // 差が2以上あれば均等になるまでループで移動
   const movedTables = new Set();
   for (let pass = 0; pass < 10; pass++) {  // 最大10回で安全上限
-    const refreshed = t.tableIds.map(tid => ({ tid, count: (getRoom(tid)?.players ?? []).length }));
-    const maxT = refreshed.reduce((a, b) => a.count > b.count ? a : b);
+    const refreshed = t.tableIds.map(tid => {
+      const r = getRoom(tid);
+      return { tid, count: (r?.players.length ?? 0) + (r?.pendingPlayers.length ?? 0), phase: r?.phase };
+    });
     const minT = refreshed.reduce((a, b) => a.count < b.count ? a : b);
-    if (maxT.count - minT.count < 2) break;  // 均等になったら終了
+    const maxAny = refreshed.reduce((a, b) => a.count > b.count ? a : b);
+    if (maxAny.count - minT.count < 2) break;  // 均等になったら終了
+
+    // 移動元は「人数が多く、かつハンド進行中ではないテーブル」から選ぶ。
+    // 以前は最大テーブルが進行中なら即 break していたため、6/6/1 の片方が
+    // 終了済みでも、もう片方の進行中テーブルを見てバランスが止まっていた。
+    const movableSources = refreshed
+      .filter(x => x.tid !== minT.tid && x.count - minT.count >= 2)
+      .filter(x => x.phase === 'waiting' || x.phase === 'showdown')
+      .sort((a, b) => b.count - a.count);
+    const maxT = movableSources[0];
+    if (!maxT) {
+      logDev(`[TM] balance: no movable source for min=${minT.tid.slice(-8)}(${minT.count}) tables=[${refreshed.map(x => `${x.tid.slice(-8)}:${x.count}/${x.phase}`).join(',')}]`);
+      break;
+    }
 
     const roomMax = getRoom(maxT.tid);
     if (!roomMax || roomMax.players.length === 0) break;
-    // showdown または waiting 以外（ゲーム進行中）のテーブルからは移動しない
-    // 次のshowdown後に再度balanceTablesが呼ばれるのを待つ
-    if (roomMax.phase !== 'waiting' && roomMax.phase !== 'showdown') break;
     // 【テーブル重複バグ対策】移動元がスタッド進行中の場合も移動しない。
     // gameManager の room.phase が showdown/waiting でも、studManager 側
     // (studRooms) が bet3rd 等で進行中だと、leaveRoom(gameManager) だけでは
