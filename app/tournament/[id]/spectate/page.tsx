@@ -45,6 +45,7 @@ export default function SpectatePage() {
   const [timer,    setTimer]    = useState<{ remaining: number; limit: number } | null>(null);
   const [connected, setConnected] = useState(false);
   const tableIdRef = useRef<string | null>(targetTableId ?? null);
+  const leavingRef = useRef(false);
   // レイトレジスト時: 自分のテーブルID（ゲーム開始で /draw 遷移するための判定用）
   const myTableIdRef = useRef<string | null>(null);
   const [overview, setOverview] = useState<SpectateOverview>({ remainingPlayers: null, averageStack: null, tables: [] });
@@ -55,11 +56,16 @@ export default function SpectatePage() {
   const [spectatingTableId, setSpectatingTableId] = useState<string | null>(targetTableId ?? null);
 
   const fetchOverview = async () => {
+    if (leavingRef.current) return;
     setOverviewLoading(true);
     setOverviewError(null);
     try {
       const res = await fetch(`/api/tournament/${params.id}/tables`);
       if (!res.ok) {
+        if (res.status === 410) {
+          router.replace(`/tournament/${params.id}/result`);
+          return;
+        }
         setOverview({ remainingPlayers: null, averageStack: null, tables: [] });
         setOverviewError(res.status === 503 ? 'サーバー準備中です。少し待って再度お試しください' : `テーブル情報を取得できませんでした (${res.status})`);
         return;
@@ -78,6 +84,13 @@ export default function SpectatePage() {
     }
   };
 
+  const leaveSpectate = () => {
+    leavingRef.current = true;
+    tableIdRef.current = null;
+    setSpectatingTableId(null);
+    router.replace('/');
+  };
+
   const startSpectating = (tableId: string) => {
     tableIdRef.current = tableId;
     setSpectatingTableId(tableId);
@@ -87,6 +100,7 @@ export default function SpectatePage() {
     let cancelled = false;
 
     const handleTournamentStarting = ({ tournamentId: tid_t, tableId: tid }: { tournamentId: string; tableId: string }) => {
+      if (leavingRef.current) return;
       // 【重要】自分が参加登録しているトーナメント（別のトーナメント）が開始した場合も検知する。
       // ユーザーが「Aトーナメントを観戦しながらBトーナメントの開始を待つ」ケース:
       //   - params.id === A（観戦中）
@@ -109,6 +123,7 @@ export default function SpectatePage() {
     };
 
     const handleGameState = ({ players: pl, meta: m }: { players?: PlayerState[]; meta?: GameMeta }) => {
+      if (leavingRef.current) return;
       setPlayers(pl ?? []);
       setMeta(m ?? null);
       // レイトレジスト観戦中: 自分がそのテーブルのプレイヤー（またはpending）として
@@ -134,6 +149,7 @@ export default function SpectatePage() {
     };
 
     const handlePendingTableTransfer = ({ tableId: pendingTid }: { tableId: string; message?: string }) => {
+      if (leavingRef.current) return;
       if (fromLateReg) {
         myTableIdRef.current = pendingTid;
         router.replace(`/tournament/${params.id}/draw`);
@@ -144,6 +160,7 @@ export default function SpectatePage() {
     };
 
     const handleTableJoin = ({ toTableId }: { toTableId: string }) => {
+      if (leavingRef.current) return;
       if (fromLateReg) {
         myTableIdRef.current = toTableId;
         tableIdRef.current = toTableId;
@@ -153,6 +170,7 @@ export default function SpectatePage() {
     };
 
     const handleTableTransfer = ({ toTableId }: { fromTableId: string; toTableId: string }) => {
+      if (leavingRef.current) return;
       if (fromLateReg) {
         myTableIdRef.current = toTableId;
         router.replace(`/tournament/${params.id}/draw`);
@@ -165,19 +183,25 @@ export default function SpectatePage() {
     const handleBlindUpdate = (p: BlindUpdate) => setBlind(p);
     const handleTournamentStatus = (p: TournamentStatus) => setStatus(p);
     const handleTournamentFinished = () => {
+      if (leavingRef.current) return;
       router.push(`/tournament/${params.id}/result`);
     };
     const handleTournamentNotFound = () => {
+      if (leavingRef.current) return;
       router.replace(`/tournament/${params.id}`);
     };
     const handleSpectateRejected = ({ message }: { message?: string }) => {
+      if (leavingRef.current) return;
       setSpectatingTableId(null);
       tableIdRef.current = null;
       setPlayers([]);
       setMeta(null);
       setOverviewError(message ?? '観戦できません');
       fetchOverview();
-    };    const handleTableClosed = ({ tournamentId, newTableId }: { tournamentId: string; newTableId: string }) => {
+    };
+
+    const handleTableClosed = ({ tournamentId, newTableId }: { tournamentId: string; newTableId: string }) => {
+      if (leavingRef.current) return;
       if (tournamentId !== params.id) return;
       startSpectating(newTableId);
     };
@@ -296,9 +320,9 @@ export default function SpectatePage() {
             </div>
             <button
               type="button"
-              onClick={() => router.push(`/tournament/${params.id}`)}
+              onClick={leaveSpectate}
               style={{ border:'1px solid rgba(201,168,76,0.35)', background:'rgba(0,0,0,0.22)', color:'var(--gold-dim)', borderRadius:6, padding:'8px 12px', cursor:'pointer' }}
-            >戻る</button>
+            >ロビーへ</button>
           </div>
 
           <div style={{ display:'grid', gridTemplateColumns:'repeat(2,minmax(0,1fr))', gap:10, marginBottom:14 }}>

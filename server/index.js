@@ -1474,6 +1474,86 @@ app.prepare().then(async () => {
     io.emit('roomList', getLobbyList());
   });
 
+  // トーナメント観戦用テーブル概要
+  // Next API Route から server 側メモリを参照すると、バンドル境界により別インスタンスを見る場合がある。
+  // 進行中テーブルの一覧は Socket.IO と同じ Express プロセスから直接返す。
+  expressApp.get('/api/tournament/:id/tables', async (req, res) => {
+    const tournamentId = String(req.params.id ?? '');
+    if (!tournamentId) return res.status(400).json({ error: 'tournamentId required' });
+
+    const t = tournamentManager.getTournament(tournamentId);
+    if (!t) {
+      try {
+        const { getTournament } = require('./db/tournament');
+        const dbTournament = await getTournament(tournamentId);
+        if (dbTournament?.status === 'finished') {
+          return res.status(410).json({ error: 'tournament finished', status: 'finished' });
+        }
+      } catch (err) {
+        logDev(`[tables-api] DB fallback failed: ${err.message}`);
+      }
+      return res.status(404).json({ error: 'tournament not found' });
+    }
+    if (t.status === 'finished') {
+      return res.status(410).json({ error: 'tournament finished', status: 'finished' });
+    }
+
+    let remainingPlayers = 0;
+    let liveChipTotal = 0;
+
+    const tables = (t.tableIds ?? []).map((tableId, tableIndex) => {
+      const room = getRoom(tableId);
+      if (!room) return { tableId, tableNo: tableIndex + 1, playerCount: 0, players: [] };
+
+      const studRoom = studManager.getStudRoom?.(tableId);
+      const boardRoom = boardManager.getBoardRoom?.(tableId);
+      const studActive = !!studRoom && studRoom.phase && studRoom.phase !== 'waiting';
+      const boardActive = !!boardRoom && boardRoom.phase && boardRoom.phase !== 'waiting';
+      const activeEngineRoom = studActive ? studRoom : boardActive ? boardRoom : null;
+      const engineChipByKey = new Map();
+      if (activeEngineRoom) {
+        for (const ep of activeEngineRoom.players ?? []) {
+          if (ep.accountId) engineChipByKey.set(`acc:${ep.accountId}`, ep.chips);
+          if (ep.name) engineChipByKey.set(`name:${ep.name}`, ep.chips);
+        }
+      }
+
+      const allPlayers = [
+        ...(room.players ?? []),
+        ...(room.pendingPlayers ?? []),
+      ];
+
+      const players = allPlayers.map((p) => {
+        let chips = p.chips;
+        const byAcc = p.accountId ? engineChipByKey.get(`acc:${p.accountId}`) : undefined;
+        const byName = engineChipByKey.get(`name:${p.name}`);
+        if (byAcc !== undefined) chips = byAcc;
+        else if (byName !== undefined) chips = byName;
+
+        const normalizedChips = Number.isFinite(Number(chips)) ? Number(chips) : 0;
+        if (normalizedChips > 0) {
+          remainingPlayers += 1;
+          liveChipTotal += normalizedChips;
+        }
+        return {
+          name: p.name,
+          chips: normalizedChips,
+          isSelf: false,
+          sittingOut: p.sittingOut ?? p.isAway ?? false,
+        };
+      });
+
+      return { tableId, tableNo: tableIndex + 1, playerCount: players.length, players };
+    });
+
+    const totalPlayers = Math.max(Number(t.totalPlayers ?? 0), remainingPlayers + (t.eliminationOrder?.length ?? 0));
+    const totalChipsByConfig = totalPlayers > 0 && Number(t.startingChips ?? 0) > 0
+      ? totalPlayers * Number(t.startingChips)
+      : liveChipTotal;
+    const averageStack = remainingPlayers > 0 ? Math.floor(totalChipsByConfig / remainingPlayers) : 0;
+
+    res.json({ tournamentId, remainingPlayers, averageStack, tables });
+  });
   // ヘルスチェック（render.yaml の healthCheckPath）
   expressApp.get('/api/health', (_req, res) => {
     res.json({ ok: true, uptime: Math.round(process.uptime()), ts: Date.now() });

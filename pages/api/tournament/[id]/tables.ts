@@ -29,6 +29,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     totalPlayers?: number;
     startingChips?: number;
     eliminationOrder?: string[];
+    status?: string;
   }> | undefined;
   const roomsMap       = g.__pastisRooms as Map<string, {
     players:        { name: string; chips: number; accountId: string | null; sittingOut?: boolean }[];
