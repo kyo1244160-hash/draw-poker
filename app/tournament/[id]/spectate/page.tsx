@@ -9,6 +9,7 @@ import SpectatorView from '../../../components/SpectatorView';
 import type { BlindUpdate, TournamentStatus, PlayerState, GameMeta } from '../../../types/tournament';
 
 interface SpectateTablePlayer {
+  seat?: number;
   name: string;
   chips: number;
   isSelf?: boolean;
@@ -54,6 +55,8 @@ export default function SpectatePage() {
   const [selectTab, setSelectTab] = useState<'table' | 'player'>('table');
   const [playerQuery, setPlayerQuery] = useState('');
   const [spectatingTableId, setSpectatingTableId] = useState<string | null>(targetTableId ?? null);
+  const [spectatorAnchorPlayerName, setSpectatorAnchorPlayerName] = useState<string | null>(null);
+  const anchorSourceRef = useRef<'table' | 'player' | null>(targetTableId ? 'table' : null);
 
   const fetchOverview = async () => {
     if (leavingRef.current) return;
@@ -89,6 +92,8 @@ export default function SpectatePage() {
     if (currentTableId) socket.emit('t:leaveSpectate', { tableId: currentTableId });
     tableIdRef.current = null;
     setSpectatingTableId(null);
+    setSpectatorAnchorPlayerName(null);
+    anchorSourceRef.current = null;
     setPlayers([]);
     setMeta(null);
     setTimer(null);
@@ -101,12 +106,21 @@ export default function SpectatePage() {
     if (currentTableId) socket.emit('t:leaveSpectate', { tableId: currentTableId });
     tableIdRef.current = null;
     setSpectatingTableId(null);
+    setSpectatorAnchorPlayerName(null);
+    anchorSourceRef.current = null;
     router.replace('/');
   };
 
-  const startSpectating = (tableId: string) => {
+  const getLowestSeatPlayerName = (table: SpectateTableSummary) => (
+    [...table.players]
+      .sort((a, b) => (a.seat ?? Number.MAX_SAFE_INTEGER) - (b.seat ?? Number.MAX_SAFE_INTEGER))[0]?.name ?? null
+  );
+
+  const startSpectating = (tableId: string, anchorPlayerName?: string | null, source: 'table' | 'player' = 'table') => {
     tableIdRef.current = tableId;
     setSpectatingTableId(tableId);
+    setSpectatorAnchorPlayerName(anchorPlayerName ?? null);
+    anchorSourceRef.current = source;
     socket.emit('spectate', { tableId });
   };
   useEffect(() => {
@@ -137,8 +151,15 @@ export default function SpectatePage() {
 
     const handleGameState = ({ players: pl, meta: m }: { players?: PlayerState[]; meta?: GameMeta }) => {
       if (leavingRef.current) return;
-      setPlayers(pl ?? []);
+      const nextPlayers = pl ?? [];
+      setPlayers(nextPlayers);
       setMeta(m ?? null);
+      setSpectatorAnchorPlayerName((current) => {
+        if (!nextPlayers.length) return current;
+        if (current && nextPlayers.some((p) => p.name === current)) return current;
+        if (anchorSourceRef.current === 'table' || anchorSourceRef.current === 'player') return nextPlayers[0]?.name ?? null;
+        return current;
+      });
       // レイトレジスト観戦中: 自分がそのテーブルのプレイヤー（またはpending）として
       // gameState が届いたら /draw へ遷移する。
       // 判定: isSelf=true のプレイヤーが players に含まれる = 自分がこのテーブルの参加者
@@ -207,6 +228,8 @@ export default function SpectatePage() {
       if (leavingRef.current) return;
       setSpectatingTableId(null);
       tableIdRef.current = null;
+      setSpectatorAnchorPlayerName(null);
+      anchorSourceRef.current = null;
       setPlayers([]);
       setMeta(null);
       setOverviewError(message ?? '観戦できません');
@@ -216,7 +239,7 @@ export default function SpectatePage() {
     const handleTableClosed = ({ tournamentId, newTableId }: { tournamentId: string; newTableId: string }) => {
       if (leavingRef.current) return;
       if (tournamentId !== params.id) return;
-      startSpectating(newTableId);
+      startSpectating(newTableId, null, 'table');
     };
 
     connectWithAuth().then(ok => {
@@ -233,7 +256,7 @@ export default function SpectatePage() {
       // 指定なしの場合も tournamentId をサーバーに渡して即解決する
       // （サーバーの spectate ハンドラが tournamentId → tableId を自動解決）
       if (targetTableId) {
-        startSpectating(targetTableId);
+        startSpectating(targetTableId, null, 'table');
       } else if (fromLateReg) {
         socket.emit('spectate', { tournamentId: params.id, fromLateReg: true });
         socket.on('t:tournamentStarting', handleTournamentStarting);
@@ -380,7 +403,7 @@ export default function SpectatePage() {
                     ))}
                   </div>
                   <div style={{ padding:'10px 12px 12px' }}>
-                    <button type="button" onClick={() => startSpectating(table.tableId)} style={{ width:'100%', padding:'9px 12px', borderRadius:6, border:'1px solid var(--gold-dim)', background:'rgba(201,168,76,0.18)', color:'var(--gold-bright)', fontFamily:'var(--font-title)', cursor:'pointer' }}>観戦する</button>
+                    <button type="button" onClick={() => startSpectating(table.tableId, getLowestSeatPlayerName(table), 'table')} style={{ width:'100%', padding:'9px 12px', borderRadius:6, border:'1px solid var(--gold-dim)', background:'rgba(201,168,76,0.18)', color:'var(--gold-bright)', fontFamily:'var(--font-title)', cursor:'pointer' }}>観戦する</button>
                   </div>
                 </div>
               ))}
@@ -400,7 +423,7 @@ export default function SpectatePage() {
                   <button
                     key={`${table.tableId}-${player.name}`}
                     type="button"
-                    onClick={() => startSpectating(table.tableId)}
+                    onClick={() => startSpectating(table.tableId, player.name, 'player')}
                     style={{ width:'100%', display:'grid', gridTemplateColumns:'1fr 90px 100px', gap:8, alignItems:'center', padding:'9px 12px', border:0, borderTop:'1px solid rgba(255,255,255,0.06)', background:'transparent', color:'var(--cream)', cursor:'pointer', textAlign:'left' }}
                   >
                     <span>{player.name}{player.sittingOut ? ' (待機)' : ''}</span>
@@ -425,6 +448,7 @@ export default function SpectatePage() {
       timer={timer}
       onBackToTables={backToTableSelect}
       onLeave={leaveSpectate}
+      spectatorAnchorPlayerName={spectatorAnchorPlayerName}
     />
   );
 }

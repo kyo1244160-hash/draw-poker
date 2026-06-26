@@ -129,6 +129,7 @@ interface Props {
   meta:             GameMeta | null;
   timer:            TimerState | null;
   isSpectator?:     boolean;
+  spectatorAnchorPlayerName?: string | null;
   /** NL対応: bet/raise時に amount を渡せる。リミット時は省略可 */
   onBetAction:      (action:string, amount?:number) => void;
   onDrawCards:      (indices:number[]) => void;
@@ -141,7 +142,7 @@ interface Props {
 // ■ メインコンポーネント
 // ==========================================================
 export default function TournamentTable({
-  players, meta, timer, isSpectator,
+  players, meta, timer, isSpectator, spectatorAnchorPlayerName,
   onBetAction, onDrawCards, onUpdateSelected,
   blind, tournamentId,
 }: Props) {
@@ -340,7 +341,12 @@ export default function TournamentTable({
   // 自分から時計回りに他プレイヤーを並べる。
   // 観戦時は isSelf が無いため、表示専用アンカーを1人だけ下座席に置く。
   // isSelf 自体は変更しないので、手札公開や操作可否には影響しない。
-  const layoutAnchor = self ?? (isSpectator ? (players.find(p => p.isDealer) ?? players[0] ?? null) : null);
+  const layoutAnchor = self ?? (isSpectator ? (
+    (spectatorAnchorPlayerName ? players.find(p => p.name === spectatorAnchorPlayerName) : null)
+    ?? players.find(p => p.isDealer)
+    ?? players[0]
+    ?? null
+  ) : null);
   const isLayoutAnchor = (p: PlayerState) => !!layoutAnchor && p.id === layoutAnchor.id;
   const orderedOthers = (() => {
     const anchorIdx = layoutAnchor ? players.findIndex(p => p.id === layoutAnchor.id) : -1;

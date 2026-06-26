@@ -1,7 +1,7 @@
 /**
  * pages/api/tournament/[id]/tables.ts
  * GET /api/tournament/[id]/tables
- * → { remainingPlayers, averageStack, tables: [{ tableId, tableNo, players: [{name, chips, isSelf, sittingOut}] }] }
+ * → { remainingPlayers, averageStack, tables: [{ tableId, tableNo, players: [{seat, name, chips, isSelf, sittingOut}] }] }
  *
  * webpack バンドル境界問題への対応:
  *   pages/api は Next.js の webpack でバンドルされるため、
@@ -76,8 +76,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
     const allPlayers = [
-      ...(room.players        ?? []),
-      ...(room.pendingPlayers ?? []),
+      ...(room.players        ?? []).map((p, seat) => ({ ...p, _seat: seat })),
+      ...(room.pendingPlayers ?? []).map((p, idx) => ({ ...p, _seat: (room.players?.length ?? 0) + idx })),
     ];
 
     const players = allPlayers.map((p) => {
@@ -86,12 +86,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const byAcc  = p.accountId ? engineChipByKey.get(`acc:${p.accountId}`) : undefined;
       const byName = engineChipByKey.get(`name:${p.name}`);
       if (byAcc !== undefined) chips = byAcc;
-      else if (byName !== undefined) chips = byName;      const normalizedChips = Number.isFinite(Number(chips)) ? Number(chips) : 0;
+      else if (byName !== undefined) chips = byName;
+
+      const normalizedChips = Number.isFinite(Number(chips)) ? Number(chips) : 0;
       if (normalizedChips > 0) {
         remainingPlayers += 1;
         liveChipTotal += normalizedChips;
       }
       return {
+        seat:       p._seat,
         name:       p.name,
         chips:      normalizedChips,
         isSelf:     accountId ? p.accountId === accountId : false,

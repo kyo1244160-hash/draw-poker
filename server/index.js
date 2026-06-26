@@ -1528,8 +1528,8 @@ app.prepare().then(async () => {
       }
 
       const allPlayers = [
-        ...(room.players ?? []),
-        ...(room.pendingPlayers ?? []),
+        ...(room.players ?? []).map((p, seat) => ({ ...p, _seat: seat })),
+        ...(room.pendingPlayers ?? []).map((p, idx) => ({ ...p, _seat: (room.players?.length ?? 0) + idx })),
       ];
 
       const players = allPlayers.map((p) => {
@@ -1545,6 +1545,7 @@ app.prepare().then(async () => {
           liveChipTotal += normalizedChips;
         }
         return {
+          seat: p._seat,
           name: p.name,
           chips: normalizedChips,
           isSelf: false,

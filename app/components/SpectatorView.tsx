@@ -15,10 +15,11 @@ interface Props {
   timer: { remaining: number; limit: number } | null;
   onBackToTables?: () => void;
   onLeave?: () => void;
+  spectatorAnchorPlayerName?: string | null;
 }
 
 export default function SpectatorView({
-  players, meta, blind, status, tournamentName, timer, onBackToTables, onLeave,
+  players, meta, blind, status, tournamentName, timer, onBackToTables, onLeave, spectatorAnchorPlayerName,
 }: Props) {
   const modeLabelMap: Record<string, string> = {
     '27': '2-7 Triple Draw', badugi: 'Badugi', mix: 'Mix (2-7↔Badugi)',
@@ -118,6 +119,7 @@ export default function SpectatorView({
           meta={meta}
           timer={timer}
           isSpectator
+          spectatorAnchorPlayerName={spectatorAnchorPlayerName}
           blind={blind}
           onBetAction={() => {}}
           onDrawCards={() => {}}
