@@ -1,7 +1,7 @@
 /**
  * pages/api/tournament/[id]/tables.ts
  * GET /api/tournament/[id]/tables
- * → { tables: [{ tableId, players: [{name, chips, isSelf, sittingOut}] }] }
+ * → { remainingPlayers, averageStack, tables: [{ tableId, tableNo, players: [{name, chips, isSelf, sittingOut}] }] }
  *
  * webpack バンドル境界問題への対応:
  *   pages/api は Next.js の webpack でバンドルされるため、
@@ -24,7 +24,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   // global 経由でサーバーインスタンスのメモリにアクセス
   const g = global as Record<string, unknown>;
-  const tournamentsMap = g.__pastisTournaments as Map<string, { tableIds: string[] }> | undefined;
+  const tournamentsMap = g.__pastisTournaments as Map<string, {
+    tableIds: string[];
+    totalPlayers?: number;
+    startingChips?: number;
+    eliminationOrder?: string[];
+  }> | undefined;
   const roomsMap       = g.__pastisRooms as Map<string, {
     players:        { name: string; chips: number; accountId: string | null; sittingOut?: boolean }[];
     pendingPlayers: { name: string; chips: number; accountId: string | null; sittingOut?: boolean }[];
@@ -33,6 +38,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   // ドロー側 rooms のチップは syncToGameManager（ハンド終了時）まで古いままなので、
   // スタッド中は studRooms を優先してチップを引く。
   const studRoomsMap = g.__pastisStudRooms as Map<string, {
+    phase: string;
+    players: { name: string; chips: number; accountId: string | null; sittingOut?: boolean }[];
+  }> | undefined;
+  const boardRoomsMap = g.__pastisBoardRooms as Map<string, {
     phase: string;
     players: { name: string; chips: number; accountId: string | null; sittingOut?: boolean }[];
   }> | undefined;
@@ -45,45 +54,58 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const t = tournamentsMap.get(tournamentId);
   if (!t) return res.status(404).json({ error: 'tournament not found' });
 
-  const tables = t.tableIds.map((tableId: string) => {
-    const room = roomsMap?.get(tableId);
-    if (!room) return { tableId, players: [] };
+  let remainingPlayers = 0;
+  let liveChipTotal = 0;
 
-    // スタッドルームが進行中なら、そのチップを accountId/name で引けるよう索引化
+  const tables = t.tableIds.map((tableId: string, tableIndex: number) => {
+    const room = roomsMap?.get(tableId);
+    if (!room) return { tableId, tableNo: tableIndex + 1, playerCount: 0, players: [] };
+
+    // スタッド/ボード進行中なら、その専用エンジン側の最新チップを accountId/name で引けるよう索引化
     const studRoom = studRoomsMap?.get(tableId);
+    const boardRoom = boardRoomsMap?.get(tableId);
     const studActive = !!studRoom && studRoom.phase && studRoom.phase !== 'waiting';
-    const studChipByKey = new Map<string, number>();
-    if (studActive && studRoom) {
-      for (const sp of studRoom.players) {
-        if (sp.accountId) studChipByKey.set(`acc:${sp.accountId}`, sp.chips);
-        if (sp.name)      studChipByKey.set(`name:${sp.name}`, sp.chips);
+    const boardActive = !!boardRoom && boardRoom.phase && boardRoom.phase !== 'waiting';
+    const activeEngineRoom = studActive ? studRoom : boardActive ? boardRoom : null;
+    const engineChipByKey = new Map<string, number>();
+    if (activeEngineRoom) {
+      for (const ep of activeEngineRoom.players) {
+        if (ep.accountId) engineChipByKey.set(`acc:${ep.accountId}`, ep.chips);
+        if (ep.name)      engineChipByKey.set(`name:${ep.name}`, ep.chips);
       }
     }
-
     const allPlayers = [
       ...(room.players        ?? []),
       ...(room.pendingPlayers ?? []),
     ];
 
     const players = allPlayers.map((p) => {
-      // スタッド進行中は studRooms の最新チップを優先
+      // スタッド/ボード進行中は専用エンジン側の最新チップを優先
       let chips = p.chips;
-      if (studActive) {
-        const byAcc  = p.accountId ? studChipByKey.get(`acc:${p.accountId}`) : undefined;
-        const byName = studChipByKey.get(`name:${p.name}`);
-        if (byAcc !== undefined) chips = byAcc;
-        else if (byName !== undefined) chips = byName;
+      const byAcc  = p.accountId ? engineChipByKey.get(`acc:${p.accountId}`) : undefined;
+      const byName = engineChipByKey.get(`name:${p.name}`);
+      if (byAcc !== undefined) chips = byAcc;
+      else if (byName !== undefined) chips = byName;      const normalizedChips = Number.isFinite(Number(chips)) ? Number(chips) : 0;
+      if (normalizedChips > 0) {
+        remainingPlayers += 1;
+        liveChipTotal += normalizedChips;
       }
       return {
         name:       p.name,
-        chips,
+        chips:      normalizedChips,
         isSelf:     accountId ? p.accountId === accountId : false,
         sittingOut: p.sittingOut ?? false,
       };
     });
 
-    return { tableId, players };
+    return { tableId, tableNo: tableIndex + 1, playerCount: players.length, players };
   });
 
-  return res.status(200).json({ tables });
+  const totalPlayers = Math.max(Number(t.totalPlayers ?? 0), remainingPlayers + (t.eliminationOrder?.length ?? 0));
+  const totalChipsByConfig = totalPlayers > 0 && Number(t.startingChips ?? 0) > 0
+    ? totalPlayers * Number(t.startingChips)
+    : liveChipTotal;
+  const averageStack = remainingPlayers > 0 ? Math.floor(totalChipsByConfig / remainingPlayers) : 0;
+
+  return res.status(200).json({ tournamentId, remainingPlayers, averageStack, tables });
 }

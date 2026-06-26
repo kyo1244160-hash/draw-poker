@@ -280,6 +280,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
   const [tableListLoading, setTableListLoading] = useState(false);
   const [tableListData, setTableListData]   = useState<any[]>([]);
   const [tableListError, setTableListError] = useState<string | null>(null);
+  const [tableListSummary, setTableListSummary] = useState<{remainingPlayers:number|null;averageStack:number|null}>({ remainingPlayers:null, averageStack:null });
 
   useEffect(() => {
     const update = () => {
@@ -344,17 +345,20 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
         const _txt = await res.text().catch(() => '');
         console.warn(`[tableList] HTTP ${res.status}: ${_txt}`);
         setTableListData([]);
+        setTableListSummary({ remainingPlayers:null, averageStack:null });
         setTableListError(res.status === 503 ? 'サーバー準備中です。少し待って再度お試しください' : `取得に失敗しました (${res.status})`);
       } else {
         const d = await res.json();
         const _tables = Array.isArray(d.tables) ? d.tables : [];
         console.debug(`[tableList] ${_tables.length}テーブル取得`);
         setTableListData(_tables);
+        setTableListSummary({ remainingPlayers: d.remainingPlayers ?? null, averageStack: d.averageStack ?? null });
         if (_tables.length === 0) setTableListError('テーブル情報がまだありません');
       }
     } catch (e) {
       console.warn('[tableList] fetch error', e);
       setTableListData([]);
+      setTableListSummary({ remainingPlayers:null, averageStack:null });
       setTableListError('通信エラーが発生しました');
     }
     setTableListLoading(false);
@@ -635,7 +639,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
             {isShowdown && <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--cream-dim)', fontFamily: 'var(--font-body)', fontStyle: 'italic' }}>次のゲームを準備中...</div>}
           </div>
         </div>
-        <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} error={tableListError} onClose={() => setShowTableList(false)} />
+        <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} error={tableListError} remainingPlayers={tableListSummary.remainingPlayers} averageStack={tableListSummary.averageStack} onClose={() => setShowTableList(false)} />
       </>
     );
   }
@@ -939,7 +943,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
           {renderMobileTable()}
           {renderActionPanel()}
         </div>
-        <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} error={tableListError} onClose={() => setShowTableList(false)} />
+        <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} error={tableListError} remainingPlayers={tableListSummary.remainingPlayers} averageStack={tableListSummary.averageStack} onClose={() => setShowTableList(false)} />
       </>
     );
   }
@@ -953,7 +957,7 @@ export default function StudTable({ players, meta, timer, isSpectator, onBetActi
           {renderActionPanel()}
         </div>
       </div>
-      <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} error={tableListError} onClose={() => setShowTableList(false)} />
+      <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} error={tableListError} remainingPlayers={tableListSummary.remainingPlayers} averageStack={tableListSummary.averageStack} onClose={() => setShowTableList(false)} />
     </>
   );
 }

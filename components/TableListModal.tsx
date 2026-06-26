@@ -15,8 +15,10 @@ export interface TableListPlayer {
 }
 
 export interface TableListData {
-  tableId:  string;
-  players:  TableListPlayer[];
+  tableId:      string;
+  tableNo?:     number;
+  playerCount?: number;
+  players:      TableListPlayer[];
 }
 
 interface Props {
@@ -25,9 +27,11 @@ interface Props {
   data:     TableListData[];
   onClose:  () => void;
   error?:   string | null;
+  remainingPlayers?: number | null;
+  averageStack?:     number | null;
 }
 
-export default function TableListModal({ open, loading, data, onClose, error }: Props) {
+export default function TableListModal({ open, loading, data, onClose, error, remainingPlayers, averageStack }: Props) {
   if (!open) return null;
 
   return (
@@ -68,6 +72,21 @@ export default function TableListModal({ open, loading, data, onClose, error }: 
           </button>
         </div>
 
+        {!loading && (remainingPlayers != null || averageStack != null) && (
+          <div style={{
+            display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:14,
+          }}>
+            <div style={{border:'1px solid rgba(201,168,76,0.22)',borderRadius:7,padding:'8px 10px',background:'rgba(0,0,0,0.18)'}}>
+              <div style={{fontSize:10,color:'var(--gold-dim)',fontFamily:'var(--font-body)',marginBottom:3}}>残り人数</div>
+              <div style={{fontSize:16,color:'var(--cream)',fontFamily:'var(--font-title)'}}>{remainingPlayers ?? '-'}人</div>
+            </div>
+            <div style={{border:'1px solid rgba(201,168,76,0.22)',borderRadius:7,padding:'8px 10px',background:'rgba(0,0,0,0.18)'}}>
+              <div style={{fontSize:10,color:'var(--gold-dim)',fontFamily:'var(--font-body)',marginBottom:3}}>平均スタック</div>
+              <div style={{fontSize:16,color:'var(--cream)',fontFamily:'var(--font-title)'}}>{averageStack != null ? averageStack.toLocaleString() : '-'}</div>
+            </div>
+          </div>
+        )}
+
         {loading && (
           <div style={{textAlign:'center',color:'var(--cream-dim)',padding:'32px 0'}}>
             読み込み中...
@@ -100,7 +119,7 @@ export default function TableListModal({ open, loading, data, onClose, error }: 
                   letterSpacing:'0.15em',
                   color: isMine ? 'var(--gold)' : 'var(--cream-dim)',
                 }}>
-                  Table {ti + 1}
+                  Table {tbl.tableNo ?? ti + 1}
                 </span>
                 {isMine && (
                   <span style={{

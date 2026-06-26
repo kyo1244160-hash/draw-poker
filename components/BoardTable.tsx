@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { socket } from '../socket';
+import TableListModal from './TableListModal';
 import type { BlindUpdate, GameMeta, PlayerState } from '../app/types/tournament';
 import { MODE_COLOR, MODE_LABEL_FULL } from '../lib/modeLabels';
 
@@ -113,10 +114,15 @@ function fmtBlind(s: number) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
-export default function BoardTable({ players, meta, timer, isSpectator, onBetAction, blind }: Props) {
+export default function BoardTable({ players, meta, timer, isSpectator, onBetAction, blind, tournamentId }: Props) {
   const [layout, setLayout] = useState<'pc' | 'portrait' | 'landscape' | null>(null);
   const [containerSize, setContainerSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [actionFlash, setActionFlash] = useState<Record<string, { label: string; key: number }>>({});
+  const [showTableList, setShowTableList] = useState(false);
+  const [tableListLoading, setTableListLoading] = useState(false);
+  const [tableListData, setTableListData] = useState<any[]>([]);
+  const [tableListError, setTableListError] = useState<string | null>(null);
+  const [tableListSummary, setTableListSummary] = useState<{remainingPlayers:number|null;averageStack:number|null}>({ remainingPlayers:null, averageStack:null });
   const containerRef = useRef<HTMLDivElement>(null);
   const flashTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -243,6 +249,53 @@ export default function BoardTable({ players, meta, timer, isSpectator, onBetAct
     }
   }, [isMyTurn]);
 
+
+  const openTableList = async () => {
+    if (!tournamentId) return;
+    setShowTableList(true);
+    setTableListLoading(true);
+    setTableListError(null);
+    try {
+      const res = await fetch(`/api/tournament/${tournamentId}/tables`);
+      if (!res.ok) {
+        setTableListData([]);
+        setTableListSummary({ remainingPlayers:null, averageStack:null });
+        setTableListError(res.status === 503 ? 'サーバー準備中です。少し待って再度お試しください' : `取得に失敗しました (${res.status})`);
+      } else {
+        const data = await res.json();
+        const tables = Array.isArray(data.tables) ? data.tables : [];
+        setTableListData(tables);
+        setTableListSummary({ remainingPlayers: data.remainingPlayers ?? null, averageStack: data.averageStack ?? null });
+        if (tables.length === 0) setTableListError('テーブル情報がまだありません');
+      }
+    } catch {
+      setTableListData([]);
+      setTableListSummary({ remainingPlayers:null, averageStack:null });
+      setTableListError('通信エラーが発生しました');
+    } finally {
+      setTableListLoading(false);
+    }
+  };
+
+  const HeaderTableListButton = () => (
+    <button
+      type="button"
+      onClick={openTableList}
+      aria-label="Table list"
+      title="Table list"
+      style={{
+        position:'fixed',top:52,right:8,width:32,height:28,
+        borderRadius:5,border:'1px solid rgba(201,168,76,0.45)',
+        background:'rgba(6,45,28,0.95)',color:'var(--gold-bright)',
+        display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:3,
+        cursor:'pointer',zIndex:45,boxShadow:'0 2px 8px rgba(0,0,0,0.35)',
+      }}
+    >
+      <span style={{width:15,height:2,borderRadius:2,background:'currentColor',display:'block'}} />
+      <span style={{width:15,height:2,borderRadius:2,background:'currentColor',display:'block'}} />
+      <span style={{width:15,height:2,borderRadius:2,background:'currentColor',display:'block'}} />
+    </button>
+  );
   if (layout === null) {
     return <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--gold)', fontFamily: 'var(--font-title)' }}>読み込み中...</div>;
   }
@@ -444,7 +497,9 @@ export default function BoardTable({ players, meta, timer, isSpectator, onBetAct
     };
 
     return (
-      <div ref={containerRef} style={{ display: 'flex', alignItems: 'center', gap: 16, width: '100%', maxWidth: tw + actionW + 48, padding: '0 16px', flex: 1, minHeight: 0 }}>
+    <>
+    <HeaderTableListButton />
+    <div ref={containerRef} style={{ display: 'flex', alignItems: 'center', gap: 16, width: '100%', maxWidth: tw + actionW + 48, padding: '0 16px', flex: 1, minHeight: 0 }}>
         <div style={{ position: 'relative', width: tw, height: th, flexShrink: 0 }}>
           <Felt tw={tw} th={th} />
           <CenterInfo meta={meta} board={board} mode={mode} modeColor={modeColor} blind={blind} blindCountdown={blindCountdown} />
@@ -484,6 +539,8 @@ export default function BoardTable({ players, meta, timer, isSpectator, onBetAct
           <ActionPanel />
         </div>
       </div>
+      <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} error={tableListError} remainingPlayers={tableListSummary.remainingPlayers} averageStack={tableListSummary.averageStack} onClose={() => setShowTableList(false)} />
+    </>
     );
   }
 
@@ -549,6 +606,8 @@ export default function BoardTable({ players, meta, timer, isSpectator, onBetAct
   };
 
   return (
+    <>
+    <HeaderTableListButton />
     <div ref={containerRef} style={{ display: 'flex', flexDirection: portrait ? 'column' : 'row', width: '100%', height: '100%', overflow: 'visible' }}>
       <div style={{ position: 'relative', width: tw, height: th, margin: portrait ? '0 auto' : 0, flexShrink: 0 }}>
         <Felt tw={tw} th={th} mobile />
@@ -584,6 +643,8 @@ export default function BoardTable({ players, meta, timer, isSpectator, onBetAct
         <ActionPanel compact />
       </div>
     </div>
+    <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} error={tableListError} remainingPlayers={tableListSummary.remainingPlayers} averageStack={tableListSummary.averageStack} onClose={() => setShowTableList(false)} />
+    </>
   );
 }
 

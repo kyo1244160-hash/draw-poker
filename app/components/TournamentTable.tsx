@@ -151,8 +151,10 @@ export default function TournamentTable({
   const containerRef = useRef<HTMLDivElement>(null);
   const [actionFlash,   setActionFlash]   = useState<Record<string,{label:string;key:number}>>({});
   const [showTableList, setShowTableList] = useState(false);
-  const [tableListData, setTableListData] = useState<{tableId:string;players:{name:string;chips:number;isSelf:boolean;sittingOut:boolean}[]}[]>([]);
+  const [tableListData, setTableListData] = useState<{tableId:string;tableNo?:number;playerCount?:number;players:{name:string;chips:number;isSelf:boolean;sittingOut:boolean}[]}[]>([]);
   const [tableListLoading, setTableListLoading] = useState(false);
+  const [tableListError, setTableListError] = useState<string | null>(null);
+  const [tableListSummary, setTableListSummary] = useState<{remainingPlayers:number|null;averageStack:number|null}>({ remainingPlayers:null, averageStack:null });
   const [drawFlash,     setDrawFlash]     = useState<Record<string,{count:number;key:number}>>({});
   const [lastDrawCount, setLastDrawCount] = useState<Record<string,number|null>>({});
   const prevDrewRef = useRef<Record<string,boolean>>({});
@@ -291,17 +293,27 @@ export default function TournamentTable({
     if (!tournamentId) return;
     setShowTableList(true);
     setTableListLoading(true);
+    setTableListError(null);
     try {
       const res = await fetch(`/api/tournament/${tournamentId}/tables`);
-      if (res.ok) {
+      if (!res.ok) {
+        setTableListData([]);
+        setTableListSummary({ remainingPlayers:null, averageStack:null });
+        setTableListError(res.status === 503 ? 'サーバー準備中です。少し待って再度お試しください' : `取得に失敗しました (${res.status})`);
+      } else {
         const data = await res.json();
         setTableListData(data.tables ?? []);
+        setTableListSummary({ remainingPlayers: data.remainingPlayers ?? null, averageStack: data.averageStack ?? null });
+        if (!Array.isArray(data.tables) || data.tables.length === 0) setTableListError('テーブル情報がまだありません');
       }
-    } catch { /* silent */ } finally {
+    } catch {
+      setTableListData([]);
+      setTableListSummary({ remainingPlayers:null, averageStack:null });
+      setTableListError('通信エラーが発生しました');
+    } finally {
       setTableListLoading(false);
     }
   };
-
   const HeaderTableListButton = () => {
     if (!tournamentId) return null;
     return (
@@ -1063,7 +1075,7 @@ export default function TournamentTable({
         </div>
       </div>
 
-      <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} onClose={() => setShowTableList(false)} />
+      <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} error={tableListError} remainingPlayers={tableListSummary.remainingPlayers} averageStack={tableListSummary.averageStack} onClose={() => setShowTableList(false)} />
       </>
     );
   }
@@ -1436,7 +1448,7 @@ export default function TournamentTable({
         </div>
       </div>
 
-      <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} onClose={() => setShowTableList(false)} />
+      <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} error={tableListError} remainingPlayers={tableListSummary.remainingPlayers} averageStack={tableListSummary.averageStack} onClose={() => setShowTableList(false)} />
       </>
     );
   }
@@ -1467,7 +1479,7 @@ export default function TournamentTable({
       </div>
     </div>
 
-    <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} onClose={() => setShowTableList(false)} />
+    <TableListModal open={showTableList} loading={tableListLoading} data={tableListData} error={tableListError} remainingPlayers={tableListSummary.remainingPlayers} averageStack={tableListSummary.averageStack} onClose={() => setShowTableList(false)} />
     </>
   );
 }

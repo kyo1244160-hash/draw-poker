@@ -1170,7 +1170,7 @@ app.prepare().then(async () => {
     registerZoomHandlers(io, socket);
 
     // ----- 観戦（トーナメントテーブル専用）-----
-    socket.on('spectate', ({ tableId: rawTableId, tournamentId }) => {
+    socket.on('spectate', async ({ tableId: rawTableId, tournamentId, fromLateReg }) => {
       // tableId 未指定の場合は tournamentId からアクティブなテーブルを自動解決
       let tableId = rawTableId;
       const _specTid = tournamentId; // tournamentId を後続処理でも参照
@@ -1197,6 +1197,26 @@ app.prepare().then(async () => {
         // roomToTournament に登録されていない（tableIds と不整合）
         // エラーは出さず静かに戻す（クライアントは t:tournamentStarting を待つ）
         logDev(`[spectate] ${tableId} not in roomToTournament`);
+        return;
+      }
+      const specTournament = tournamentManager.getTournamentByTable(tableId) ?? (_specTid ? tournamentManager.getTournament(_specTid) : null);
+      const specUser = socket.data.user;
+      const specAccountId = specUser?.accountId ?? null;
+      const isAdminSpectator = !!specUser?.isAdmin;
+      const isEliminatedSpectator = !!(specTournament && specAccountId && specTournament.eliminationOrder?.includes(specAccountId));
+      let isLateRegWaitingSpectator = false;
+      if (!isEliminatedSpectator && !isAdminSpectator && fromLateReg === true && specTournament && specAccountId) {
+        try {
+          const alreadySeated = !!tournamentManager.getTableForPlayer(specTournament.id, specAccountId);
+          const registered = await require('./db/tournament').isRegistered(specTournament.id, specAccountId);
+          isLateRegWaitingSpectator = !!specTournament.lateRegOpen && registered && !alreadySeated;
+        } catch (err) {
+          log(`[spectate] lateReg permission check failed: ${err?.message ?? err}`);
+        }
+      }
+      if (!isAdminSpectator && !isEliminatedSpectator && !isLateRegWaitingSpectator) {
+        socket.emit('t:spectateRejected', { message: '観戦モードはバースト後のみ利用できます' });
+        logDev(`[spectate] rejected user=${specUser?.nickname ?? '-'} table=${tableId.slice(-8)}`);
         return;
       }
       // 既存の観戦を解除

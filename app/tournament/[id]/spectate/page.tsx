@@ -8,6 +8,23 @@ import { socket, connectWithAuth } from '../../../../socket';
 import SpectatorView from '../../../components/SpectatorView';
 import type { BlindUpdate, TournamentStatus, PlayerState, GameMeta } from '../../../types/tournament';
 
+interface SpectateTablePlayer {
+  name: string;
+  chips: number;
+  isSelf?: boolean;
+  sittingOut?: boolean;
+}
+interface SpectateTableSummary {
+  tableId: string;
+  tableNo?: number;
+  playerCount?: number;
+  players: SpectateTablePlayer[];
+}
+interface SpectateOverview {
+  remainingPlayers: number | null;
+  averageStack: number | null;
+  tables: SpectateTableSummary[];
+}
 export default function SpectatePage() {
   const params       = useParams() as { id: string };
   const searchParams = useSearchParams();
@@ -30,7 +47,42 @@ export default function SpectatePage() {
   const tableIdRef = useRef<string | null>(targetTableId ?? null);
   // レイトレジスト時: 自分のテーブルID（ゲーム開始で /draw 遷移するための判定用）
   const myTableIdRef = useRef<string | null>(null);
+  const [overview, setOverview] = useState<SpectateOverview>({ remainingPlayers: null, averageStack: null, tables: [] });
+  const [overviewLoading, setOverviewLoading] = useState(false);
+  const [overviewError, setOverviewError] = useState<string | null>(null);
+  const [selectTab, setSelectTab] = useState<'table' | 'player'>('table');
+  const [playerQuery, setPlayerQuery] = useState('');
+  const [spectatingTableId, setSpectatingTableId] = useState<string | null>(targetTableId ?? null);
 
+  const fetchOverview = async () => {
+    setOverviewLoading(true);
+    setOverviewError(null);
+    try {
+      const res = await fetch(`/api/tournament/${params.id}/tables`);
+      if (!res.ok) {
+        setOverview({ remainingPlayers: null, averageStack: null, tables: [] });
+        setOverviewError(res.status === 503 ? 'サーバー準備中です。少し待って再度お試しください' : `テーブル情報を取得できませんでした (${res.status})`);
+        return;
+      }
+      const data = await res.json();
+      setOverview({
+        remainingPlayers: data.remainingPlayers ?? null,
+        averageStack: data.averageStack ?? null,
+        tables: Array.isArray(data.tables) ? data.tables : [],
+      });
+    } catch {
+      setOverview({ remainingPlayers: null, averageStack: null, tables: [] });
+      setOverviewError('通信エラーが発生しました');
+    } finally {
+      setOverviewLoading(false);
+    }
+  };
+
+  const startSpectating = (tableId: string) => {
+    tableIdRef.current = tableId;
+    setSpectatingTableId(tableId);
+    socket.emit('spectate', { tableId });
+  };
   useEffect(() => {
     let cancelled = false;
 
@@ -52,8 +104,7 @@ export default function SpectatePage() {
         return;
       }
       if (!tableIdRef.current) {
-        tableIdRef.current = tid;
-        socket.emit('spectate', { tableId: tid });
+        fetchOverview();
       }
     };
 
@@ -119,11 +170,16 @@ export default function SpectatePage() {
     const handleTournamentNotFound = () => {
       router.replace(`/tournament/${params.id}`);
     };
-    const handleTableClosed = ({ tournamentId, newTableId }: { tournamentId: string; newTableId: string }) => {
+    const handleSpectateRejected = ({ message }: { message?: string }) => {
+      setSpectatingTableId(null);
+      tableIdRef.current = null;
+      setPlayers([]);
+      setMeta(null);
+      setOverviewError(message ?? '観戦できません');
+      fetchOverview();
+    };    const handleTableClosed = ({ tournamentId, newTableId }: { tournamentId: string; newTableId: string }) => {
       if (tournamentId !== params.id) return;
-      tableIdRef.current = newTableId;
-      // 新テーブルを観戦開始（setPlayers/setMetaは新テーブルのgameStateで上書きされる）
-      socket.emit('spectate', { tableId: newTableId });
+      startSpectating(newTableId);
     };
 
     connectWithAuth().then(ok => {
@@ -140,11 +196,12 @@ export default function SpectatePage() {
       // 指定なしの場合も tournamentId をサーバーに渡して即解決する
       // （サーバーの spectate ハンドラが tournamentId → tableId を自動解決）
       if (targetTableId) {
-        socket.emit('spectate', { tableId: targetTableId });
+        startSpectating(targetTableId);
+      } else if (fromLateReg) {
+        socket.emit('spectate', { tournamentId: params.id, fromLateReg: true });
+        socket.on('t:tournamentStarting', handleTournamentStarting);
       } else {
-        // 進行中トーナメントなら tournamentId だけで即解決できる
-        socket.emit('spectate', { tournamentId: params.id });
-        // 未開始の場合に備えて t:tournamentStarting も待つ
+        fetchOverview();
         socket.on('t:tournamentStarting', handleTournamentStarting);
       }
     });
@@ -172,6 +229,7 @@ export default function SpectatePage() {
 
     // トーナメントが見つからない（終了・未起動）→ 登録ページへ
     socket.on('t:tournamentNotFound', handleTournamentNotFound);
+    socket.on('t:spectateRejected', handleSpectateRejected);
 
     // 観戦中テーブルがバランシングで解体された → 新テーブルへ切り替え
     socket.on('t:tableClosed', handleTableClosed);
@@ -185,6 +243,7 @@ export default function SpectatePage() {
       socket.off('t:tournamentStarting', handleTournamentStarting);
       socket.off('t:tournamentFinished', handleTournamentFinished);
       socket.off('t:tournamentNotFound', handleTournamentNotFound);
+      socket.off('t:spectateRejected', handleSpectateRejected);
       socket.off('t:tableClosed', handleTableClosed);
       socket.off('t:pendingTableTransfer', handlePendingTableTransfer);
       socket.off('t:tableJoin', handleTableJoin);
@@ -193,6 +252,10 @@ export default function SpectatePage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const normalizedQuery = playerQuery.trim().toLowerCase();
+  const playerRows = overview.tables.flatMap((table) =>
+    table.players.map((player) => ({ table, player }))
+  ).filter(({ player }) => !normalizedQuery || player.name.toLowerCase().includes(normalizedQuery));
   if (!connected) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-gray-950 text-white">
@@ -204,6 +267,118 @@ export default function SpectatePage() {
     );
   }
 
+  if (!fromLateReg && !spectatingTableId) {
+    const tabButton = (tab: 'table' | 'player', label: string) => (
+      <button
+        type="button"
+        onClick={() => setSelectTab(tab)}
+        style={{
+          flex: 1,
+          padding: '10px 12px',
+          borderRadius: 6,
+          border: `1px solid ${selectTab === tab ? 'var(--gold)' : 'rgba(201,168,76,0.28)'}`,
+          background: selectTab === tab ? 'rgba(201,168,76,0.18)' : 'rgba(0,0,0,0.22)',
+          color: selectTab === tab ? 'var(--gold-bright)' : 'var(--cream-dim)',
+          fontFamily: 'var(--font-title)',
+          fontSize: 12,
+          cursor: 'pointer',
+        }}
+      >{label}</button>
+    );
+
+    return (
+      <div style={{ minHeight:'100dvh', background:'var(--felt)', color:'var(--cream)', fontFamily:'var(--font-body)', padding:'18px 14px', overflowY:'auto' }}>
+        <div style={{ maxWidth:900, margin:'0 auto' }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, marginBottom:14 }}>
+            <div>
+              <div style={{ fontFamily:'var(--font-title)', color:'var(--gold)', fontSize:24, letterSpacing:'0.08em' }}>観戦テーブル選択</div>
+              <div style={{ color:'var(--cream-dim)', fontSize:13, marginTop:4 }}>バースト後の観戦モードです</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => router.push(`/tournament/${params.id}`)}
+              style={{ border:'1px solid rgba(201,168,76,0.35)', background:'rgba(0,0,0,0.22)', color:'var(--gold-dim)', borderRadius:6, padding:'8px 12px', cursor:'pointer' }}
+            >戻る</button>
+          </div>
+
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(2,minmax(0,1fr))', gap:10, marginBottom:14 }}>
+            <div style={{ border:'1px solid rgba(201,168,76,0.25)', borderRadius:8, padding:'12px 14px', background:'rgba(0,0,0,0.18)' }}>
+              <div style={{ color:'var(--gold-dim)', fontSize:11, marginBottom:4 }}>残り人数</div>
+              <div style={{ fontFamily:'var(--font-title)', fontSize:22 }}>{overview.remainingPlayers ?? '-'}人</div>
+            </div>
+            <div style={{ border:'1px solid rgba(201,168,76,0.25)', borderRadius:8, padding:'12px 14px', background:'rgba(0,0,0,0.18)' }}>
+              <div style={{ color:'var(--gold-dim)', fontSize:11, marginBottom:4 }}>平均スタック</div>
+              <div style={{ fontFamily:'var(--font-title)', fontSize:22 }}>{overview.averageStack != null ? overview.averageStack.toLocaleString() : '-'}</div>
+            </div>
+          </div>
+
+          <div style={{ display:'flex', gap:8, marginBottom:14 }}>
+            {tabButton('table', 'テーブルから選ぶ')}
+            {tabButton('player', 'プレイヤーから選ぶ')}
+            <button
+              type="button"
+              onClick={fetchOverview}
+              style={{ width:42, borderRadius:6, border:'1px solid rgba(201,168,76,0.28)', background:'rgba(0,0,0,0.22)', color:'var(--gold-dim)', cursor:'pointer' }}
+              title="更新"
+            >↻</button>
+          </div>
+
+          {overviewLoading && <div style={{ textAlign:'center', padding:36, color:'var(--cream-dim)' }}>読み込み中...</div>}
+          {!overviewLoading && overviewError && <div style={{ textAlign:'center', padding:24, color:'#ffaaaa', border:'1px solid rgba(180,40,40,0.35)', borderRadius:8, background:'rgba(80,0,0,0.18)' }}>{overviewError}</div>}
+
+          {!overviewLoading && !overviewError && selectTab === 'table' && (
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))', gap:12 }}>
+              {overview.tables.map((table) => (
+                <div key={table.tableId} style={{ border:'1px solid rgba(201,168,76,0.28)', borderRadius:8, overflow:'hidden', background:'rgba(0,0,0,0.18)' }}>
+                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'9px 12px', background:'rgba(0,0,0,0.24)', borderBottom:'1px solid rgba(201,168,76,0.15)' }}>
+                    <span style={{ fontFamily:'var(--font-title)', color:'var(--gold)' }}>Table {table.tableNo ?? overview.tables.indexOf(table) + 1}</span>
+                    <span style={{ color:'var(--cream-dim)', fontSize:12 }}>{table.players.length}人</span>
+                  </div>
+                  <div style={{ padding:'6px 0' }}>
+                    {[...table.players].sort((a,b) => b.chips - a.chips).map((p) => (
+                      <div key={`${table.tableId}-${p.name}`} style={{ display:'flex', justifyContent:'space-between', padding:'6px 12px', color:p.sittingOut?'rgba(255,255,255,0.38)':'var(--cream)' }}>
+                        <span>{p.name}{p.sittingOut ? ' (待機)' : ''}</span>
+                        <span style={{ fontFamily:'var(--font-title)', color:'#9bea9b' }}>{p.chips.toLocaleString()}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ padding:'10px 12px 12px' }}>
+                    <button type="button" onClick={() => startSpectating(table.tableId)} style={{ width:'100%', padding:'9px 12px', borderRadius:6, border:'1px solid var(--gold-dim)', background:'rgba(201,168,76,0.18)', color:'var(--gold-bright)', fontFamily:'var(--font-title)', cursor:'pointer' }}>観戦する</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {!overviewLoading && !overviewError && selectTab === 'player' && (
+            <div>
+              <input
+                value={playerQuery}
+                onChange={(e) => setPlayerQuery(e.target.value)}
+                placeholder="プレイヤー名で検索"
+                style={{ width:'100%', boxSizing:'border-box', marginBottom:10, padding:'10px 12px', borderRadius:6, border:'1px solid rgba(201,168,76,0.28)', background:'rgba(0,0,0,0.22)', color:'var(--cream)' }}
+              />
+              <div style={{ border:'1px solid rgba(201,168,76,0.24)', borderRadius:8, overflow:'hidden', background:'rgba(0,0,0,0.18)' }}>
+                {playerRows.map(({ table, player }) => (
+                  <button
+                    key={`${table.tableId}-${player.name}`}
+                    type="button"
+                    onClick={() => startSpectating(table.tableId)}
+                    style={{ width:'100%', display:'grid', gridTemplateColumns:'1fr 90px 100px', gap:8, alignItems:'center', padding:'9px 12px', border:0, borderTop:'1px solid rgba(255,255,255,0.06)', background:'transparent', color:'var(--cream)', cursor:'pointer', textAlign:'left' }}
+                  >
+                    <span>{player.name}{player.sittingOut ? ' (待機)' : ''}</span>
+                    <span style={{ color:'var(--gold-dim)' }}>Table {table.tableNo ?? overview.tables.indexOf(table) + 1}</span>
+                    <span style={{ fontFamily:'var(--font-title)', color:'#9bea9b', textAlign:'right' }}>{player.chips.toLocaleString()}</span>
+                  </button>
+                ))}
+                {playerRows.length === 0 && <div style={{ padding:24, textAlign:'center', color:'var(--cream-dim)' }}>該当するプレイヤーがいません</div>}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
   return (
     <SpectatorView
       players={players}

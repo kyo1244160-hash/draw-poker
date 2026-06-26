@@ -303,17 +303,9 @@ export default function TournamentLobby() {
                 <p style={{ color: '#ee8888', fontFamily: 'var(--font-title)', fontSize: 14 }}>定員に達しました</p>
               )}
               {isRunningNotRegistered && !isLateReg && (
-                <>
-                  <p style={{ color: 'var(--cream-dim)', fontFamily: 'var(--font-title)', fontSize: 14 }}>
-                    現在参加受付中ではありません（進行中）
-                  </p>
-                  <button
-                    style={S.spectateBtn}
-                    onClick={() => router.push(`/tournament/${tournament.id}/spectate`)}
-                  >
-                    👁 観戦する
-                  </button>
-                </>
+                <p style={{ color: 'var(--cream-dim)', fontFamily: 'var(--font-title)', fontSize: 14 }}>
+                  現在参加受付中ではありません（進行中）
+                </p>
               )}
               {actionMsg && (
                 <p style={{ color: actionMsg.startsWith('✅') ? '#88ee88' : '#ee8888', fontSize: 14, margin: 0 }}>{actionMsg}</p>
