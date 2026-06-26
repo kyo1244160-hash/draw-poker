@@ -84,8 +84,21 @@ export default function SpectatePage() {
     }
   };
 
+  const backToTableSelect = () => {
+    const currentTableId = tableIdRef.current;
+    if (currentTableId) socket.emit('t:leaveSpectate', { tableId: currentTableId });
+    tableIdRef.current = null;
+    setSpectatingTableId(null);
+    setPlayers([]);
+    setMeta(null);
+    setTimer(null);
+    fetchOverview();
+  };
+
   const leaveSpectate = () => {
     leavingRef.current = true;
+    const currentTableId = tableIdRef.current;
+    if (currentTableId) socket.emit('t:leaveSpectate', { tableId: currentTableId });
     tableIdRef.current = null;
     setSpectatingTableId(null);
     router.replace('/');
@@ -410,7 +423,8 @@ export default function SpectatePage() {
       blind={blind}
       status={status}
       timer={timer}
-      onLeave={() => { window.location.href = '/'; }}
+      onBackToTables={backToTableSelect}
+      onLeave={leaveSpectate}
     />
   );
 }

@@ -1264,6 +1264,15 @@ app.prepare().then(async () => {
       socket.emit('gameState', { players, meta, isSpectator: true });
     });
 
+    socket.on('t:leaveSpectate', ({ tableId }) => {
+      const tid = typeof tableId === 'string' ? tableId : currentRoom.roomId;
+      if (tid) {
+        socket.leave(tid);
+        _spectators.get(tid)?.delete(socket.id);
+      }
+      if (!tid || currentRoom.roomId === tid) currentRoom = { name: '', roomId: '' };
+    });
+
     // ================================================================
     // ■ スリーカードポーカー イベント
     // ================================================================
