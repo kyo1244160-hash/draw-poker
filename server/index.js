@@ -358,6 +358,8 @@ app.prepare().then(async () => {
   // ===== 二重接続防止ミドルウェア（管理者は複数接続OK）=====
   // accountId → socketId のMap
   const _connectedUsers = new Map();
+  // tournamentId:accountId → timestamp。レイトレジ新規配置の二重実行を短時間だけ抑止する。
+  const _lateRegPlacementLocks = new Map();
   io.use((socket, next) => {
     const user = socket.data.user;
     // ゲスト・BOTはスキップ
@@ -432,12 +434,17 @@ app.prepare().then(async () => {
     socket.on('t:getMyTable', ({ tournamentId }) => {
       const user = socket.data.user;
       if (!user?.accountId) return;
-      let tableId = tournamentManager.getTableForPlayer(tournamentId, user.accountId);
+      const _isSameTournamentUser = (p) => !!p && (
+        p.accountId === user.accountId ||
+        p.id === user.accountId ||
+        (!!user.nickname && p.name === user.nickname && !p.accountId)
+      );
+      let tableId = tournamentManager.getTableForPlayer(tournamentId, user.accountId, user.nickname);
       if (tableId) {
         // pendingPlayersにいるかどうか確認
         const { getOrCreateRoom } = require('./poker/gameManager');
         const room = getOrCreateRoom(tableId);
-        const pendingPlayer = room?.pendingPlayers?.find(p => p.accountId === user.accountId);
+        const pendingPlayer = room?.pendingPlayers?.find(p => _isSameTournamentUser(p));
         if (pendingPlayer) {
           // pending中に再接続: socket IDを更新してpending通知を送信
           const oldSocketId = pendingPlayer.id;
@@ -446,6 +453,7 @@ app.prepare().then(async () => {
           }
           pendingPlayer.id = socket.id;
           pendingPlayer.disconnected = false;
+          if (!pendingPlayer.accountId) pendingPlayer.accountId = user.accountId;
           socket.join(tableId);
           _removeSpectatorSocket(socket.id, tableId);
           currentRoom = { name: user.nickname ?? '', roomId: tableId };
@@ -464,11 +472,12 @@ app.prepare().then(async () => {
           // 再接続: room.players の socket.id を即座に更新する。
           // t:tournamentStarting → フロントの joinRoom 到達までの非同期の隙間に
           // betAction が送られると "そのアクションはできません" エラーになるバグを防ぐ。
-          const activePlayer = room?.players.find(p => p.accountId === user.accountId);
+          const activePlayer = room?.players.find(p => _isSameTournamentUser(p));
           if (activePlayer && activePlayer.id !== socket.id) {
             _cancelTournamentDisconnectGrace(activePlayer.id);
             activePlayer.id = socket.id;
             activePlayer.disconnected = false;
+            if (!activePlayer.accountId) activePlayer.accountId = user.accountId;
             // スタッド進行中の場合、studManager 側の id も同期する。
             // これを怠ると手番照合・チップ書き戻しが id 不一致で失敗する。
             studManager.updateStudPlayerSocketId(tableId, user.accountId, user.nickname, socket.id);
@@ -531,11 +540,11 @@ app.prepare().then(async () => {
             return;
           }
           // メモリにある → テーブルを再検索
-          const retryTableId = tournamentManager.getTableForPlayer(tournamentId, user.accountId);
+          const retryTableId = tournamentManager.getTableForPlayer(tournamentId, user.accountId, user.nickname);
           if (retryTableId) {
             const { getOrCreateRoom: _gor } = require('./poker/gameManager');
             const _room = _gor(retryTableId);
-            const _pending = _room?.pendingPlayers?.find(p => p.accountId === user.accountId);
+            const _pending = _room?.pendingPlayers?.find(p => _isSameTournamentUser(p));
             if (_pending) {
               const _oldSocketId = _pending.id;
               if (_oldSocketId && _oldSocketId !== socket.id) {
@@ -543,6 +552,7 @@ app.prepare().then(async () => {
               }
               _pending.id = socket.id;
               _pending.disconnected = false;
+              if (!_pending.accountId) _pending.accountId = user.accountId;
               socket.join(retryTableId);
               _removeSpectatorSocket(socket.id, retryTableId);
               currentRoom = { name: user.nickname ?? '', roomId: retryTableId };
@@ -557,11 +567,12 @@ app.prepare().then(async () => {
             } else {
               // 【重要】retry成功時にも player.id を即更新する。
               // 更新しないと _broadcast が socket を見つけられず gameState が届かない。
-              const _ap = _room?.players.find(p => p.accountId === user.accountId);
+              const _ap = _room?.players.find(p => _isSameTournamentUser(p));
               if (_ap && _ap.id !== socket.id) {
                 _cancelTournamentDisconnectGrace(_ap.id);
                 _ap.id = socket.id;
                 _ap.disconnected = false;
+                if (!_ap.accountId) _ap.accountId = user.accountId;
                 studManager.updateStudPlayerSocketId(retryTableId, user.accountId, user.nickname, socket.id);
                 boardManager.updateBoardPlayerSocketId(retryTableId, user.accountId, user.nickname, socket.id);
                 log(`[t:getMyTable-retry] ${user.nickname}: player.id updated → ${socket.id}`);
@@ -650,13 +661,13 @@ app.prepare().then(async () => {
           const { getOrCreateRoom, canAutoStart } = require('./poker/gameManager');
 
           // 配置直前に既存テーブルを再確認する。本人性は accountId のみで判定する。
-          let existingTidFinal = tournamentManager.getTableForPlayer(tournamentId, user.accountId);
+          let existingTidFinal = tournamentManager.getTableForPlayer(tournamentId, user.accountId, user.nickname);
           if (existingTidFinal) {
             const _nickname = user.nickname ?? user.accountId.slice(0, 8);
             log(`[lateReg] ${_nickname} already on ${existingTidFinal.slice(-8)} → reconnect (skip fresh placement)`);
             const existingRoom = getOrCreateRoom(existingTidFinal);
-            const existingPlayer = existingRoom?.players.find(p => p.accountId === user.accountId)
-                                ?? existingRoom?.pendingPlayers?.find(p => p.accountId === user.accountId);
+            const existingPlayer = existingRoom?.players.find(p => _isSameTournamentUser(p))
+                                ?? existingRoom?.pendingPlayers?.find(p => _isSameTournamentUser(p));
             if (existingPlayer) {
               const oldSocketId = existingPlayer.id;
               if (oldSocketId && oldSocketId !== socket.id) {
@@ -664,6 +675,7 @@ app.prepare().then(async () => {
               }
               existingPlayer.id = socket.id;
               existingPlayer.disconnected = false;
+              if (!existingPlayer.accountId) existingPlayer.accountId = user.accountId;
               studManager.updateStudPlayerSocketId(existingTidFinal, user.accountId, user.nickname, socket.id);
               boardManager.updateBoardPlayerSocketId(existingTidFinal, user.accountId, user.nickname, socket.id);
               log(`[lateReg] ${_nickname}: existing reconnect on ${existingTidFinal.slice(-8)} chips=${existingPlayer.chips} oldSocket=${String(oldSocketId).slice(-8)} newSocket=${socket.id.slice(-8)}`);
@@ -709,10 +721,27 @@ app.prepare().then(async () => {
               if (destTid) log(`[lateReg] added new table ${destTid.slice(-8)}`);
             }
             if (destTid) {
+              const placementKey = `${tournamentId}:${user.accountId}`;
+              const lockedAt = _lateRegPlacementLocks.get(placementKey);
+              if (lockedAt && Date.now() - lockedAt < 5000) {
+                log(`[lateReg] ${user.nickname}: placement already in progress -> retry reconnect`);
+                setTimeout(() => _retryGetTable(0), 500);
+                return;
+              }
+              _lateRegPlacementLocks.set(placementKey, Date.now());
+              const existingBeforeJoin = tournamentManager.getTableForPlayer(tournamentId, user.accountId, user.nickname);
+              if (existingBeforeJoin) {
+                _lateRegPlacementLocks.delete(placementKey);
+                log(`[lateReg] ${user.nickname}: found existing before fresh placement -> retry reconnect`);
+                setTimeout(() => _retryGetTable(0), 0);
+                return;
+              }
+
               const nickname = user.nickname ?? user.accountId.slice(0, 8);
               const joinResult = joinPokerRoom(destTid, socket.id, nickname, { accountId: user.accountId, existingChips: t.startingChips });
               log(`[lateReg] ${nickname}: fresh placement result=${joinResult} table=${destTid.slice(-8)} startingChips=${t.startingChips}`);
               if (joinResult === 'full') {
+                _lateRegPlacementLocks.delete(placementKey);
                 log(`[lateReg] ${nickname}: placement failed, table full ${destTid.slice(-8)}`);
                 socket.emit('t:tournamentNotFound', { tournamentId });
                 return;
@@ -738,6 +767,7 @@ app.prepare().then(async () => {
               // レイトレジスト参加直後に残り人数を送信（SNG等でも即座に表示されるよう）
               tournamentManager.broadcastStatus(tournamentId);
               tournamentManager.broadcastBlind(tournamentId);
+              _lateRegPlacementLocks.delete(placementKey);
 
               // 配置後にテーブルバランスを確認（1人テーブルが生まれた場合に対処）
               const _lateRegBalanceRetry = (retriesLeft) => {

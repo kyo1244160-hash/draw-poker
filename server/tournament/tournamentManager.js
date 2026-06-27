@@ -889,7 +889,7 @@ function getTournament(tournamentId) {
  * accountId からそのプレイヤーが着席しているテーブルIDを返す
  * @returns {string|null}
  */
-function getTableForPlayer(tournamentId, accountId) {
+function getTableForPlayer(tournamentId, accountId, nickname = null) {
   const t = tournaments.get(tournamentId);
   if (!t) return null;
   const { getOrCreateRoom: getRoom } = require('../poker/gameManager');
@@ -899,7 +899,8 @@ function getTableForPlayer(tournamentId, accountId) {
     const allPlayers = [...room.players, ...room.pendingPlayers];
     const found = allPlayers.find(p =>
       p.id === accountId ||
-      p.accountId === accountId
+      p.accountId === accountId ||
+      (nickname && p.name === nickname && !p.accountId)
     );
     if (process.env.NODE_ENV !== 'production' && !found && allPlayers.length > 0) {
       const humanPlayers = allPlayers.filter(p => !p.id?.startsWith('bot::'));

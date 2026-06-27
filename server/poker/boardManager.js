@@ -390,6 +390,7 @@ function prevActiveFrom(room, fromIndex) {
 
 function startTimer(room) {
   clearTimer(room);
+  if (ensurePlayableBetActionIndex(room, 'start-timer')) return;
   const limitSec = cfg.BET_TIME_LIMIT;
   if (limitSec <= 0 || !room._onTimeout) return;
   room._timerStart = Date.now();
@@ -414,6 +415,15 @@ function clearTimer(room) {
   room._timer = null;
   room._timerStart = null;
   room._timerLimit = 0;
+}
+
+function ensurePlayableBetActionIndex(room, source = 'unknown') {
+  if (!room || !isBoardBettingPhase(room.phase)) return false;
+  const cur = room.players?.[room.actionIndex];
+  if (cur && !cur.folded && !cur.sittingOut && !cur.acted && cur.chips > 0) return false;
+  log(`[board-order-repair] room=${String(room.id).slice(-8)} source=${source} phase=${room.phase} actionIndex=${room.actionIndex} cur=${cur?.name ?? 'none'}`);
+  advanceBetAction(room);
+  return true;
 }
 
 function getTimerRemaining(room) {

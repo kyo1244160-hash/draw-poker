@@ -792,6 +792,7 @@ function _resetBetRound(room, betSize) {
 
 function _startTimer(room) {
   _clearTimer(room);
+  if (_ensurePlayableBetActionIndex(room, 'start-timer')) return;
   const limitSec = room.phase.startsWith('draw') ? cfg.DRAW_TIME_LIMIT : cfg.BET_TIME_LIMIT;
   if (limitSec <= 0 || !room._onTimeout) return;
   room._timerStart = Date.now();
@@ -821,6 +822,15 @@ function _clearTimer(room) {
     }
   }
   room._timerStart = null; room._timerLimit = 0;
+}
+
+function _ensurePlayableBetActionIndex(room, source = 'unknown') {
+  if (!room || !room.phase?.startsWith('bet')) return false;
+  const cur = room.players?.[room.actionIndex];
+  if (cur && !cur.folded && !cur.sittingOut && !cur.acted && cur.chips > 0) return false;
+  log(`[order-repair] room=${String(room.id).slice(-8)} source=${source} phase=${room.phase} actionIndex=${room.actionIndex} cur=${cur?.name ?? 'none'}`);
+  _advanceBetAction(room);
+  return true;
 }
 
 function getTimerRemaining(room) {
@@ -1152,9 +1162,12 @@ function _nextPhase(room) {
 
   if (next.startsWith('draw')) {
     _resetDrawRound(room);
-    // ドローラウンド: 通常/ヘッズアップ共にSB(dealer)から先行
+    // ドローラウンド: 3人以上はSBから、ヘッズアップはBTN/SBの相手(BB)から先行。
     const dealerRef = room.fixedDealerIdx >= 0 ? room.fixedDealerIdx : room.dealerIndex;
-    room.actionIndex = _nextActiveFromSafe(room, dealerRef);
+    const startBefore = (!room.isHeadsUp && room.fixedSbIdx >= 0 && room.players.length > 0)
+      ? (room.fixedSbIdx - 1 + room.players.length) % room.players.length
+      : dealerRef;
+    room.actionIndex = _nextActiveFromSafe(room, startBefore);
     _startTimer(room);
   } else if (next.startsWith('bet')) {
     // NLモード（27sd）はベットサイズ固定なし、betSize=BBをミニマム値として扱う
@@ -1169,12 +1182,13 @@ function _nextPhase(room) {
       betSize = isBigBetPhase(next) ? room.bigBet : room.smallBet;
     }
     _resetBetRound(room, betSize);
-    // ベットラウンド（bet1以降）: 通常/ヘッズアップ共にSB(dealer)から先行。
+    // ベットラウンド（bet1以降）: 3人以上はSBから、ヘッズアップはBTN/SBの相手(BB)から先行。
     // ただしオールイン済み(chips<=0)やacted済みのプレイヤーには手番を回さない。
-    // dealerRef を起点に _advanceBetAction へ通すことで、未行動かつアクション可能な
-    // 最初のプレイヤーを選び、全員アクション不要なら次フェーズへ進める。
     const dealerRef = room.fixedDealerIdx >= 0 ? room.fixedDealerIdx : room.dealerIndex;
-    room.actionIndex = dealerRef;
+    const startBefore = (!room.isHeadsUp && room.fixedSbIdx >= 0 && room.players.length > 0)
+      ? (room.fixedSbIdx - 1 + room.players.length) % room.players.length
+      : dealerRef;
+    room.actionIndex = startBefore;
     _advanceBetAction(room);
   } else if (next === 'showdown') {
     _clearTimer(room);
