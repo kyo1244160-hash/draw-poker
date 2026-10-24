@@ -10,6 +10,7 @@
 #   Build Command:  npm install && npm run build
 #   Start Command:  node server/index.js
 #   Environment:    NODE_ENV=production
+#   Environment:    NODE_VERSION=24.22.1
 
 services:
   - type: web
@@ -19,6 +20,8 @@ services:
     buildCommand: npm install && npm run build
     startCommand: node server/index.js
     envVars:
+      - key: NODE_VERSION
+        value: "24.22.1"
       - key: NODE_ENV
         value: production
       - key: PORT

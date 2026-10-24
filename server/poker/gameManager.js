@@ -420,9 +420,24 @@ function joinRoom(roomId, socketId, name, opts = {}) {
 // ■ ゲーム開始
 // ==========================================================
 
+function _playerStableId(player) {
+  return player?.accountId ?? player?.id ?? null;
+}
+
+function _findPlayerIndexByStableId(players, stableId) {
+  if (stableId == null) return -1;
+  let idx = players.findIndex((p) => p.accountId === stableId);
+  if (idx >= 0) return idx;
+  return players.findIndex((p) => p.id === stableId);
+}
+
 function startGame(roomId, onTimeout) {
   const room = rooms.get(roomId);
   if (!room) return null;
+  if (room.phase !== 'waiting' && room.phase !== 'showdown') {
+    log(`[startGame] ${roomId.slice(-8)} skipped: phase=${room.phase}`);
+    return null;
+  }
 
   // pending → active
   for (const p of room.pendingPlayers) room.players.push(p);
@@ -536,8 +551,8 @@ function startGame(roomId, onTimeout) {
   }
 
   // 次ハンドの BB基準計算のために、今ハンドの BB/SB プレイヤーIDを記録。
-  room._lastBbId = room.players[bbIndex]?.id ?? null;
-  room._lastSbId = room.players[sbIndex]?.id ?? null;
+  room._lastBbId = _playerStableId(room.players[bbIndex]);
+  room._lastSbId = _playerStableId(room.players[sbIndex]);
 
   // ゲーム中に変わらない固定ポジションを記録
   room.fixedDealerIdx = room.dealerIndex;
@@ -666,7 +681,7 @@ function assignBlindsByBB(room) {
   // 前ハンドBBの現在位置（脱落・並び替えに強いよう ID で照合）
   let prevBbIdx = -1;
   if (room._lastBbId != null) {
-    prevBbIdx = players.findIndex((p) => p.id === room._lastBbId);
+    prevBbIdx = _findPlayerIndexByStableId(players, room._lastBbId);
   }
 
   let bbIndex, sbIndex, dealerIndex;
@@ -683,7 +698,7 @@ function assignBlindsByBB(room) {
     sbIndex = prevBbIdx;
     // 新BTN=前SBの席（_lastSbId）。脱落していれば SB の手前のアクティブで代替。
     let prevSbIdx = -1;
-    if (room._lastSbId != null) prevSbIdx = players.findIndex((p) => p.id === room._lastSbId);
+    if (room._lastSbId != null) prevSbIdx = _findPlayerIndexByStableId(players, room._lastSbId);
     dealerIndex = prevSbIdx >= 0 ? prevSbIdx : _prevActiveFromSafe(room, sbIndex);
   }
 
@@ -707,11 +722,11 @@ function assignBlindsByBB(room) {
  */
 function advanceBbAnchor(room) {
   if (!room || room._lastBbId == null) return;
-  const curIdx = room.players.findIndex((p) => p.id === room._lastBbId);
+  const curIdx = _findPlayerIndexByStableId(room.players, room._lastBbId);
   if (curIdx < 0) return;
   const nextIdx = _nextActiveFromSafe(room, curIdx);
   room._lastSbId = room._lastBbId;                       // 旧BB → 次ハンドのSB基準
-  room._lastBbId = room.players[nextIdx]?.id ?? room._lastBbId;
+  room._lastBbId = _playerStableId(room.players[nextIdx]) ?? room._lastBbId;
 }
 
 /**

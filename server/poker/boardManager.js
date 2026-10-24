@@ -148,6 +148,17 @@ function syncToGameManager(gmRoom) {
   gmRoom._lastSbId = room._lastSbId ?? gmRoom._lastSbId;
 }
 
+function playerStableId(player) {
+  return player?.accountId ?? player?.id ?? null;
+}
+
+function findPlayerIndexByStableId(players, stableId) {
+  if (stableId == null) return -1;
+  let idx = players.findIndex((p) => p.accountId === stableId);
+  if (idx >= 0) return idx;
+  return players.findIndex((p) => p.id === stableId);
+}
+
 function startBoardHand(room, onTimeout, opts = {}) {
   if (!room) return null;
   const activePlayers = room.players.filter((p) => !p.sittingOut && p.chips > 0);
@@ -200,8 +211,8 @@ function startBoardHand(room, onTimeout, opts = {}) {
 
   if (!blinds.sbDead) postBlind(room, blinds.sbIndex, room.smallBlind);
   postBlind(room, blinds.bbIndex, room.bigBlind);
-  room._lastSbId = room.players[blinds.sbIndex]?.id ?? null;
-  room._lastBbId = room.players[blinds.bbIndex]?.id ?? null;
+  room._lastSbId = playerStableId(room.players[blinds.sbIndex]);
+  room._lastBbId = playerStableId(room.players[blinds.bbIndex]);
   room.currentBet = room.bigBlind;
 
   for (const p of room.players) {
@@ -238,7 +249,7 @@ function assignBlindsByBB(room) {
     };
   }
 
-  let prevBbIdx = room._lastBbId ? room.players.findIndex((p) => p.id === room._lastBbId) : -1;
+  let prevBbIdx = room._lastBbId ? findPlayerIndexByStableId(room.players, room._lastBbId) : -1;
   if (prevBbIdx < 0) {
     const sbIndex = nextActiveFrom(room, room.dealerIndex);
     const bbIndex = nextActiveFrom(room, sbIndex);
@@ -247,7 +258,7 @@ function assignBlindsByBB(room) {
 
   const bbIndex = nextActiveFrom(room, prevBbIdx);
   const sbIndex = prevBbIdx;
-  const prevSbIdx = room._lastSbId ? room.players.findIndex((p) => p.id === room._lastSbId) : -1;
+  const prevSbIdx = room._lastSbId ? findPlayerIndexByStableId(room.players, room._lastSbId) : -1;
   const dealerIndex = prevSbIdx >= 0 ? prevSbIdx : prevActiveFrom(room, sbIndex);
   const sb = room.players[sbIndex];
   return { dealerIndex, sbIndex, bbIndex, sbDead: !(sb && !sb.sittingOut && !sb.folded) };

@@ -430,8 +430,9 @@ function _removeFromPool(poolId, socketId) {
 // ==========================================================
 
 function registerZoomHandlers(io, socket) {
+  const on = require('../security/socketSafety').safeSocketOn(socket);
 
-  socket.on('z:join', ({ poolId }) => {
+  on('z:join', ({ poolId }) => {
     const pool = zoomPools.get(poolId);
     if (!pool) { ffLog(`z:join: poolId=${poolId} pool NOT FOUND`); return; }
     const user = socket.data?.user;
@@ -457,7 +458,7 @@ function registerZoomHandlers(io, socket) {
     _tryAssignTable(io, poolId);
   });
 
-  socket.on('z:fastFold', ({ poolId, roomId: requestedRoomId }) => {
+  on('z:fastFold', ({ poolId, roomId: requestedRoomId }) => {
     // roomId が指定されている場合、現在のroomIdと一致するか確認
     // 不一致 = テーブル移動後に旧テーブル向けのイベントが届いた（レースコンディション）
     const pname5 = socketNames.get(socket.id)??socket.id.slice(-6);
@@ -478,7 +479,7 @@ function registerZoomHandlers(io, socket) {
   });
 
   // z:assigned受信後にPokerTableがマウントされてからgameStateを要求するためのハンドラ
-  socket.on('z:requestGameState', ({ roomId: rid }) => {
+  on('z:requestGameState', ({ roomId: rid }) => {
     const pname = socketNames.get(socket.id)??socket.id.slice(-6);
     const currentRoom = socketToRoom.get(socket.id);
     if (currentRoom !== rid) {
@@ -499,7 +500,7 @@ function registerZoomHandlers(io, socket) {
   });
 
   // フォールドして観戦: ゲーム内でフォールドするが現テーブルに留まる
-  socket.on('z:foldStay', ({ poolId: pid }) => {
+  on('z:foldStay', ({ poolId: pid }) => {
     const gm = require('../poker/gameManager');
     const rid = socketToRoom.get(socket.id);
     if (!rid) return;
@@ -533,11 +534,11 @@ function registerZoomHandlers(io, socket) {
     _broadcast(io, rid);
   });
 
-  socket.on('z:leave', ({ poolId }) => {
+  on('z:leave', ({ poolId }) => {
     _handleZoomLeave(io, socket, poolId);
   });
 
-  socket.on('disconnect', () => {
+  on('disconnect', () => {
     const poolId = socketToPool.get(socket.id);
     if (poolId) _handleZoomLeave(io, socket, poolId);
   });

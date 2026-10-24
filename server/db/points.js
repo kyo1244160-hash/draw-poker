@@ -110,17 +110,14 @@ async function getTournamentResults(tournamentId) {
 async function getPointsRanking({ limit = 20 } = {}) {
   return sql`
     SELECT
-      pt.account_id,
       pt.total_points,
       pt.updated_at,
       p.nickname,
-      a.google_name,
       COUNT(tr.id)::int AS tournament_count
     FROM points pt
-    JOIN accounts  a  ON a.id  = pt.account_id
     LEFT JOIN profiles        p  ON p.account_id  = pt.account_id
     LEFT JOIN tournament_results tr ON tr.account_id = pt.account_id
-    GROUP BY pt.account_id, pt.total_points, pt.updated_at, p.nickname, a.google_name
+    GROUP BY pt.account_id, pt.total_points, pt.updated_at, p.nickname
     ORDER BY pt.total_points DESC
     LIMIT ${limit}
   `;
@@ -146,16 +143,41 @@ async function getUserPoints(accountId) {
  *
  * @param {string} accountId
  * @param {number} net 損益（正=利益, 負=損失）
+ * @param {string} handId 精算の重複を防ぐハンドUUID
  */
-async function applyThreeCardResult(accountId, net) {
-  if (net === 0) return;
-  await sql`
-    INSERT INTO points (account_id, total_points, updated_at)
-    VALUES (${accountId}, ${Math.max(0, net)}, NOW())
-    ON CONFLICT (account_id) DO UPDATE
-      SET total_points = GREATEST(0, points.total_points + ${net}),
-          updated_at   = NOW()
-  `;
+let settlementTableReady;
+async function ensureThreeCardSettlementTable() {
+  if (!settlementTableReady) {
+    settlementTableReady = sql`
+      CREATE TABLE IF NOT EXISTS three_card_settlements (
+        hand_id TEXT NOT NULL,
+        account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        net INTEGER NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (hand_id, account_id)
+      )
+    `.catch(err => { settlementTableReady = null; throw err; });
+  }
+  await settlementTableReady;
+}
+
+async function applyThreeCardResult(accountId, net, handId) {
+  if (!accountId || !handId || !Number.isSafeInteger(net)) throw new Error('INVALID_SETTLEMENT');
+  await ensureThreeCardSettlementTable();
+  await sql.begin(async tx => {
+    const inserted = await tx`
+      INSERT INTO three_card_settlements (hand_id, account_id, net)
+      VALUES (${handId}, ${accountId}, ${net})
+      ON CONFLICT (hand_id, account_id) DO NOTHING RETURNING hand_id
+    `;
+    if (inserted.length === 0) return;
+    await tx`
+      INSERT INTO points (account_id, total_points, updated_at)
+      VALUES (${accountId}, ${Math.max(0, net)}, NOW())
+      ON CONFLICT (account_id) DO UPDATE
+        SET total_points = GREATEST(0, points.total_points + ${net}), updated_at = NOW()
+    `;
+  });
 }
 
 module.exports = {
@@ -166,4 +188,5 @@ module.exports = {
   POINT_TABLE,
   getUserPoints,
   applyThreeCardResult,
+  ensureThreeCardSettlementTable,
 };

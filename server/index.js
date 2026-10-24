@@ -25,6 +25,7 @@
  */
 
 // .env.local を明示的に読み込む（node server/index.js 起動時は Next.js が読まないため）
+require('./security/runtimeVersion').assertSupportedNode();
 require('dotenv').config({ path: require('path').resolve(__dirname, '../.env.local') });
 
 // NODE_ENV が未設定の場合は production にフォールバック
@@ -38,6 +39,8 @@ const http       = require('http');
 const { Server } = require('socket.io');
 const { parse }  = require('url');
 const { createHmac, timingSafeEqual } = require('crypto');
+const { safeSocketOn, createRateLimiter } = require('./security/socketSafety');
+const { verifyLoadTestIdentity } = require('./security/loadTestIdentity');
 const cfg        = require('./config');
 
 const { checkText } = require('./profanityFilter');
@@ -58,6 +61,7 @@ const boardManager = require('./poker/boardManager');
 
 const ringDb = require('./db/ring');
 const tcManager = require('./poker/threeCardManager');
+const _threeCardJoining = new Set();
 
 const { registerZoomHandlers, getAllPools, getWaitingCount, getTotalCount, handleZoomShowdown } = require('./zoom/zoomManager');
 const tournamentManager    = require('./tournament/tournamentManager');
@@ -302,10 +306,14 @@ app.prepare().then(async () => {
     console.warn('⚠ DB migration warning (ring):', e.message);
   }
 
+  // Do not accept wagers until the durable settlement ledger is available.
+  await require('./db/points').ensureThreeCardSettlementTable();
+
   const expressApp = express();
   const server     = http.createServer(expressApp);
   const io = new Server(server, {
     path: '/socket.io',
+    maxHttpBufferSize: 16 * 1024,
     cors: { origin: process.env.ALLOWED_ORIGIN ?? 'http://localhost:3000', credentials: true },
   });
 
@@ -324,12 +332,10 @@ app.prepare().then(async () => {
     // 管理画面の負荷テスト用一時プレイヤー。
     // LOAD_TEST_ENABLED=true の時だけ許可し、通常ユーザー認証とは分離する。
     if (process.env.LOAD_TEST_ENABLED === 'true' && socket.handshake.auth?.loadTest === true) {
-      const accountId = String(socket.handshake.auth?.accountId ?? '');
-      const nickname = String(socket.handshake.auth?.botName ?? 'LoadBot').slice(0, 12);
-      if (accountId.startsWith('bot_load_') && nickname.length >= 2) {
-        socket.data.user = { accountId, nickname, isBot: true, isLoadTest: true };
-        return next();
-      }
+      const identity = verifyLoadTestIdentity(socket.handshake.auth?.loadTestToken);
+      if (!identity) return next(new Error('AUTH_INVALID'));
+      socket.data.user = identity;
+      return next();
     }
 
     // トークンなし → ゲストとして接続を許可（ルーム一覧表示のみ）
@@ -382,15 +388,17 @@ app.prepare().then(async () => {
   });
 
   // ===== レートリミット（20イベント/秒） =====
-  const _rateCounts = new Map();
+  const accountRate = createRateLimiter(20, 1000);
+  const guestRate = createRateLimiter(100, 1000);
   io.use((socket, next) => {
-    socket.onAny(() => {
-      const now = Date.now();
-      const rec = _rateCounts.get(socket.id) ?? { count: 0, resetAt: now + 1000 };
-      if (now > rec.resetAt) { rec.count = 0; rec.resetAt = now + 1000; }
-      rec.count++;
-      _rateCounts.set(socket.id, rec);
-      if (rec.count > 20) { socket.disconnect(true); }
+    const connectionRate = createRateLimiter(20, 1000, 1);
+    socket.use((_packet, accept) => {
+      const user = socket.data.user;
+      const allowed = connectionRate(socket.id) && (user?.accountId
+        ? accountRate(user.accountId)
+        : guestRate(socket.handshake.address ?? 'unknown'));
+      if (!allowed) { socket.disconnect(true); return; }
+      accept();
     });
     next();
   });
@@ -423,15 +431,16 @@ app.prepare().then(async () => {
   preloadBotModels().catch(err => log(`[BotModel] preload error: ${err.message}`));
 
   io.on('connection', (socket) => {
+    const on = safeSocketOn(socket);
     logDev(`[connect] ${socket.id}`);
     socket.emit('roomList', getLobbyList());
     let currentRoom = { name: '', roomId: '' };
 
-    socket.on('getRoomList',    () => socket.emit('roomList', getLobbyList()));
+    on('getRoomList',    () => socket.emit('roomList', getLobbyList()));
 
     // ----- トーナメント：自分のテーブルを問い合わせ -----
     // drawページを直接開いた場合（t:tournamentStartingを受け取れなかった場合）に使う
-    socket.on('t:getMyTable', ({ tournamentId }) => {
+    on('t:getMyTable', ({ tournamentId }) => {
       const user = socket.data.user;
       if (!user?.accountId) return;
       const _isSameTournamentUser = (p) => !!p && (
@@ -826,7 +835,7 @@ app.prepare().then(async () => {
       }
     });
 
-    socket.on('getRoomPlayers', (roomId) => {
+    on('getRoomPlayers', (roomId) => {
       if (!roomId || typeof roomId !== 'string' || roomId.length > 64) {
         socket.emit('lobbyUpdate', []);
         return;
@@ -848,7 +857,7 @@ app.prepare().then(async () => {
     // socket.on('createRoom', ...)
 
     // ----- 入室 -----
-    socket.on('joinRoom', ({ roomId, password }) => {
+    on('joinRoom', ({ roomId, password }) => {
       // 認証ミドルウェアで検証済みのニックネームを使用（クライアント送信値は無視）
       const name = socket.data.user?.nickname;
       if (!roomId || typeof roomId !== 'string' || roomId.length > 64) return;
@@ -930,17 +939,17 @@ app.prepare().then(async () => {
     });
 
     // ----- 退室 -----
-    socket.on('leaveRoom', ({ roomId }) => {
+    on('leaveRoom', ({ roomId }) => {
       _handleLeave(io, socket, roomId);
       currentRoom = { name: '', roomId: '' };
       socket.emit('kicked');
     });
 
     // ----- テーブル移動専用: Socket.IOルームのみ切り替え（gameManagerのjoinRoomは呼ばない） -----
-    socket.on('leaveSocketRoom', ({ roomId }) => {
+    on('leaveSocketRoom', ({ roomId }) => {
       if (roomId) socket.leave(roomId);
     });
-    socket.on('joinSocketRoom', ({ roomId }) => {
+    on('joinSocketRoom', ({ roomId }) => {
       if (roomId && _socketBelongsToTable(socket, roomId)) {
         socket.join(roomId);
         _removeSpectatorSocket(socket.id, roomId);
@@ -949,21 +958,25 @@ app.prepare().then(async () => {
     });
 
     // ----- テーブル移動後のゲーム状態取得 -----
-    socket.on('getGameState', ({ roomId }) => {
+    on('getGameState', ({ roomId }) => {
       if (!roomId || typeof roomId !== 'string' || roomId.length > 64) return;
       if (!getRoom(roomId) && !studManager.getStudRoom(roomId)) return;
-      _broadcast(io, roomId);
+      const isPlayer = _socketBelongsToTable(socket, roomId);
+      const isSpectator = _spectators.get(roomId)?.has(socket.id);
+      if (!isPlayer && !isSpectator) return;
+      _emitStateToSocket(socket, roomId);
       if (tournamentManager.isTournamentTable(roomId)) {
         const t = tournamentManager.getTournamentByTable(roomId);
         if (t) {
           const blindPayload = tournamentManager.getCurrentBlindPayload(t.id);
           if (blindPayload) socket.emit('t:blindUpdate', blindPayload);
-          tournamentManager._broadcastTournamentStatus(t);
+          const status = tournamentManager.getTournamentStatusPayload(t.id);
+          if (status) socket.emit('t:tournamentStatus', status);
         }
       }
     });
 
-    socket.on('t:returnToSeat', ({ roomId }) => {
+    on('t:returnToSeat', ({ roomId }) => {
       if (!roomId || typeof roomId !== 'string' || roomId.length > 64) return;
       if (!tournamentManager.isTournamentTable(roomId)) return;
       if (!_socketBelongsToTable(socket, roomId)) return;
@@ -978,14 +991,15 @@ app.prepare().then(async () => {
 
     // ----- ドロー中の選択インデックス更新 -----
     // クライアントがカードを選択するたびに送信 → タイムアウト時に自動交換で使用
-    socket.on('updateSelected', ({ roomId, indices }) => {
+    on('updateSelected', ({ roomId, indices }) => {
       if (!roomId || typeof roomId !== 'string' || roomId.length > 64) return;
       if (!Array.isArray(indices) || indices.length > 5) return;
+      if (!_socketBelongsToTable(socket, roomId)) return;
       updateSelectedIndices(roomId, socket.id, indices);
     });
 
     // ----- カードを交換 -----
-    socket.on('drawCards', ({ roomId, indices }) => {
+    on('drawCards', ({ roomId, indices }) => {
       if (!roomId || typeof roomId !== 'string' || roomId.length > 64) return;
       if (!Array.isArray(indices) || indices.length > 5) return;
       if (!getRoom(roomId)) return;  // 存在しないroomIdは無視（空ルーム生成防止）
@@ -1021,7 +1035,7 @@ app.prepare().then(async () => {
     const VALID_ACTIONS = new Set(['fold','check','call','bet','raise']);
     // 【ブリングイン選択制】スタッド3rd street の義務者専用アクション
     const VALID_STUD_ACTIONS = new Set(['fold','check','call','bet','raise','bringIn','complete']);
-    socket.on('betAction', ({ roomId, action, amount }) => {
+    on('betAction', ({ roomId, action, amount }) => {
       if (!roomId || typeof roomId !== 'string' || roomId.length > 64) return;
       // スタッドアクティブなら bringIn/complete も許可、それ以外は従来通り
       const _validSet = _isStudActive(roomId) ? VALID_STUD_ACTIONS : VALID_ACTIONS;
@@ -1180,7 +1194,7 @@ app.prepare().then(async () => {
 
     // ----- 切断 -----
     // ----- 退室予約 -----
-    socket.on('reserveLeave', ({ roomId, type }) => {
+    on('reserveLeave', ({ roomId, type }) => {
       if (!roomId || !['afterHand', 'nextBB', 'cancel'].includes(type)) return;
       // トーナメントテーブルでは退室予約を受け付けない
       if (tournamentManager.isTournamentTable(roomId)) {
@@ -1200,7 +1214,7 @@ app.prepare().then(async () => {
     registerZoomHandlers(io, socket);
 
     // ----- 観戦（トーナメントテーブル専用）-----
-    socket.on('spectate', async ({ tableId: rawTableId, tournamentId, fromLateReg }) => {
+    on('spectate', async ({ tableId: rawTableId, tournamentId, fromLateReg }) => {
       // tableId 未指定の場合は tournamentId からアクティブなテーブルを自動解決
       let tableId = rawTableId;
       const _specTid = tournamentId; // tournamentId を後続処理でも参照
@@ -1294,7 +1308,7 @@ app.prepare().then(async () => {
       socket.emit('gameState', { players, meta, isSpectator: true });
     });
 
-    socket.on('t:leaveSpectate', ({ tableId }) => {
+    on('t:leaveSpectate', ({ tableId }) => {
       const tid = typeof tableId === 'string' ? tableId : currentRoom.roomId;
       if (tid) {
         socket.leave(tid);
@@ -1327,7 +1341,7 @@ app.prepare().then(async () => {
       if (t) tc_broadcast(roomId);
     };
 
-    socket.on('3c:getRoomList', () => {
+    on('3c:getRoomList', () => {
       const rooms = tcManager.listRooms().map(t => ({
         id:         t.id,
         label:      `Three Card Poker ${t.id.replace('3card-room-', '')}`,
@@ -1338,55 +1352,71 @@ app.prepare().then(async () => {
       socket.emit('3c:roomList', rooms);
     });
 
-    socket.on('3c:join', async ({ roomId }) => {
+    on('3c:join', async ({ roomId }) => {
       const user = socket.data.user;
       if (!user?.nickname) { socket.emit('3c:error', { message: 'ログインが必要です' }); return; }
-
-      // ポイントチェック
-      let points = 0;
-      if (user.accountId) {
-        try {
-          const pointsDb = require('./db/points');
-          points = await pointsDb.getUserPoints(user.accountId);
-        } catch { points = 0; }
-      }
-      if (points < 1) {
-        socket.emit('3c:error', { message: 'ポイントが不足しています' });
+      const existingTable = tcManager.listRooms().find(t => t.players.some(p => p.accountId === user.accountId));
+      if (existingTable) {
+        const existingPlayer = existingTable.players.find(p => p.accountId === user.accountId);
+        if (existingPlayer.socketId === socket.id && !existingPlayer.leaveAfterHand) {
+          socket.emit('3c:state', tcManager.buildTableState(existingTable.id, socket.id));
+        } else {
+          socket.emit('3c:error', { message: '参加中のハンドの精算が終わるまでお待ちください' });
+        }
         return;
       }
+      if (_threeCardJoining.has(user.accountId)) return;
+      _threeCardJoining.add(user.accountId);
+      try {
+        // ポイントチェック
+        let points = 0;
+        if (user.accountId) {
+          try {
+            const pointsDb = require('./db/points');
+            points = await pointsDb.getUserPoints(user.accountId);
+          } catch { points = 0; }
+        }
+        if (points < 1) {
+          socket.emit('3c:error', { message: 'ポイントが不足しています' });
+          return;
+        }
+        if (!socket.connected) return;
 
-      let targetRoomId = roomId;
-      if (!targetRoomId) {
-        // roomId 未指定 → 空きのあるテーブルに自動配置
-        targetRoomId = tcManager.getOrCreateAvailableRoom().id;
+        let targetRoomId = roomId;
+        if (!targetRoomId) {
+          // roomId 未指定 → 空きのあるテーブルに自動配置
+          targetRoomId = tcManager.getOrCreateAvailableRoom().id;
+        }
+
+        // socket.join を joinTable より前に実行する。
+        // joinTable 内で waiting→betting 遷移が起きると _notify→_tc_broadcast が
+        // 走るため、その時点で socket がルームに参加済みである必要がある。
+        socket.join(targetRoomId);
+
+        const result = tcManager.joinTable(targetRoomId, socket.id, user.nickname, user.accountId, points);
+        if (result === 'full') {
+          socket.leave(targetRoomId);
+          socket.emit('3c:error', { message: 'このテーブルは満員です' });
+          return;
+        }
+        if (result !== 'ok' && result !== 'alreadyJoined') {
+          socket.leave(targetRoomId);
+          socket.emit('3c:error', { message: '入室できませんでした' });
+          return;
+        }
+
+        // 本人に最新状態を送信（betting 遷移済みでも確実に届く）
+        socket.emit('3c:state', tcManager.buildTableState(targetRoomId, socket.id));
+        // 他プレイヤーにも通知
+        socket.to(targetRoomId).emit('3c:state', tcManager.buildBroadcastState(targetRoomId));
+        // ロビー更新
+        io.emit('roomList', getLobbyList());
+      } finally {
+        _threeCardJoining.delete(user.accountId);
       }
-
-      // socket.join を joinTable より前に実行する。
-      // joinTable 内で waiting→betting 遷移が起きると _notify→_tc_broadcast が
-      // 走るため、その時点で socket がルームに参加済みである必要がある。
-      socket.join(targetRoomId);
-
-      const result = tcManager.joinTable(targetRoomId, socket.id, user.nickname, user.accountId, points);
-      if (result === 'full') {
-        socket.leave(targetRoomId);
-        socket.emit('3c:error', { message: 'このテーブルは満員です' });
-        return;
-      }
-      if (result !== 'ok' && result !== 'alreadyJoined') {
-        socket.leave(targetRoomId);
-        socket.emit('3c:error', { message: '入室できませんでした' });
-        return;
-      }
-
-      // 本人に最新状態を送信（betting 遷移済みでも確実に届く）
-      socket.emit('3c:state', tcManager.buildTableState(targetRoomId, socket.id));
-      // 他プレイヤーにも通知
-      socket.to(targetRoomId).emit('3c:state', tcManager.buildBroadcastState(targetRoomId));
-      // ロビー更新
-      io.emit('roomList', getLobbyList());
     });
 
-    socket.on('3c:bet', ({ roomId, ante, pp, sixCard }) => {
+    on('3c:bet', ({ roomId, ante, pp, sixCard }) => {
       const result = tcManager.placeBet(roomId, socket.id, {
         ante:    Number(ante),
         pp:      Number(pp    ?? 0),
@@ -1413,7 +1443,7 @@ app.prepare().then(async () => {
       }
     });
 
-    socket.on('3c:action', ({ roomId, action }) => {
+    on('3c:action', ({ roomId, action }) => {
       const result = tcManager.playerAction(roomId, socket.id, action);
       if (!result.ok) {
       const ACTION_ERROR_MSG = {
@@ -1430,7 +1460,7 @@ app.prepare().then(async () => {
       }
     });
 
-    socket.on('3c:leave', ({ roomId }) => {
+    on('3c:leave', ({ roomId }) => {
       tc_leave(roomId, socket.id);
     });
 
@@ -1438,10 +1468,9 @@ app.prepare().then(async () => {
     // ■ 切断
     // ================================================================
 
-    socket.on('disconnect', () => {
+    on('disconnect', () => {
       logDev(`[disconnect] ${socket.id}`);
       leaveReservations.delete(socket.id);
-      _rateCounts.delete(socket.id);
       const user = socket.data.user;
       if (user?.accountId && _connectedUsers.get(user.accountId) === socket.id) {
         _connectedUsers.delete(user.accountId);
@@ -1500,9 +1529,7 @@ app.prepare().then(async () => {
       const pointsDb = require('./db/points');
       for (const p of t.players) {
         if (!p.accountId || !p.result) continue;
-        try {
-          await pointsDb.applyThreeCardResult(p.accountId, p.result.net ?? 0);
-        } catch (e) { log(`[3CP] DB error ${p.name}: ${e.message}`); }
+        await pointsDb.applyThreeCardResult(p.accountId, p.result.net ?? 0, t.handId);
       }
     }
     // 全プレイヤーに状態送信（io を直接使用）
@@ -1681,7 +1708,7 @@ async function _tc_applyResults(t) {
   for (const p of t.players) {
     if (!p.accountId || !p.result) continue;
     try {
-      await pointsDb.applyThreeCardResult(p.accountId, p.result.net);
+      await pointsDb.applyThreeCardResult(p.accountId, p.result.net, t.handId);
     } catch (e) {
       log(`[3c] applyThreeCardResult error: ${e.message}`);
     }
@@ -1756,9 +1783,28 @@ function _makeStudTimeoutHandler(io, roomId) {
     _markTournamentAway(rid, playerId, true);
     const beforeRoom = studManager.getStudRoom(rid);
     const beforePlayer = beforeRoom?.players.find((p) => p.id === playerId);
+    const beforePhase = beforeRoom?.phase ?? phase;
+    const beforePlayerBet = beforePlayer?.bet ?? 0;
+    const beforePot = beforeRoom?.pot ?? null;
+    const beforeCurrentBet = beforeRoom?.currentBet ?? null;
     const timeoutAction = _timeoutActionFor(beforeRoom, beforePlayer);
     const acted = !!studManager.handleStudTimeout(rid, playerId);
     if (acted) {
+      const afterRoom = studManager.getStudRoom(rid);
+      const afterPlayer = afterRoom?.players.find((p) => p.id === playerId);
+      _recordHandAction(afterRoom, {
+        phaseBefore: beforePhase,
+        phaseAfter: afterRoom?.phase ?? beforePhase,
+        playerName: beforePlayer?.name ?? afterPlayer?.name ?? '',
+        action: timeoutAction,
+        isTimeout: true,
+        amount: Math.max(0, (afterPlayer?.bet ?? beforePlayerBet) - beforePlayerBet),
+        totalBet: afterPlayer?.bet ?? beforePlayerBet,
+        currentBetBefore: beforeCurrentBet,
+        currentBet: afterRoom?.currentBet ?? beforeCurrentBet,
+        potBefore: beforePot,
+        potAfter: afterRoom?.pot ?? beforePot,
+      });
       _emitStudTimeoutAction(rid, beforePlayer, timeoutAction);
     }
     if (!acted) {
@@ -1772,8 +1818,28 @@ function _makeStudTimeoutHandler(io, roomId) {
       if (_sr && _cur && _sr.phase !== 'showdown' && _sr.phase !== 'waiting') {
         const _forcedAction = _timeoutActionFor(_sr, _cur);
         log(`[stud-timeout-force] ${playerId.slice(-12)} not found → force fold for actionIndex[${_sr.actionIndex}]=${_cur.name}`);
+        const _forcedBeforePhase = _sr.phase;
+        const _forcedBeforeBet = _cur.bet ?? 0;
+        const _forcedBeforePot = _sr.pot ?? null;
+        const _forcedBeforeCurrentBet = _sr.currentBet ?? null;
         const _forced = !!studManager.handleStudTimeout(rid, _cur.id);
         if (_forced) {
+          const _afterSr = studManager.getStudRoom(rid);
+          const _afterCur = _afterSr?.players.find((p) => p.id === _cur.id);
+          _recordHandAction(_afterSr, {
+            phaseBefore: _forcedBeforePhase,
+            phaseAfter: _afterSr?.phase ?? _forcedBeforePhase,
+            playerName: _cur.name,
+            action: _forcedAction,
+            isTimeout: true,
+            isForcedTimeoutRecovery: true,
+            amount: Math.max(0, (_afterCur?.bet ?? _forcedBeforeBet) - _forcedBeforeBet),
+            totalBet: _afterCur?.bet ?? _forcedBeforeBet,
+            currentBetBefore: _forcedBeforeCurrentBet,
+            currentBet: _afterSr?.currentBet ?? _forcedBeforeCurrentBet,
+            potBefore: _forcedBeforePot,
+            potAfter: _afterSr?.pot ?? _forcedBeforePot,
+          });
           _emitStudTimeoutAction(rid, _cur, _forcedAction);
         }
         if (!_forced) {
@@ -1823,8 +1889,16 @@ function _makeTimeoutHandler(io, roomId) {
     // incrementTimeout を呼ばずに早期リターンする。
     let acted = false;
     if (_isBoardActive(rid)) {
+      const brBefore = boardManager.getBoardRoom(rid);
+      const actingBoardPlayer = brBefore?.players.find((p) => p.id === playerId);
+      const beforePhase = brBefore?.phase ?? phase;
+      const beforePlayerBet = actingBoardPlayer?.bet ?? 0;
+      const beforePot = brBefore?.pot ?? null;
+      const beforeCurrentBet = brBefore?.currentBet ?? null;
+      let timeoutAction = 'fold';
       acted = !!boardManager.boardBetAction(rid, playerId, 'fold');
       if (!acted) {
+        timeoutAction = 'check';
         acted = !!boardManager.boardBetAction(rid, playerId, 'check');
         if (acted) log(`[timeout] ${playerId}: board fold rejected (checkable) → check`);
       }
@@ -1832,8 +1906,22 @@ function _makeTimeoutHandler(io, roomId) {
         log(`[timeout-skip] ${playerId}: board action already resolved, skip count`);
         return;
       }
-      _broadcast(io, rid);
       const br = boardManager.getBoardRoom(rid);
+      const afterBoardPlayer = br?.players.find((p) => p.id === playerId);
+      _recordHandAction(br, {
+        phaseBefore: beforePhase,
+        phaseAfter: br?.phase ?? beforePhase,
+        playerName: actingBoardPlayer?.name ?? _p?.name ?? '',
+        action: timeoutAction,
+        isTimeout: true,
+        amount: Math.max(0, (afterBoardPlayer?.bet ?? beforePlayerBet) - beforePlayerBet),
+        totalBet: afterBoardPlayer?.bet ?? beforePlayerBet,
+        currentBetBefore: beforeCurrentBet,
+        currentBet: br?.currentBet ?? beforeCurrentBet,
+        potBefore: beforePot,
+        potAfter: br?.pot ?? beforePot,
+      });
+      _broadcast(io, rid);
       if (br?.phase === 'showdown') _onBoardShowdown(io, rid);
       if (_isDisconnectGrace) {
         log(`[timeout-grace] ${playerId}: board auto-action applied during disconnect grace, skip timeout count`);
@@ -1860,28 +1948,84 @@ function _makeTimeoutHandler(io, roomId) {
       }
       return;
     }
+    let timeoutAction = null;
+    let beforePhase = phase;
+    let beforePot = null;
+    let beforeCurrentBet = null;
+    let beforePlayerBet = 0;
+    let beforeDrawCount = 0;
     if (phase.startsWith('draw')) {
       const room    = getOrCreateRoom(rid);
+      const actingPlayer = room?.players.find((p) => p.id === playerId);
       const indices = room._selectedIndices[playerId] ?? [];
+      beforePhase = room?.phase ?? phase;
+      beforePot = room?.pot ?? null;
+      beforeCurrentBet = room?.currentBet ?? null;
+      beforePlayerBet = actingPlayer?.bet ?? 0;
+      beforeDrawCount = Array.isArray(indices) ? indices.length : 0;
+      timeoutAction = 'draw';
       acted = !!drawCards(rid, playerId, indices);
     } else if (phase.startsWith('bet')) {
+      const roomBefore = getOrCreateRoom(rid);
+      const actingPlayer = roomBefore?.players.find((p) => p.id === playerId);
+      beforePhase = roomBefore?.phase ?? phase;
+      beforePot = roomBefore?.pot ?? null;
+      beforeCurrentBet = roomBefore?.currentBet ?? null;
+      beforePlayerBet = actingPlayer?.bet ?? 0;
       // fold を試み、チェック可能な場面（toCall=0）では check にフォールバック
+      timeoutAction = 'fold';
       acted = !!betAction(rid, playerId, 'fold');
       if (!acted) {
+        timeoutAction = 'check';
         acted = !!betAction(rid, playerId, 'check');
         if (acted) log(`[timeout] ${playerId}: fold rejected (checkable) → check`);
       }
     }
+
 
     if (!acted) {
       log(`[timeout-skip] ${playerId}: action already resolved, skip count`);
       return;
     }
 
-    _broadcast(io, rid);
     const room = getOrCreateRoom(rid);
+    const afterPlayer = room?.players.find((p) => p.id === playerId);
+    if (timeoutAction === 'draw') {
+      _recordHandAction(room, {
+        phaseBefore: beforePhase,
+        phaseAfter: room?.phase ?? beforePhase,
+        playerName: afterPlayer?.name ?? _p?.name ?? '',
+        action: 'draw',
+        isTimeout: true,
+        drawCount: afterPlayer?.drawCount ?? beforeDrawCount,
+        amount: 0,
+        totalBet: afterPlayer?.bet ?? beforePlayerBet,
+        currentBetBefore: beforeCurrentBet,
+        currentBet: room?.currentBet ?? beforeCurrentBet,
+        potBefore: beforePot,
+        potAfter: room?.pot ?? beforePot,
+      });
+    } else if (timeoutAction) {
+      _recordHandAction(room, {
+        phaseBefore: beforePhase,
+        phaseAfter: room?.phase ?? beforePhase,
+        playerName: afterPlayer?.name ?? _p?.name ?? '',
+        action: timeoutAction,
+        isTimeout: true,
+        amount: Math.max(0, (afterPlayer?.bet ?? beforePlayerBet) - beforePlayerBet),
+        totalBet: afterPlayer?.bet ?? beforePlayerBet,
+        currentBetBefore: beforeCurrentBet,
+        currentBet: room?.currentBet ?? beforeCurrentBet,
+        potBefore: beforePot,
+        potAfter: room?.pot ?? beforePot,
+      });
+    }
+
+    _broadcast(io, rid);
     if (room?.phase === 'showdown') {
       if (tournamentManager.isTournamentTable(rid)) {
+        ensurePotsAwarded(rid);
+        _saveTournamentHandHistory(rid, 'draw', room);
         tournamentManager.checkEliminations(rid);
         // ※ 2回目の _broadcast は送らない（betAction と同様の理由）
       }
@@ -2141,7 +2285,23 @@ function _hasAnyReservation(roomId) {
   return room.players.some((p) => leaveReservations.has(p.id));
 }
 
+const _autoStartInProgress = new Set();
+
 function _tryAutoStart(io, roomId) {
+  if (!roomId) return;
+  if (_autoStartInProgress.has(roomId)) {
+    log(`[auto-start] ${roomId.slice(-8)} skip (start already in progress)`);
+    return;
+  }
+  _autoStartInProgress.add(roomId);
+  try {
+    return _tryAutoStartInner(io, roomId);
+  } finally {
+    _autoStartInProgress.delete(roomId);
+  }
+}
+
+function _tryAutoStartInner(io, roomId) {
   // ===== High-1 対策: 前ハンドがスタッドだった場合の残留リセット =====
   // スタッドハンドは showdown 後も studRooms に phase='showdown' で残るため、
   // 次ハンドの開始前に必ず waiting へ戻す。これを怠ると _isStudActive が
@@ -2171,6 +2331,12 @@ function _tryAutoStart(io, roomId) {
     if (_br && _br.phase === 'showdown') {
       boardManager.finishBoardHand(roomId);
     }
+  }
+
+  const _drawRoomAtStart = getRoom(roomId);
+  if (_drawRoomAtStart && _drawRoomAtStart.phase !== 'waiting' && _drawRoomAtStart.phase !== 'showdown') {
+    log(`[auto-start] ${roomId.slice(-8)} ドローハンド進行中(phase=${_drawRoomAtStart.phase}) → 開始スキップ`);
+    return;
   }
 
   // ブレイク中はゲーム開始を待機
@@ -2568,6 +2734,8 @@ function _canSafelyRetryAutoStart(roomId) {
 
 /** 単一ソケットへ現在のゲーム状態を送る（スタッド/ドロー自動判定） */
 function _emitStateToSocket(socket, tableId) {
+  const isSpectator = !!_spectators.get(tableId)?.has(socket.id) && !_socketBelongsToTable(socket, tableId);
+  const requesterId = isSpectator ? null : socket.id;
   if (_isStudActive(tableId)) {
     const room = studManager.getStudRoom(tableId);
     if (!room) return;
@@ -2592,10 +2760,10 @@ function _emitStateToSocket(socket, tableId) {
       socket.emit('gameState', { players: [...players, selfEntry], meta });
       return;
     }
-    const state = studManager.buildStudGameState(room, socket.id);
+    const state = studManager.buildStudGameState(room, requesterId);
     const meta = state.find((x) => x._meta);
     const players = state.filter((x) => !x._meta);
-    socket.emit('gameState', { players, meta });
+    socket.emit('gameState', { players, meta, isSpectator });
     return;
   }
   if (_isBoardActive(tableId)) {
@@ -2607,7 +2775,7 @@ function _emitStateToSocket(socket, tableId) {
       (p.id === socket.id || (user?.accountId && p.accountId === user.accountId)) &&
       !room.players.some((bp) => bp.id === p.id || (p.accountId && bp.accountId === p.accountId))
     );
-    const state = boardManager.buildBoardGameState(room, waitPlayer ? null : socket.id);
+    const state = boardManager.buildBoardGameState(room, waitPlayer ? null : requesterId);
     const meta = state.find((x) => x._meta);
     const players = state.filter((x) => !x._meta);
     if (waitPlayer) {
@@ -2628,15 +2796,15 @@ function _emitStateToSocket(socket, tableId) {
         isPendingPlayer: true,
       });
     }
-    socket.emit('gameState', { players, meta });
+    socket.emit('gameState', { players, meta, isSpectator });
     return;
   }
   const room = getOrCreateRoom(tableId);
   if (!room) return;
-  const state = buildGameState(room, socket.id);
+  const state = buildGameState(room, requesterId);
   const meta = state.find((x) => x._meta);
   const players = state.filter((x) => !x._meta);
-  socket.emit('gameState', { players, meta });
+  socket.emit('gameState', { players, meta, isSpectator });
 }
 
 function _studLogSnapshot(room) {

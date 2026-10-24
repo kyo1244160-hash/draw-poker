@@ -10,6 +10,9 @@
  */
 
 import type { NextApiRequest, NextApiResponse } from 'next';
+const { redactLogText } = require('../../../server/security/logPrivacy');
+
+export const config = { api: { bodyParser: { sizeLimit: '16kb' } } };
 
 // IP単位のレートリミット（メモリ内・プロセス再起動でリセット）
 // 本番で複数インスタンスの場合は各インスタンスごとに独立だが、
@@ -42,7 +45,7 @@ function _rateLimited(ip: string): boolean {
 
 // 文字列を安全な長さに切り詰める
 function _truncate(v: unknown, max: number): string {
-  const s = typeof v === 'string' ? v : String(v ?? '');
+  const s = redactLogText(typeof v === 'string' ? v : '', max);
   const clean = s.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, '?');
   return clean.length > max ? clean.slice(0, max) + '...[truncated]' : clean;
 }
@@ -52,9 +55,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  // クライアントIPを取得（プロキシ経由を考慮）
-  const fwd = req.headers['x-forwarded-for'];
-  const ip = (Array.isArray(fwd) ? fwd[0] : fwd?.split(',')[0]?.trim()) || req.socket.remoteAddress || 'unknown';
+  // Do not trust client-supplied forwarding headers for rate-limit identities.
+  const ip = req.socket.remoteAddress || 'unknown';
 
   if (_rateLimited(ip)) {
     // ログには記録しない（溢れ防止）。429 を返すのみ。
@@ -69,21 +71,13 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const stack     = _truncate(body.stack, 4000);
     const component = _truncate(body.component, 2000);
     const url       = _truncate(body.url, 300);
-    const ua        = _truncate(body.ua, 300);
     const ts        = _truncate(body.ts || new Date().toISOString(), 40);
-    const extra     = body.extra && typeof body.extra === 'object' ? body.extra : {};
 
     console.error(`[CLIENT-ERROR] ========================================`);
     console.error(`[CLIENT-ERROR] label     : ${label}`);
     console.error(`[CLIENT-ERROR] ts        : ${ts}`);
-    console.error(`[CLIENT-ERROR] ip        : ${ip}`);
     console.error(`[CLIENT-ERROR] message   : ${message}`);
     console.error(`[CLIENT-ERROR] url       : ${url}`);
-    console.error(`[CLIENT-ERROR] ua        : ${ua}`);
-    const extraKeys = Object.keys(extra);
-    if (extraKeys.length > 0) {
-      console.error(`[CLIENT-ERROR] extra     :`, _truncate(JSON.stringify(extra), 1000));
-    }
     console.error(`[CLIENT-ERROR] --- Stack ---`);
     stack.split('\n').slice(0, 20).forEach((line) => console.error(`[CLIENT-ERROR]   ${line}`));
     if (component) {
@@ -94,7 +88,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
     return res.status(200).json({ ok: true });
   } catch (err) {
-    console.error('[CLIENT-ERROR] Failed to log client error:', err);
+    console.error('[CLIENT-ERROR] Failed to log client error');
     return res.status(500).json({ error: 'Failed to log' });
   }
 }

@@ -7,6 +7,7 @@
 
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { getPointsRanking, POINT_TABLE } from '../../lib/db';
+const { publicRanking } = require('../../server/security/publicRanking');
 
 function parseLimit(value: unknown, fallback: number, max: number) {
   const raw = Array.isArray(value) ? value[0] : value;
@@ -22,5 +23,5 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const limit   = parseLimit(req.query.limit, 20, 100);
   const ranking = await getPointsRanking({ limit });
 
-  return res.status(200).json({ ranking, pointTable: POINT_TABLE });
+  return res.status(200).json({ ranking: publicRanking(ranking), pointTable: POINT_TABLE });
 }

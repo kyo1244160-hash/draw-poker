@@ -110,6 +110,7 @@ function verifySocketToken(token) {
 }
 
 async function requireAdmin(req, res, next) {
+  res.setHeader('Cache-Control', 'private, no-store');
   try {
     const authHeader = req.headers.authorization ?? '';
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;

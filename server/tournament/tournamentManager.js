@@ -17,6 +17,7 @@ const {
   startGame,
   getAllRooms,
 } = require('../poker/gameManager');
+const _boardManager = require('../poker/boardManager');
 
 const { getSchedule } = require('./blindSchedule');
 
@@ -1069,6 +1070,14 @@ function balanceTables(tournamentId) {
         return;
       }
     }
+    // boardManager 側が進行中の場合も解体しない（Hold'em/Omaha ハンド破壊防止）。
+    {
+      const _br = _boardManager.getBoardRoom(tid);
+      if (_br && _br.phase && _br.phase !== 'waiting' && _br.phase !== 'showdown') {
+        logDev(`[TM] balance: dissolve skipped (board active phase=${_br.phase}) ${tid.slice(-8)}`);
+        return;
+      }
+    }
 
     for (const p of [...room.players]) {
       // 移動先: 現テーブル以外で最も人数が少ないテーブル（毎回再計算）
@@ -1090,6 +1099,7 @@ function balanceTables(tournamentId) {
       // 【テーブル重複対策】解体元の studManager 側からも安全に削除（actionIndex等を調整）。
       // 直接 filter すると actionIndex がずれて手番不整合を起こすため専用関数を使う。
       _studManager.removePlayerForBalance(tid, p.id, accId);
+      _boardManager.boardLeaveRoom(tid, p.id);
       jr(dest.id, p.id, name, { existingChips: chips, accountId: accId });
       if (isTournamentBotId(p.id)) moveBot(p.id, tid, dest.id);
       if (_io) {
@@ -1224,6 +1234,16 @@ function balanceTables(tournamentId) {
       if (srcTable && srcTable.count > twoPersonTable.count + 1) {
         const roomSrc = getRoom(srcTable.tid);
         if (roomSrc?.phase === 'waiting' || roomSrc?.phase === 'showdown') {
+          const _studSrc = _studManager.getStudRoom(srcTable.tid);
+          if (_studSrc && _studSrc.phase && _studSrc.phase !== 'waiting' && _studSrc.phase !== 'showdown') {
+            logDev(`[TM] balance: skip reverse move from ${srcTable.tid.slice(-8)} (stud active phase=${_studSrc.phase})`);
+            break;
+          }
+          const _boardSrc = _boardManager.getBoardRoom(srcTable.tid);
+          if (_boardSrc && _boardSrc.phase && _boardSrc.phase !== 'waiting' && _boardSrc.phase !== 'showdown') {
+            logDev(`[TM] balance: skip reverse move from ${srcTable.tid.slice(-8)} (board active phase=${_boardSrc.phase})`);
+            break;
+          }
           const candidate = roomSrc.players.find(p => p.folded || p.sittingOut) ?? roomSrc.players[0];
           if (candidate) {
             const chips = candidate.chips;
@@ -1232,6 +1252,8 @@ function balanceTables(tournamentId) {
             if (_io) _io.to(srcTable.tid).emit('t:playerLeft', { playerName: name });
             const { leaveRoom: lr, joinRoom: jr } = require('../poker/gameManager');
             lr(candidate.id);
+            _studManager.removePlayerForBalance(srcTable.tid, candidate.id, accId);
+            _boardManager.boardLeaveRoom(srcTable.tid, candidate.id);
             jr(twoPersonTable.tid, candidate.id, name, { existingChips: chips, accountId: accId });
             const { isTournamentBotId, moveBot: moveBotFn } = require('./tournamentBotManager');
             if (isTournamentBotId(candidate.id)) moveBotFn(candidate.id, srcTable.tid, twoPersonTable.tid);
@@ -1288,6 +1310,11 @@ function balanceTables(tournamentId) {
       logDev(`[TM] balance: skip move from ${maxT.tid.slice(-8)} (stud active phase=${_studMax.phase})`);
       break;
     }
+    const _boardMax = _boardManager.getBoardRoom(maxT.tid);
+    if (_boardMax && _boardMax.phase && _boardMax.phase !== 'waiting' && _boardMax.phase !== 'showdown') {
+      logDev(`[TM] balance: skip move from ${maxT.tid.slice(-8)} (board active phase=${_boardMax.phase})`);
+      break;
+    }
     // ゲーム中でないプレイヤーを優先して移動（folded or sittingOut）
     const candidate = roomMax.players.find(p => p.folded || p.sittingOut) ?? roomMax.players[0];
     if (!candidate) break;
@@ -1303,6 +1330,7 @@ function balanceTables(tournamentId) {
     // 側に残骸が残るケースに備えて確実に取り除く。直接 filter すると actionIndex が
     // ずれて手番不整合を起こすため、専用関数で安全に削除する。
     _studManager.removePlayerForBalance(maxT.tid, candidate.id, accId);
+    _boardManager.boardLeaveRoom(maxT.tid, candidate.id);
     jr(minT.tid, candidate.id, name, { existingChips: chips, accountId: accId });
     if (isTournamentBotId(candidate.id)) moveBot(candidate.id, maxT.tid, minT.tid);
 

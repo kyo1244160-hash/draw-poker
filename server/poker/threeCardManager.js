@@ -15,6 +15,7 @@
  */
 
 const { createShuffledDeck }     = require('./deck');
+const { randomUUID } = require('crypto');
 const {
   evaluateThreeCardHand,
   compareThreeCardHands,
@@ -53,11 +54,17 @@ function setPhaseChangeCallback(fn) { _onPhaseChange = fn; }
  * ユーザーアクション・サーバータイマーのどちらの遷移でも必ず呼ぶこと。
  */
 function _notify(t) {
-  if (_onPhaseChange) {
-    try { _onPhaseChange(t.id, t.phase); }
-    catch (e) { console.error('[3CP] phaseChange callback error:', e.message); }
+  try {
+    const result = _onPhaseChange?.(t.id, t.phase);
+    triggerBotActions(t.id);
+    return Promise.resolve(result).then(() => true, () => {
+      console.error('[3CP] phaseChange callback failed');
+      return false;
+    });
+  } catch {
+    console.error('[3CP] phaseChange callback failed');
+    return Promise.resolve(false);
   }
-  triggerBotActions(t.id);
 }
 
 // ===== ユーティリティ =====
@@ -80,7 +87,7 @@ function listRooms() {
 function getOrCreateAvailableRoom() {
   // 空きのあるテーブルを探す
   for (const [, t] of tables) {
-    if (t.players.length < MAX_PLAYERS) return t;
+    if (t.players.length < MAX_PLAYERS && ['waiting', 'betting'].includes(t.phase)) return t;
   }
   // 全て満員 → 新規作成
   return _createTable();
@@ -114,10 +121,11 @@ function _createTable() {
  * テーブルが空になったら削除（room-1 は常設）
  */
 function _maybeDeleteTable(roomId) {
-  if (roomId === `${TC_PREFIX}1`) return; // 常設テーブルは削除しない
   const t = tables.get(roomId);
   if (!t || t.players.length > 0) return;
   _clearAllTimers(t);
+  t.phase = 'waiting';
+  if (roomId === `${TC_PREFIX}1`) return;
   tables.delete(roomId);
   log(`テーブル削除: ${roomId}`);
 }
@@ -135,6 +143,8 @@ function joinTable(roomId, socketId, name, accountId, currentPoints) {
   if (!t) return 'notFound';
   if (t.players.length >= MAX_PLAYERS) return 'full';
   if (t.players.find(p => p.socketId === socketId)) return 'alreadyJoined';
+  if (accountId && [...tables.values()].some(table => table.players.some(p => p.accountId === accountId))) return 'accountBusy';
+  if (t.phase !== 'waiting' && t.phase !== 'betting') return 'busy';
 
   const player = {
     socketId,
@@ -162,6 +172,16 @@ function joinTable(roomId, socketId, name, accountId, currentPoints) {
 function leaveTable(roomId, socketId) {
   const t = tables.get(roomId);
   if (!t) return;
+  const player = t.players.find(p => p.socketId === socketId);
+  if (!player) return;
+  // Keep committed wagers in the hand until durable settlement has completed.
+  if (player.betReady && (['betting', 'dealt', 'action', 'reveal'].includes(t.phase) || t.settlementPending)) {
+    player.leaveAfterHand = true;
+    if (player.action === null) player.action = 'fold';
+    if (t.phase === 'betting' && t.players.every(p => p.betReady)) _deal(t);
+    else if (t.phase === 'action' && t.players.every(p => p.action !== null)) _reveal(t);
+    return;
+  }
   const before = t.players.length;
   t.players = t.players.filter(p => p.socketId !== socketId);
   if (t.players.length === before) return;
@@ -363,6 +383,7 @@ function _startBetting(t) {
   _clearAllTimers(t);
   t.phase = 'betting';
   t.handCount++;
+  t.handId = randomUUID();
 
   for (const p of t.players) {
     p.bets        = { ante: 0, pp: 0, sixCard: 0 };
@@ -482,7 +503,8 @@ function _startAction(t) {
     _onActionTimeout(t);
   }, ACTION_TIMEOUT * 1000);
 
-  _notify(t);
+  if (t.players.every(p => p.action !== null)) _reveal(t);
+  else _notify(t);
 }
 
 /**
@@ -665,15 +687,22 @@ function _reveal(t) {
 
   log(`${t.id} result フェーズ`);
 
-  _notify(t);  // result フェーズ通知 → server側で DB更新 + ブロードキャスト
-
-  // 5秒後に次ハンド
-  t._resultTimer = setTimeout(() => {
-    _nextHand(t);
-  }, RESULT_DELAY);
+  t.settlementPending = true;
+  const settle = async () => {
+    const saved = await _notify(t);
+    if (!saved) {
+      // The database ledger makes retries safe, including partial batch failures.
+      t._resultTimer = setTimeout(settle, RESULT_DELAY);
+      return;
+    }
+    t.settlementPending = false;
+    t._resultTimer = setTimeout(() => _nextHand(t), RESULT_DELAY);
+  };
+  void settle();
 }
 
 function _nextHand(t) {
+  t.players = t.players.filter(p => !p.leaveAfterHand);
   if (t.players.length === 0) {
     _maybeDeleteTable(t.id);
     return;

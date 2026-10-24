@@ -18,6 +18,7 @@ const adminDb = require('../server/db/admin');
  */
 export function withAdminAuth(handler: NextApiHandler): NextApiHandler {
   return async (req: NextApiRequest, res: NextApiResponse) => {
+    res.setHeader('Cache-Control', 'private, no-store');
     const session = await getServerSession(req, res, authOptions);
 
     if (!session?.user?.accountId) {

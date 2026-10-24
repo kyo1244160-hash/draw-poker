@@ -29,9 +29,7 @@ function getSql() {
   if (!_connectAttempted) {
     _connectAttempted = true;
     if (IS_DEV) global._pgConnectAttempted = true;
-    // パスワードを隠してURLを表示
-    const masked = process.env.DATABASE_URL.replace(/:([^:@]+)@/, ':***@');
-    console.log('[db] 接続先:', masked);
+    console.log('[db] connecting');
   }
 
   // 開発環境: max=2（HMR による接続増加を抑制）、本番: max=5
@@ -43,7 +41,7 @@ function getSql() {
     connect_timeout: 10,
     ssl: 'require',
     debug: false,
-    onnotice: (notice) => console.log('[db] notice:', notice.message),
+    onnotice: (notice) => console.log('[db] notice code:', notice.code),
   });
 
   // 開発環境: global に保持して HMR をまたいで再利用
@@ -57,9 +55,7 @@ module.exports = async function sql(strings, ...values) {
   try {
     return await getSql()(strings, ...values);
   } catch (err) {
-    console.error('[db] ❌ クエリエラー:', err.message);
-    console.error('[db]   code:', err.code);
-    console.error('[db]   detail:', err.detail ?? '(なし)');
+    console.error('[db] query failed code:', /^[A-Z0-9]{5}$/.test(err.code ?? '') ? err.code : 'UNKNOWN');
     throw err;
   }
 };

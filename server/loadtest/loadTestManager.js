@@ -9,6 +9,7 @@
  */
 
 const { io: createClient } = require('socket.io-client');
+const { signLoadTestIdentity, allowedLoadTestTarget } = require('../security/loadTestIdentity');
 const sql = require('../db/client');
 const { registerEntry } = require('../db/tournament');
 
@@ -263,6 +264,7 @@ function _createBot(run, index) {
     timeout: 10000,
     auth: {
       loadTest: true,
+      loadTestToken: signLoadTestIdentity(prepared?.accountId ?? `bot_load_${run.id}_${index}`, botName.slice(0, 12)),
       botName,
       botId,
       accountId: prepared?.accountId,
@@ -391,7 +393,7 @@ async function startRun(configInput = {}) {
     ? configInput.mode
     : 'connect';
   const targetUrl = String(configInput.targetUrl || '').trim();
-  if (!targetUrl || !/^https?:\/\//.test(targetUrl)) {
+  if (!allowedLoadTestTarget(targetUrl)) {
     const err = new Error('INVALID_TARGET_URL');
     err.statusCode = 400;
     throw err;

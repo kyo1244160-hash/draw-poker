@@ -20,6 +20,9 @@ MEMORY.md
 *.bak
 *.orig
 *.log
+*.log.*
+logs/
+history/
 *.swp
 *.swo
 

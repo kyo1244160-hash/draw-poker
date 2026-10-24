@@ -6,6 +6,7 @@ function sanitizeFilenamePart(value: string): string {
 }
 
 async function handler(req: NextApiRequest, res: NextApiResponse) {
+  res.setHeader('Cache-Control', 'private, no-store');
   if (req.method !== 'GET') {
     res.setHeader('Allow', 'GET');
     return res.status(405).json({ error: 'Method not allowed' });

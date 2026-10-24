@@ -3,14 +3,14 @@
   "version": "1.0.0",
   "private": true,
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=24.22.1 <25"
   },
   "scripts": {
     "dev": "node server/index.js",
     "build": "next build",
     "start": "node server/index.js",
     "start:build": "npm run build && node server/index.js",
-    "test": "node scripts/test-poker-logic.js"
+    "test": "node scripts/test-poker-logic.js && node --test scripts/test-security.js"
   },
   "dependencies": {
     "cross-env": "^7.0.3",

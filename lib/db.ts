@@ -121,16 +121,14 @@ export const getTournamentResults: (tournamentId: string) => Promise<{
 }[]> = pointsDb.getTournamentResults;
 
 export const getPointsRanking: (opts?: { limit?: number }) => Promise<{
-  account_id: string;
   total_points: number;
   updated_at: Date;
   nickname: string | null;
-  google_name: string | null;
   tournament_count: number;
 }[]> = pointsDb.getPointsRanking;
 
 export const getUserPoints: (accountId: string) => Promise<number>
   = pointsDb.getUserPoints;
 
-export const applyThreeCardResult: (accountId: string, net: number) => Promise<void>
+export const applyThreeCardResult: (accountId: string, net: number, handId: string) => Promise<void>
   = pointsDb.applyThreeCardResult;
