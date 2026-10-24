@@ -41,6 +41,7 @@ const { parse }  = require('url');
 const { createHmac, timingSafeEqual } = require('crypto');
 const { safeSocketOn, createRateLimiter } = require('./security/socketSafety');
 const { verifyLoadTestIdentity } = require('./security/loadTestIdentity');
+const { getHealthStatus } = require('./security/healthStatus');
 const cfg        = require('./config');
 
 const { checkText } = require('./profanityFilter');
@@ -1623,7 +1624,9 @@ app.prepare().then(async () => {
   });
   // ヘルスチェック（render.yaml の healthCheckPath）
   expressApp.get('/api/health', (_req, res) => {
-    res.json({ ok: true, uptime: Math.round(process.uptime()), ts: Date.now() });
+    res.setHeader('Cache-Control', 'no-store');
+    const health = getHealthStatus();
+    res.status(health.ok ? 200 : 503).json(health);
   });
 
   expressApp.use((req, res, nxt) => {

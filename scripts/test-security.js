@@ -18,6 +18,17 @@ test('deployment rejects unsupported and unpatched Node.js runtimes', () => {
   for (const version of ['24.22.1', '24.22.2', '24.23.0']) assert.equal(isSupportedNode(version), true, version);
 });
 
+test('shared health response identifies the deployed revision without exposing secrets', () => {
+  const { getHealthStatus } = require('../server/security/healthStatus');
+  const env = { RENDER_GIT_COMMIT: 'abcdef0123456789012345678901234567890123', NEXTAUTH_SECRET: 'private-value' };
+  const healthy = getHealthStatus(env, '24.22.1');
+  assert.equal(healthy.revision, 'abcdef012345');
+  assert.equal(healthy.runtimeSupported, true);
+  assert.equal(healthy.ok, true);
+  assert.ok(!JSON.stringify(healthy).includes('private-value'));
+  assert.equal(getHealthStatus(env, '20.20.0').ok, false);
+});
+
 test('socket events reject null, arrays, bad identifiers, duplicate/out-of-range cards and invalid amounts', () => {
   for (const event of ['t:getMyTable', 'joinRoom', 'betAction', 'drawCards', 'spectate', '3c:bet', 'z:requestGameState']) {
     for (const payload of [null, undefined, [], true, 42, 'bad']) assert.equal(validPacket(event, payload), false);
